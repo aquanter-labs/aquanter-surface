@@ -2,7 +2,7 @@ use crate::chart::comparison::ComparisonChart;
 use crate::screen::dashboard::pane::{Event, Message};
 use crate::screen::dashboard::panel::timeandsales;
 use crate::split_column;
-use crate::widget::{classic_slider_row, labeled_slider};
+use crate::widget::{classic_slider_row, color_picker::color_picker, labeled_slider};
 use crate::{style, tooltip, widget::scrollable_content};
 
 use data::chart::heatmap::HeatmapStudy;
@@ -17,7 +17,7 @@ use data::panel::ladder;
 use data::panel::timeandsales::{StackedBar, StackedBarRatio};
 use data::util::format_with_commas;
 
-use iced::widget::{checkbox, space};
+use iced::widget::{checkbox, space, text_input};
 use iced::{
     Alignment, Element, Length,
     widget::{
@@ -26,6 +26,38 @@ use iced::{
     },
 };
 use std::time::Duration;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KlineColorPicker {
+    SessionVwap,
+    CvdLine,
+    CvdUp,
+    CvdDown,
+    StochRsiK,
+    StochRsiD,
+    OiLine,
+    OiUp,
+    OiDown,
+    AnchoredVwap,
+    Ema(usize),
+    VolumeProfileBuy,
+    VolumeProfileSell,
+    VolumeProfileNeutral,
+    OidBullish,
+    OidBearish,
+    OidCvd,
+    OidOi,
+    OiFlowLong,
+    OiFlowShort,
+    OiFlowBuyOutflow,
+    OiFlowSellOutflow,
+    OwdPositive,
+    OwdNegative,
+    LpiPositive,
+    LpiNegative,
+    LiquidationHeatmapLong,
+    LiquidationHeatmapShort,
+}
 
 fn cfg_view_container<'a, T>(max_width: u32, content: T) -> Element<'a, Message>
 where
@@ -602,6 +634,7 @@ pub fn kline_cfg_view<'a>(
     basis: data::chart::Basis,
 ) -> Element<'a, Message> {
     let display_readout_section = {
+        let next_cfg = cfg.clone();
         let data_labels_checkbox = tooltip(
             checkbox(cfg.data_labels_always_visible)
                 .label("Keep latest label visible")
@@ -610,7 +643,7 @@ pub fn kline_cfg_view<'a>(
                         pane,
                         VisualConfig::Kline(data::chart::kline::Config {
                             data_labels_always_visible: value,
-                            ..cfg
+                            ..next_cfg.clone()
                         }),
                         false,
                     )
@@ -631,7 +664,7 @@ pub fn kline_cfg_view<'a>(
                 display_readout_section,
                 row![
                     space::horizontal(),
-                    sync_all_button(pane, VisualConfig::Kline(cfg))
+                    sync_all_button(pane, VisualConfig::Kline(cfg.clone()))
                 ],
                 ; spacing = 12, align_x = Alignment::Start
             ]
@@ -646,6 +679,7 @@ pub fn kline_cfg_view<'a>(
                     Message::PaneEvent(pane, Event::ClusterKindSelected(new_cluster_kind))
                 });
 
+            let footprint_cfg = cfg.clone();
             let footprint_summary_checkbox = tooltip(
                 checkbox(cfg.show_footprint_summary)
                     .label("Show footprint summary")
@@ -654,7 +688,7 @@ pub fn kline_cfg_view<'a>(
                             pane,
                             VisualConfig::Kline(data::chart::kline::Config {
                                 show_footprint_summary: value,
-                                ..cfg
+                                ..footprint_cfg.clone()
                             }),
                             false,
                         )
@@ -744,7 +778,7 @@ pub fn kline_cfg_view<'a>(
                 )
                 .push(row![
                     space::horizontal(),
-                    sync_all_button(pane, VisualConfig::Kline(cfg))
+                    sync_all_button(pane, VisualConfig::Kline(cfg.clone()))
                 ]);
 
             content
@@ -752,6 +786,1022 @@ pub fn kline_cfg_view<'a>(
     };
 
     cfg_view_container(360, content)
+}
+
+pub fn kline_indicator_cfg_view<'a>(
+    indicator: data::chart::indicator::KlineIndicator,
+    cfg: data::chart::kline::Config,
+    pane: pane_grid::Pane,
+    expanded: Option<KlineColorPicker>,
+) -> Element<'a, Message> {
+    use data::chart::indicator::KlineIndicator;
+
+    let content: Element<_> = match indicator {
+        KlineIndicator::CumulativeDelta | KlineIndicator::OpenInterest => {
+            let is_cvd = indicator == KlineIndicator::CumulativeDelta;
+            let series = if is_cvd {
+                cfg.cumulative_delta
+            } else {
+                cfg.open_interest
+            };
+            let style_cfg = cfg.clone();
+            let style = pick_list(
+                data::chart::kline::IndicatorPlotStyle::ALL,
+                Some(series.style),
+                move |style| {
+                    let mut next = style_cfg.clone();
+                    if is_cvd {
+                        next.cumulative_delta.style = style;
+                    } else {
+                        next.open_interest.style = style;
+                    }
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let width_cfg = cfg.clone();
+            let width = slider(0.5..=5.0, series.line_width.clamp(0.5, 5.0), move |value| {
+                let mut next = width_cfg.clone();
+                if is_cvd {
+                    next.cumulative_delta.line_width = value;
+                } else {
+                    next.open_interest.line_width = value;
+                }
+                Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+            })
+            .step(0.5);
+            let line_cfg = cfg.clone();
+            let line_picker = color_picker(
+                data::config::theme::to_hsva(series.line_color),
+                move |value| {
+                    let mut next = line_cfg.clone();
+                    if is_cvd {
+                        next.cumulative_delta.line_color = data::config::theme::from_hsva(value);
+                    } else {
+                        next.open_interest.line_color = data::config::theme::from_hsva(value);
+                    }
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let up_cfg = cfg.clone();
+            let up_picker = color_picker(
+                data::config::theme::to_hsva(series.up_color),
+                move |value| {
+                    let mut next = up_cfg.clone();
+                    if is_cvd {
+                        next.cumulative_delta.up_color = data::config::theme::from_hsva(value);
+                    } else {
+                        next.open_interest.up_color = data::config::theme::from_hsva(value);
+                    }
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let down_cfg = cfg.clone();
+            let down_picker = color_picker(
+                data::config::theme::to_hsva(series.down_color),
+                move |value| {
+                    let mut next = down_cfg.clone();
+                    if is_cvd {
+                        next.cumulative_delta.down_color = data::config::theme::from_hsva(value);
+                    } else {
+                        next.open_interest.down_color = data::config::theme::from_hsva(value);
+                    }
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let (line_swatch, up_swatch, down_swatch) = if is_cvd {
+                (
+                    KlineColorPicker::CvdLine,
+                    KlineColorPicker::CvdUp,
+                    KlineColorPicker::CvdDown,
+                )
+            } else {
+                (
+                    KlineColorPicker::OiLine,
+                    KlineColorPicker::OiUp,
+                    KlineColorPicker::OiDown,
+                )
+            };
+            let colors: Element<_> = match series.style {
+                data::chart::kline::IndicatorPlotStyle::Line => column![
+                    text(format!("Line width: {:.1}", series.line_width)),
+                    width,
+                    row![
+                        text("Line"),
+                        color_swatch(pane, series.line_color, line_swatch)
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                    if expanded == Some(line_swatch) {
+                        line_picker
+                    } else {
+                        space::vertical().height(0).into()
+                    },
+                ]
+                .spacing(8)
+                .into(),
+                data::chart::kline::IndicatorPlotStyle::Candles => column![
+                    row![
+                        text("Up"),
+                        color_swatch(pane, series.up_color, up_swatch),
+                        text("Down"),
+                        color_swatch(pane, series.down_color, down_swatch),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                    if expanded == Some(up_swatch) {
+                        up_picker
+                    } else if expanded == Some(down_swatch) {
+                        down_picker
+                    } else {
+                        space::vertical().height(0).into()
+                    },
+                ]
+                .spacing(8)
+                .into(),
+            };
+            column![
+                text(if is_cvd { "CVD" } else { "Open Interest" })
+                    .size(crate::style::text_size::SECTION),
+                style,
+                colors,
+            ]
+            .spacing(8)
+            .into()
+        }
+        KlineIndicator::StochRsi => {
+            let stoch = cfg.stoch_rsi;
+            let rsi_cfg = cfg.clone();
+            let rsi_length = slider(
+                2.0..=50.0,
+                stoch.rsi_length.clamp(2, 50) as f32,
+                move |value| {
+                    let mut next = rsi_cfg.clone();
+                    next.stoch_rsi.rsi_length = value as u16;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            )
+            .step(1.0);
+            let stochastic_cfg = cfg.clone();
+            let stochastic_length = slider(
+                2.0..=50.0,
+                stoch.stochastic_length.clamp(2, 50) as f32,
+                move |value| {
+                    let mut next = stochastic_cfg.clone();
+                    next.stoch_rsi.stochastic_length = value as u16;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            )
+            .step(1.0);
+            let k_cfg = cfg.clone();
+            let k_smoothing = slider(
+                1.0..=10.0,
+                stoch.k_smoothing.clamp(1, 10) as f32,
+                move |value| {
+                    let mut next = k_cfg.clone();
+                    next.stoch_rsi.k_smoothing = value as u16;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            )
+            .step(1.0);
+            let d_cfg = cfg.clone();
+            let d_smoothing = slider(
+                1.0..=10.0,
+                stoch.d_smoothing.clamp(1, 10) as f32,
+                move |value| {
+                    let mut next = d_cfg.clone();
+                    next.stoch_rsi.d_smoothing = value as u16;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            )
+            .step(1.0);
+            let width_cfg = cfg.clone();
+            let width = slider(0.5..=5.0, stoch.line_width.clamp(0.5, 5.0), move |value| {
+                let mut next = width_cfg.clone();
+                next.stoch_rsi.line_width = value;
+                Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+            })
+            .step(0.5);
+            let k_color_cfg = cfg.clone();
+            let k_picker =
+                color_picker(data::config::theme::to_hsva(stoch.k_color), move |value| {
+                    let mut next = k_color_cfg.clone();
+                    next.stoch_rsi.k_color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                });
+            let d_color_cfg = cfg.clone();
+            let d_picker =
+                color_picker(data::config::theme::to_hsva(stoch.d_color), move |value| {
+                    let mut next = d_color_cfg.clone();
+                    next.stoch_rsi.d_color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                });
+            column![
+                text("Stoch RSI").size(crate::style::text_size::SECTION),
+                text(format!("RSI length: {}", stoch.rsi_length)),
+                rsi_length,
+                text(format!("Stochastic length: {}", stoch.stochastic_length)),
+                stochastic_length,
+                text(format!("K smoothing: {}", stoch.k_smoothing)),
+                k_smoothing,
+                text(format!("D smoothing: {}", stoch.d_smoothing)),
+                d_smoothing,
+                text(format!("Line width: {:.1}", stoch.line_width)),
+                width,
+                row![
+                    text("%K"),
+                    color_swatch(pane, stoch.k_color, KlineColorPicker::StochRsiK),
+                    text("%D"),
+                    color_swatch(pane, stoch.d_color, KlineColorPicker::StochRsiD),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                if expanded == Some(KlineColorPicker::StochRsiK) {
+                    k_picker
+                } else if expanded == Some(KlineColorPicker::StochRsiD) {
+                    d_picker
+                } else {
+                    space::vertical().height(0).into()
+                },
+            ]
+            .spacing(8)
+            .into()
+        }
+        KlineIndicator::SessionVwap => {
+            let vwap = cfg.session_vwap;
+            let anchor_cfg = cfg.clone();
+            let anchor = slider(0.0..=23.0, vwap.anchor_hour_utc as f32, move |value| {
+                let mut next = anchor_cfg.clone();
+                next.session_vwap.anchor_hour_utc = value as u8;
+                Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+            })
+            .step(1.0);
+            let bands_cfg = cfg.clone();
+            let bands = slider(1.0..=3.0, vwap.deviation_bands as f32, move |value| {
+                let mut next = bands_cfg.clone();
+                next.session_vwap.deviation_bands = value as u8;
+                Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+            })
+            .step(1.0);
+            let color_cfg = cfg.clone();
+            let picker = color_picker(data::config::theme::to_hsva(vwap.color), move |value| {
+                let mut next = color_cfg.clone();
+                next.session_vwap.color = data::config::theme::from_hsva(value);
+                Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+            });
+            let width_cfg = cfg.clone();
+            let width = slider(0.5..=5.0, vwap.line_width.clamp(0.5, 5.0), move |value| {
+                let mut next = width_cfg.clone();
+                next.session_vwap.line_width = value;
+                Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+            })
+            .step(0.5);
+            column![
+                text("Session VWAP").size(crate::style::text_size::SECTION),
+                text(format!("UTC anchor: {:02}:00", vwap.anchor_hour_utc)),
+                anchor,
+                text(format!("Deviation bands: {}", vwap.deviation_bands)),
+                bands,
+                text(format!("Line width: {:.1}", vwap.line_width)),
+                width,
+                color_swatch(pane, vwap.color, KlineColorPicker::SessionVwap),
+                if expanded == Some(KlineColorPicker::SessionVwap) {
+                    picker
+                } else {
+                    space::vertical().height(0).into()
+                },
+            ]
+            .spacing(8)
+            .into()
+        }
+        KlineIndicator::AnchoredVwap => {
+            let vwap = cfg.anchored_vwap;
+            let bands_cfg = cfg.clone();
+            let bands = slider(0.0..=3.0, vwap.deviation_bands as f32, move |value| {
+                let mut next = bands_cfg.clone();
+                next.anchored_vwap.deviation_bands = value as u8;
+                Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+            })
+            .step(1.0);
+            let color_cfg = cfg.clone();
+            let picker = color_picker(data::config::theme::to_hsva(vwap.color), move |value| {
+                let mut next = color_cfg.clone();
+                next.anchored_vwap.color = data::config::theme::from_hsva(value);
+                Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+            });
+            let width_cfg = cfg.clone();
+            let width = slider(0.5..=5.0, vwap.line_width.clamp(0.5, 5.0), move |value| {
+                let mut next = width_cfg.clone();
+                next.anchored_vwap.line_width = value;
+                Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+            })
+            .step(0.5);
+            let anchor = vwap
+                .anchor
+                .and_then(|time| time.format_utc("%Y-%m-%d %H:%M"))
+                .unwrap_or_else(|| "Not selected".into());
+            column![
+                text("Anchored VWAP").size(crate::style::text_size::SECTION),
+                text(format!("Anchor: {anchor}")),
+                button("Select anchor on chart").on_press(Message::PaneEvent(
+                    pane,
+                    Event::BeginKlineIntervalSelection(
+                        crate::chart::kline::IntervalSelection::AnchoredVwap
+                    ),
+                )),
+                text(format!("Deviation bands: {}", vwap.deviation_bands)),
+                bands,
+                text(format!("Line width: {:.1}", vwap.line_width)),
+                width,
+                color_swatch(pane, vwap.color, KlineColorPicker::AnchoredVwap),
+                if expanded == Some(KlineColorPicker::AnchoredVwap) {
+                    picker
+                } else {
+                    space::vertical().height(0).into()
+                },
+            ]
+            .spacing(8)
+            .into()
+        }
+        KlineIndicator::Ema => {
+            let mut lines = column![text("EMA").size(crate::style::text_size::SECTION)].spacing(8);
+            for (index, ema) in cfg.ema.iter().copied().enumerate() {
+                let period_cfg = cfg.clone();
+                let value = ema.period.max(1).to_string();
+                let period = text_input("Period", &value)
+                    .on_input(move |value| {
+                        let mut next = period_cfg.clone();
+                        if let Ok(period) = value.parse::<u16>()
+                            && period > 0
+                        {
+                            next.ema[index].period = period;
+                        }
+                        Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                    })
+                    .width(80);
+                let color_cfg = cfg.clone();
+                let picker = color_picker(data::config::theme::to_hsva(ema.color), move |value| {
+                    let mut next = color_cfg.clone();
+                    next.ema[index].color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                });
+                let width_cfg = cfg.clone();
+                let width = slider(0.5..=5.0, ema.line_width.clamp(0.5, 5.0), move |value| {
+                    let mut next = width_cfg.clone();
+                    next.ema[index].line_width = value;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                })
+                .step(0.5);
+                let mut removed = cfg.clone();
+                removed.ema.remove(index);
+                lines = lines.push(
+                    column![
+                        row![
+                            text(format!("EMA {}", ema.period.max(1))),
+                            space::horizontal(),
+                            button(style::icon_text(style::Icon::TrashBin, 11)).on_press(
+                                Message::VisualConfigChanged(
+                                    pane,
+                                    VisualConfig::Kline(removed),
+                                    false
+                                )
+                            )
+                        ]
+                        .align_y(Alignment::Center),
+                        row![
+                            period,
+                            color_swatch(pane, ema.color, KlineColorPicker::Ema(index))
+                        ]
+                        .spacing(8),
+                        text(format!("Line width: {:.1}", ema.line_width)),
+                        width,
+                        if expanded == Some(KlineColorPicker::Ema(index)) {
+                            picker
+                        } else {
+                            space::vertical().height(0).into()
+                        },
+                    ]
+                    .spacing(6),
+                );
+            }
+            let mut added = cfg.clone();
+            let next_index = added.ema.len();
+            added
+                .ema
+                .push(data::chart::kline::EmaConfig::for_index(next_index));
+            lines
+                .push(button("Add EMA").on_press(Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Kline(added),
+                    false,
+                )))
+                .into()
+        }
+        KlineIndicator::VolumeProfile => {
+            let profile = cfg.volume_profile;
+            let mode_cfg = cfg.clone();
+            let mode = pick_list(
+                data::chart::kline::VolumeProfileMode::ALL,
+                Some(profile.mode),
+                move |mode| {
+                    let mut next = mode_cfg.clone();
+                    next.volume_profile.mode = mode;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let rows_cfg = cfg.clone();
+            let rows_value = profile.rows.clamp(16, 400).to_string();
+            let rows = text_input("Rows", &rows_value)
+                .on_input(move |value| {
+                    let mut next = rows_cfg.clone();
+                    if let Ok(rows) = value.parse::<u16>() {
+                        next.volume_profile.rows = rows.clamp(16, 400);
+                    }
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                })
+                .width(80);
+            let position_cfg = cfg.clone();
+            let position: Element<_> = row![
+                text("Position"),
+                pick_list(
+                    data::chart::kline::VolumeProfilePosition::ALL,
+                    Some(profile.position),
+                    move |position| {
+                        let mut next = position_cfg.clone();
+                        next.volume_profile.position = position;
+                        Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                    },
+                )
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into();
+            let buy_cfg = cfg.clone();
+            let buy_picker = color_picker(
+                data::config::theme::to_hsva(profile.buy_color),
+                move |value| {
+                    let mut next = buy_cfg.clone();
+                    next.volume_profile.buy_color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let sell_cfg = cfg.clone();
+            let sell_picker = color_picker(
+                data::config::theme::to_hsva(profile.sell_color),
+                move |value| {
+                    let mut next = sell_cfg.clone();
+                    next.volume_profile.sell_color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let neutral_cfg = cfg.clone();
+            let neutral_picker =
+                color_picker(data::config::theme::to_hsva(profile.color), move |value| {
+                    let mut next = neutral_cfg.clone();
+                    next.volume_profile.color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                });
+            let window_button: Element<_> =
+                if profile.mode == data::chart::kline::VolumeProfileMode::FixedWindow {
+                    button("Select window on chart")
+                        .on_press(Message::PaneEvent(
+                            pane,
+                            Event::BeginKlineIntervalSelection(
+                                crate::chart::kline::IntervalSelection::VolumeProfileStart,
+                            ),
+                        ))
+                        .into()
+                } else {
+                    space::vertical().height(0).into()
+                };
+            column![
+                text("Volume Profile").size(crate::style::text_size::SECTION),
+                mode,
+                row![text("Rows"), rows]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                position,
+                window_button,
+                row![
+                    text("Buy"),
+                    color_swatch(pane, profile.buy_color, KlineColorPicker::VolumeProfileBuy),
+                    text("Sell"),
+                    color_swatch(
+                        pane,
+                        profile.sell_color,
+                        KlineColorPicker::VolumeProfileSell
+                    ),
+                    text("Undirected"),
+                    color_swatch(pane, profile.color, KlineColorPicker::VolumeProfileNeutral),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+                if expanded == Some(KlineColorPicker::VolumeProfileBuy) {
+                    buy_picker
+                } else if expanded == Some(KlineColorPicker::VolumeProfileSell) {
+                    sell_picker
+                } else if expanded == Some(KlineColorPicker::VolumeProfileNeutral) {
+                    neutral_picker
+                } else {
+                    space::vertical().height(0).into()
+                },
+            ]
+            .spacing(8)
+            .into()
+        }
+        KlineIndicator::OiDeltaDivergence => {
+            let oid = cfg.oi_delta_divergence;
+            let lookback_cfg = cfg.clone();
+            let lookback = text_input("Lookback", &oid.lookback.max(1).to_string())
+                .on_input(move |value| {
+                    let mut next = lookback_cfg.clone();
+                    if let Ok(value) = value.parse::<u16>() {
+                        next.oi_delta_divergence.lookback = value.clamp(1, 200);
+                    }
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                })
+                .width(80);
+            let rsi_cfg = cfg.clone();
+            let rsi_period = slider(
+                2.0..=50.0,
+                oid.rsi_period.clamp(2, 50) as f32,
+                move |value| {
+                    let mut next = rsi_cfg.clone();
+                    next.oi_delta_divergence.rsi_period = value as u16;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            )
+            .step(1.0);
+            let size_cfg = cfg.clone();
+            let marker_size = slider(2.0..=10.0, oid.marker_size.clamp(2.0, 10.0), move |value| {
+                let mut next = size_cfg.clone();
+                next.oi_delta_divergence.marker_size = value;
+                Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+            });
+            let bull_cfg = cfg.clone();
+            let bull_picker = color_picker(
+                data::config::theme::to_hsva(oid.bullish_color),
+                move |value| {
+                    let mut next = bull_cfg.clone();
+                    next.oi_delta_divergence.bullish_color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let bear_cfg = cfg.clone();
+            let bear_picker = color_picker(
+                data::config::theme::to_hsva(oid.bearish_color),
+                move |value| {
+                    let mut next = bear_cfg.clone();
+                    next.oi_delta_divergence.bearish_color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let cvd_cfg = cfg.clone();
+            let cvd_picker =
+                color_picker(data::config::theme::to_hsva(oid.cvd_color), move |value| {
+                    let mut next = cvd_cfg.clone();
+                    next.oi_delta_divergence.cvd_color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                });
+            let oi_cfg = cfg.clone();
+            let oi_picker =
+                color_picker(data::config::theme::to_hsva(oid.oi_color), move |value| {
+                    let mut next = oi_cfg.clone();
+                    next.oi_delta_divergence.oi_color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                });
+            let width_cfg = cfg.clone();
+            let line_width = slider(0.5..=5.0, oid.line_width.clamp(0.5, 5.0), move |value| {
+                let mut next = width_cfg.clone();
+                next.oi_delta_divergence.line_width = value;
+                Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+            })
+            .step(0.5);
+            column![
+                text("OI-Delta Divergence").size(crate::style::text_size::SECTION),
+                row![text("Lookback bars"), lookback]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                text(format!("RSI period: {}", oid.rsi_period)),
+                rsi_period,
+                text(format!("Marker size: {:.0}", oid.marker_size)),
+                marker_size,
+                text(format!("RSI line width: {:.1}", oid.line_width)),
+                line_width,
+                row![
+                    text("CVD RSI"),
+                    color_swatch(pane, oid.cvd_color, KlineColorPicker::OidCvd),
+                    text("OI RSI"),
+                    color_swatch(pane, oid.oi_color, KlineColorPicker::OidOi),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                row![
+                    text("Bullish"),
+                    color_swatch(pane, oid.bullish_color, KlineColorPicker::OidBullish),
+                    text("Bearish"),
+                    color_swatch(pane, oid.bearish_color, KlineColorPicker::OidBearish),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                if expanded == Some(KlineColorPicker::OidBullish) {
+                    bull_picker
+                } else if expanded == Some(KlineColorPicker::OidBearish) {
+                    bear_picker
+                } else if expanded == Some(KlineColorPicker::OidCvd) {
+                    cvd_picker
+                } else if expanded == Some(KlineColorPicker::OidOi) {
+                    oi_picker
+                } else {
+                    space::vertical().height(0).into()
+                },
+            ]
+            .spacing(8)
+            .into()
+        }
+        KlineIndicator::OiFlowNet => {
+            let flow = cfg.oi_flow_net;
+            let basis_cfg = cfg.clone();
+            let basis_length = slider(
+                2.0..=50.0,
+                flow.basis_length.clamp(2, 50) as f32,
+                move |value| {
+                    let mut next = basis_cfg.clone();
+                    next.oi_flow_net.basis_length = value as u16;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            )
+            .step(1.0);
+            let sensitivity_cfg = cfg.clone();
+            let sensitivity = slider(
+                1.0..=5.0,
+                flow.burst_sensitivity.clamp(1, 5) as f32,
+                move |value| {
+                    let mut next = sensitivity_cfg.clone();
+                    next.oi_flow_net.burst_sensitivity = value as u8;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            )
+            .step(1.0);
+            let static_cfg = cfg.clone();
+            let static_color = checkbox(flow.static_color)
+                .label("Static colors")
+                .on_toggle(move |value| {
+                    let mut next = static_cfg.clone();
+                    next.oi_flow_net.static_color = value;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                });
+            let price_cfg = cfg.clone();
+            let price_line = checkbox(flow.show_price_line)
+                .label("Show relative price line")
+                .on_toggle(move |value| {
+                    let mut next = price_cfg.clone();
+                    next.oi_flow_net.show_price_line = value;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                });
+            let long_cfg = cfg.clone();
+            let long_picker = color_picker(
+                data::config::theme::to_hsva(flow.long_color),
+                move |value| {
+                    let mut next = long_cfg.clone();
+                    next.oi_flow_net.long_color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let short_cfg = cfg.clone();
+            let short_picker = color_picker(
+                data::config::theme::to_hsva(flow.short_color),
+                move |value| {
+                    let mut next = short_cfg.clone();
+                    next.oi_flow_net.short_color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let buy_outflow_cfg = cfg.clone();
+            let buy_outflow_picker = color_picker(
+                data::config::theme::to_hsva(flow.buy_outflow_color),
+                move |value| {
+                    let mut next = buy_outflow_cfg.clone();
+                    next.oi_flow_net.buy_outflow_color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let sell_outflow_cfg = cfg.clone();
+            let sell_outflow_picker = color_picker(
+                data::config::theme::to_hsva(flow.sell_outflow_color),
+                move |value| {
+                    let mut next = sell_outflow_cfg.clone();
+                    next.oi_flow_net.sell_outflow_color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            column![
+                text("OI Flow Net").size(crate::style::text_size::SECTION),
+                text(format!("Relative basis length: {}", flow.basis_length)),
+                basis_length,
+                text(format!(
+                    "Flow burst sensitivity: {}",
+                    flow.burst_sensitivity
+                )),
+                sensitivity,
+                static_color,
+                price_line,
+                row![
+                    text("Buy inflow"),
+                    color_swatch(pane, flow.long_color, KlineColorPicker::OiFlowLong),
+                    text("Sell inflow"),
+                    color_swatch(pane, flow.short_color, KlineColorPicker::OiFlowShort),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                row![
+                    text("Buy outflow"),
+                    color_swatch(
+                        pane,
+                        flow.buy_outflow_color,
+                        KlineColorPicker::OiFlowBuyOutflow
+                    ),
+                    text("Sell outflow"),
+                    color_swatch(
+                        pane,
+                        flow.sell_outflow_color,
+                        KlineColorPicker::OiFlowSellOutflow
+                    ),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                if expanded == Some(KlineColorPicker::OiFlowLong) {
+                    long_picker
+                } else if expanded == Some(KlineColorPicker::OiFlowShort) {
+                    short_picker
+                } else if expanded == Some(KlineColorPicker::OiFlowBuyOutflow) {
+                    buy_outflow_picker
+                } else if expanded == Some(KlineColorPicker::OiFlowSellOutflow) {
+                    sell_outflow_picker
+                } else {
+                    space::vertical().height(0).into()
+                },
+            ]
+            .spacing(8)
+            .into()
+        }
+        KlineIndicator::OiWeightedDelta => {
+            let weighted = cfg.oi_weighted_delta;
+            let sensitivity_cfg = cfg.clone();
+            let sensitivity = slider(
+                0.0..=50.0,
+                weighted.sensitivity.clamp(0.0, 50.0),
+                move |value| {
+                    let mut next = sensitivity_cfg.clone();
+                    next.oi_weighted_delta.sensitivity = value;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let max_cfg = cfg.clone();
+            let max_weight = slider(
+                1.0..=5.0,
+                weighted.max_weight.clamp(1.0, 5.0),
+                move |value| {
+                    let mut next = max_cfg.clone();
+                    next.oi_weighted_delta.max_weight = value;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            )
+            .step(0.25);
+            let width_cfg = cfg.clone();
+            let width = slider(
+                0.2..=0.95,
+                weighted.bar_width.clamp(0.2, 0.95),
+                move |value| {
+                    let mut next = width_cfg.clone();
+                    next.oi_weighted_delta.bar_width = value;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            )
+            .step(0.05);
+            let positive_cfg = cfg.clone();
+            let positive_picker = color_picker(
+                data::config::theme::to_hsva(weighted.positive_color),
+                move |value| {
+                    let mut next = positive_cfg.clone();
+                    next.oi_weighted_delta.positive_color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let negative_cfg = cfg.clone();
+            let negative_picker = color_picker(
+                data::config::theme::to_hsva(weighted.negative_color),
+                move |value| {
+                    let mut next = negative_cfg.clone();
+                    next.oi_weighted_delta.negative_color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            column![
+                text("OI-Weighted Delta").size(crate::style::text_size::SECTION),
+                text(format!("OI sensitivity: {:.0}", weighted.sensitivity)),
+                sensitivity,
+                text(format!("Maximum weight: {:.2}x", weighted.max_weight)),
+                max_weight,
+                text(format!("Bar width: {:.0}%", weighted.bar_width * 100.0)),
+                width,
+                row![
+                    text("Positive"),
+                    color_swatch(pane, weighted.positive_color, KlineColorPicker::OwdPositive),
+                    text("Negative"),
+                    color_swatch(pane, weighted.negative_color, KlineColorPicker::OwdNegative),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                if expanded == Some(KlineColorPicker::OwdPositive) {
+                    positive_picker
+                } else if expanded == Some(KlineColorPicker::OwdNegative) {
+                    negative_picker
+                } else {
+                    space::vertical().height(0).into()
+                },
+            ]
+            .spacing(8)
+            .into()
+        }
+        KlineIndicator::LiquidationPressureIndex => {
+            let lpi = cfg.liquidation_pressure;
+            let lookback_cfg = cfg.clone();
+            let lookback = text_input("Lookback", &lpi.lookback.max(2).to_string())
+                .on_input(move |value| {
+                    let mut next = lookback_cfg.clone();
+                    if let Ok(value) = value.parse::<u16>() {
+                        next.liquidation_pressure.lookback = value.clamp(2, 200);
+                    }
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                })
+                .width(80);
+            let oi_cfg = cfg.clone();
+            let oi_threshold = slider(
+                0.1..=10.0,
+                lpi.oi_drop_threshold.clamp(0.1, 10.0),
+                move |value| {
+                    let mut next = oi_cfg.clone();
+                    next.liquidation_pressure.oi_drop_threshold = value;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            )
+            .step(0.1);
+            let z_cfg = cfg.clone();
+            let delta_zscore = slider(0.5..=5.0, lpi.delta_zscore.clamp(0.5, 5.0), move |value| {
+                let mut next = z_cfg.clone();
+                next.liquidation_pressure.delta_zscore = value;
+                Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+            })
+            .step(0.1);
+            let width_cfg = cfg.clone();
+            let width = slider(0.2..=0.95, lpi.bar_width.clamp(0.2, 0.95), move |value| {
+                let mut next = width_cfg.clone();
+                next.liquidation_pressure.bar_width = value;
+                Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+            })
+            .step(0.05);
+            let positive_cfg = cfg.clone();
+            let positive_picker = color_picker(
+                data::config::theme::to_hsva(lpi.positive_color),
+                move |value| {
+                    let mut next = positive_cfg.clone();
+                    next.liquidation_pressure.positive_color =
+                        data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let negative_cfg = cfg.clone();
+            let negative_picker = color_picker(
+                data::config::theme::to_hsva(lpi.negative_color),
+                move |value| {
+                    let mut next = negative_cfg.clone();
+                    next.liquidation_pressure.negative_color =
+                        data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            column![
+                text("Liquidation Pressure Index").size(crate::style::text_size::SECTION),
+                row![text("Lookback bars"), lookback]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                text(format!("OI drop threshold: {:.1}%", lpi.oi_drop_threshold)),
+                oi_threshold,
+                text(format!("Delta z-score: {:.1}", lpi.delta_zscore)),
+                delta_zscore,
+                text(format!("Bar width: {:.0}%", lpi.bar_width * 100.0)),
+                width,
+                row![
+                    text("Positive"),
+                    color_swatch(pane, lpi.positive_color, KlineColorPicker::LpiPositive),
+                    text("Negative"),
+                    color_swatch(pane, lpi.negative_color, KlineColorPicker::LpiNegative),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                if expanded == Some(KlineColorPicker::LpiPositive) {
+                    positive_picker
+                } else if expanded == Some(KlineColorPicker::LpiNegative) {
+                    negative_picker
+                } else {
+                    space::vertical().height(0).into()
+                },
+            ]
+            .spacing(8)
+            .into()
+        }
+        KlineIndicator::LiquidationHeatmap => {
+            let heatmap = cfg.liquidation_heatmap;
+            let row_cfg = cfg.clone();
+            let row_height = slider(
+                2.0..=24.0,
+                heatmap.row_height.clamp(2.0, 24.0),
+                move |value| {
+                    let mut next = row_cfg.clone();
+                    next.liquidation_heatmap.row_height = value;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let opacity_cfg = cfg.clone();
+            let opacity = slider(0.1..=1.0, heatmap.opacity.clamp(0.1, 1.0), move |value| {
+                let mut next = opacity_cfg.clone();
+                next.liquidation_heatmap.opacity = value;
+                Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+            })
+            .step(0.05);
+            let long_cfg = cfg.clone();
+            let long_picker = color_picker(
+                data::config::theme::to_hsva(heatmap.long_color),
+                move |value| {
+                    let mut next = long_cfg.clone();
+                    next.liquidation_heatmap.long_color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let short_cfg = cfg.clone();
+            let short_picker = color_picker(
+                data::config::theme::to_hsva(heatmap.short_color),
+                move |value| {
+                    let mut next = short_cfg.clone();
+                    next.liquidation_heatmap.short_color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            column![
+                text("Liquidation Heatmap").size(crate::style::text_size::SECTION),
+                text(format!("Price row height: {:.0}px", heatmap.row_height)),
+                row_height,
+                text(format!("Opacity: {:.0}%", heatmap.opacity * 100.0)),
+                opacity,
+                row![
+                    text("Long liquidations"),
+                    color_swatch(
+                        pane,
+                        heatmap.long_color,
+                        KlineColorPicker::LiquidationHeatmapLong
+                    ),
+                    text("Short liquidations"),
+                    color_swatch(
+                        pane,
+                        heatmap.short_color,
+                        KlineColorPicker::LiquidationHeatmapShort
+                    ),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+                if expanded == Some(KlineColorPicker::LiquidationHeatmapLong) {
+                    long_picker
+                } else if expanded == Some(KlineColorPicker::LiquidationHeatmapShort) {
+                    short_picker
+                } else {
+                    space::vertical().height(0).into()
+                },
+            ]
+            .spacing(8)
+            .into()
+        }
+        _ => column![text("No settings available")].into(),
+    };
+
+    cfg_view_container(360, content)
+}
+
+fn color_swatch<'a>(
+    pane: pane_grid::Pane,
+    color: iced::Color,
+    picker: KlineColorPicker,
+) -> Element<'a, Message> {
+    button(space::horizontal().width(28).height(18))
+        .on_press(Message::PaneEvent(
+            pane,
+            Event::ToggleKlineColorPicker(picker),
+        ))
+        .style(move |_theme, _status| iced::widget::button::Style {
+            background: Some(color.into()),
+            border: iced::Border::default().rounded(2).width(1),
+            ..Default::default()
+        })
+        .into()
 }
 
 pub fn ladder_cfg_view<'a>(cfg: ladder::Config, pane: pane_grid::Pane) -> Element<'a, Message> {

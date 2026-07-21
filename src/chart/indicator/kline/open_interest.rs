@@ -3,27 +3,32 @@ use crate::chart::{
     indicator::{
         indicator_row,
         kline::{AvailabilityCause, FetchCtx, IndicatorAvailability, KlineIndicatorImpl},
-        plot::{AnySeries, PlotTooltip, line::LinePlot},
+        plot::{AnySeries, PlotTooltip, candle::StepCandlePlot, line::LinePlot},
     },
 };
 use crate::connector::fetcher::FetchRange;
 
-use data::chart::{PlotData, kline::KlineDataPoint};
+use data::chart::{
+    PlotData,
+    kline::{IndicatorPlotStyle, IndicatorSeriesConfig, KlineDataPoint},
+};
 use data::util::format_with_commas;
 use exchange::adapter::Exchange;
-use exchange::{Kline, Timeframe, Trade, UnixMs};
+use exchange::{Kline, Trade, UnixMs};
 
 use iced::widget::{center, row, text};
 use std::{collections::BTreeMap, ops::RangeInclusive};
 
 pub struct OpenInterestIndicator {
+    config: IndicatorSeriesConfig,
     cache: Caches,
     pub data: BTreeMap<UnixMs, f64>,
 }
 
 impl OpenInterestIndicator {
-    pub fn new() -> Self {
+    pub fn new(config: IndicatorSeriesConfig) -> Self {
         Self {
+            config,
             cache: Caches::default(),
             data: BTreeMap::new(),
         }
@@ -58,24 +63,39 @@ impl OpenInterestIndicator {
 
         let value_fn = |v: &f64| *v as f32;
 
-        let plot = LinePlot::new(value_fn)
-            .stroke_width(1.0)
-            .show_points(true)
-            .point_radius_factor(0.2)
-            // Open interest is snapshotted at candle open, not computed from close like regular indicators.
-            // Shift left by 1 so each OI value aligns with the equivalent candle close.
-            .shift(-1)
-            .padding(0.08)
-            .with_tooltip(tooltip);
-
-        indicator_row(
-            main_chart,
-            &self.cache,
-            data_labels_always_visible,
-            plot,
-            AnySeries::forward_unix_ms(&self.data),
-            visible_range,
-        )
+        match self.config.style {
+            IndicatorPlotStyle::Line => {
+                let plot = LinePlot::new(value_fn)
+                    .stroke_width(self.config.line_width.clamp(0.5, 5.0))
+                    .color(self.config.line_color)
+                    .show_points(true)
+                    .point_radius_factor(0.2)
+                    .shift(-1)
+                    .padding(0.08)
+                    .with_tooltip(tooltip);
+                indicator_row(
+                    main_chart,
+                    &self.cache,
+                    data_labels_always_visible,
+                    plot,
+                    AnySeries::forward_unix_ms(&self.data),
+                    visible_range,
+                )
+            }
+            IndicatorPlotStyle::Candles => {
+                let plot = StepCandlePlot::new(value_fn, self.config)
+                    .shift(-1)
+                    .with_tooltip(tooltip);
+                indicator_row(
+                    main_chart,
+                    &self.cache,
+                    data_labels_always_visible,
+                    plot,
+                    AnySeries::forward_unix_ms(&self.data),
+                    visible_range,
+                )
+            }
+        }
     }
 
     // helper to compute (earliest, latest) present OI keys
@@ -90,24 +110,13 @@ impl OpenInterestIndicator {
         (from_time, to_time)
     }
 
-    fn is_supported_exchange(exchange: Exchange) -> bool {
-        exchange.is_perps()
-            && exchange != Exchange::HyperliquidLinear
-            && exchange != Exchange::MexcLinear
-            && exchange != Exchange::MexcInverse
-    }
-
-    fn is_supported_timeframe(timeframe: Timeframe) -> bool {
-        timeframe >= Timeframe::M5 && timeframe <= Timeframe::H4 && timeframe != Timeframe::H2
-    }
-
     fn availability_for(basis: Basis, exchange: Exchange) -> IndicatorAvailability {
         match basis {
             Basis::Tick(_) => IndicatorAvailability::Unavailable(AvailabilityCause::Basis(basis)),
             Basis::Time(timeframe) => {
-                if !Self::is_supported_exchange(exchange) {
+                if !exchange.is_perps() {
                     IndicatorAvailability::Unavailable(AvailabilityCause::Exchange(exchange))
-                } else if !Self::is_supported_timeframe(timeframe) {
+                } else if exchange.open_interest_source_timeframe(timeframe).is_none() {
                     IndicatorAvailability::Unavailable(AvailabilityCause::Timeframe(timeframe))
                 } else {
                     IndicatorAvailability::Available
@@ -185,6 +194,15 @@ impl KlineIndicatorImpl for OpenInterestIndicator {
 
     fn on_open_interest(&mut self, data: &[exchange::OpenInterest]) {
         self.data.extend(data.iter().map(|oi| (oi.time, oi.value)));
+        self.clear_all_caches();
+    }
+
+    fn on_visual_config_change(
+        &mut self,
+        config: &data::chart::kline::Config,
+        _source: &PlotData<KlineDataPoint>,
+    ) {
+        self.config = config.open_interest;
         self.clear_all_caches();
     }
 }

@@ -2,17 +2,25 @@ use crate::chart::{Basis, Message, ViewState};
 use crate::connector::fetcher::FetchRange;
 
 use data::chart::indicator::KlineIndicator;
-use data::chart::kline::KlineDataPoint;
+use data::chart::kline::{Config, KlineDataPoint};
 use data::chart::{BasisSeries, PlotData};
 use exchange::adapter::Exchange;
 use exchange::{Kline, Timeframe, Trade, UnixMs};
 
 use super::plot::AnySeries;
+use iced::{Theme, widget::canvas};
 
+pub mod anchored_vwap;
 pub mod bar_analysis;
 pub mod cumulative_delta;
+pub mod ema;
+pub mod flow_metrics;
+pub mod liquidation_heatmap;
 pub mod open_interest;
+pub mod stoch_rsi;
 pub mod volume;
+pub mod volume_profile;
+pub mod vwap;
 
 /// UI adapter methods for converting domain `BasisSeries` into plot-ready series.
 trait BasisSeriesExt<T> {
@@ -94,6 +102,19 @@ pub trait KlineIndicatorImpl {
         IndicatorAvailability::Available
     }
 
+    fn is_overlay(&self) -> bool {
+        false
+    }
+
+    fn draw_overlay(
+        &self,
+        _frame: &mut canvas::Frame,
+        _chart: &ViewState,
+        _theme: &Theme,
+        _visible_range: std::ops::RangeInclusive<u64>,
+    ) {
+    }
+
     fn unavailable_message(&self, chart: &ViewState, indicator: &str) -> Option<String> {
         self.availability(chart).unavailable_message(indicator)
     }
@@ -122,6 +143,10 @@ pub trait KlineIndicatorImpl {
     fn on_basis_change(&mut self, _source: &PlotData<KlineDataPoint>) {}
 
     fn on_open_interest(&mut self, _pairs: &[exchange::OpenInterest]) {}
+
+    fn on_liquidations(&mut self, _liquidations: &[exchange::Liquidation]) {}
+
+    fn on_visual_config_change(&mut self, _config: &Config, _source: &PlotData<KlineDataPoint>) {}
 }
 
 pub struct FetchCtx<'a> {
@@ -132,17 +157,49 @@ pub struct FetchCtx<'a> {
     pub prefetch_earliest: UnixMs,
 }
 
-pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
+pub fn make_empty(which: KlineIndicator, config: &Config) -> Box<dyn KlineIndicatorImpl> {
     match which {
         KlineIndicator::Volume => Box::new(super::kline::volume::VolumeIndicator::new()),
         KlineIndicator::BarAnalysis => {
             Box::new(super::kline::bar_analysis::BarAnalysisIndicator::new())
         }
-        KlineIndicator::CumulativeDelta => {
-            Box::new(super::kline::cumulative_delta::CumulativeDeltaIndicator::new())
-        }
-        KlineIndicator::OpenInterest => {
-            Box::new(super::kline::open_interest::OpenInterestIndicator::new())
-        }
+        KlineIndicator::CumulativeDelta => Box::new(
+            super::kline::cumulative_delta::CumulativeDeltaIndicator::new(config.cumulative_delta),
+        ),
+        KlineIndicator::OpenInterest => Box::new(
+            super::kline::open_interest::OpenInterestIndicator::new(config.open_interest),
+        ),
+        KlineIndicator::StochRsi => Box::new(super::kline::stoch_rsi::StochRsiIndicator::new(
+            config.stoch_rsi,
+        )),
+        KlineIndicator::SessionVwap => Box::new(super::kline::vwap::SessionVwapIndicator::new(
+            config.session_vwap,
+        )),
+        KlineIndicator::AnchoredVwap => Box::new(
+            super::kline::anchored_vwap::AnchoredVwapIndicator::new(config.anchored_vwap),
+        ),
+        KlineIndicator::Ema => Box::new(super::kline::ema::EmaIndicator::new(config.ema.clone())),
+        KlineIndicator::VolumeProfile => Box::new(
+            super::kline::volume_profile::VolumeProfileIndicator::new(config.volume_profile),
+        ),
+        KlineIndicator::LiquidationHeatmap => Box::new(
+            super::kline::liquidation_heatmap::LiquidationHeatmapIndicator::new(
+                config.liquidation_heatmap,
+            ),
+        ),
+        KlineIndicator::OiDeltaDivergence => Box::new(
+            super::kline::flow_metrics::OiDeltaDivergenceIndicator::new(config.oi_delta_divergence),
+        ),
+        KlineIndicator::OiFlowNet => Box::new(super::kline::flow_metrics::OiFlowNetIndicator::new(
+            config.oi_flow_net,
+        )),
+        KlineIndicator::OiWeightedDelta => Box::new(
+            super::kline::flow_metrics::OiWeightedDeltaIndicator::new(config.oi_weighted_delta),
+        ),
+        KlineIndicator::LiquidationPressureIndex => Box::new(
+            super::kline::flow_metrics::LiquidationPressureIndicator::new(
+                config.liquidation_pressure,
+            ),
+        ),
     }
 }

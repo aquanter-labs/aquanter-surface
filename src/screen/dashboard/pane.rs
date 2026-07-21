@@ -10,7 +10,8 @@ use crate::{
             Modal,
             mini_tickers_list::MiniPanel,
             settings::{
-                comparison_cfg_view, heatmap_cfg_view, heatmap_shader_cfg_view, kline_cfg_view,
+                KlineColorPicker, comparison_cfg_view, heatmap_cfg_view, heatmap_shader_cfg_view,
+                kline_cfg_view, kline_indicator_cfg_view,
             },
             stack_modal,
         },
@@ -100,6 +101,8 @@ pub enum Event {
     ClusterKindSelected(data::chart::kline::ClusterKind),
     ClusterScalingSelected(data::chart::kline::ClusterScaling),
     StudyConfigurator(modal::pane::settings::study::StudyMessage),
+    ToggleKlineColorPicker(KlineColorPicker),
+    BeginKlineIntervalSelection(crate::chart::kline::IntervalSelection),
     StreamModifierChanged(modal::stream::Message),
     ComparisonChartInteraction(super::chart::comparison::Message),
     HeatmapShaderInteraction(crate::widget::chart::heatmap::Message),
@@ -115,6 +118,7 @@ pub struct State {
     pub streams: ResolvedStream,
     pub status: Status,
     pub link_group: Option<LinkGroup>,
+    expanded_kline_color_picker: Option<KlineColorPicker>,
 }
 
 impl State {
@@ -142,6 +146,7 @@ impl State {
             StreamKind::Kline { ticker_info, .. } => Some(*ticker_info),
             StreamKind::Depth { ticker_info, .. } => Some(*ticker_info),
             StreamKind::Trades { ticker_info, .. } => Some(*ticker_info),
+            StreamKind::Liquidations { ticker_info, .. } => Some(*ticker_info),
         })
     }
 
@@ -200,6 +205,9 @@ impl State {
             let trades_stream = |derived_plan: &PaneSetup| StreamKind::Trades {
                 ticker_info: derived_plan.ticker_info,
             };
+            let liquidation_stream = |derived_plan: &PaneSetup| StreamKind::Liquidations {
+                ticker_info: derived_plan.ticker_info,
+            };
 
             match kind {
                 ContentKind::HeatmapChart => {
@@ -223,7 +231,7 @@ impl State {
                         derived_plan.price_step,
                     );
 
-                    let streams = by_basis_default(
+                    let mut streams = by_basis_default(
                         derived_plan.basis,
                         Timeframe::M5,
                         |tf| {
@@ -234,6 +242,12 @@ impl State {
                         },
                         || vec![trades_stream(&derived_plan)],
                     );
+                    if derived_plan.ticker_info.is_perps()
+                        && derived_plan.ticker_info.exchange().venue()
+                            == exchange::adapter::Venue::Binance
+                    {
+                        streams.push(liquidation_stream(&derived_plan));
+                    }
 
                     (content, streams)
                 }
@@ -262,12 +276,18 @@ impl State {
                         vec![trades_stream(&temp)]
                     };
 
-                    let streams = by_basis_default(
+                    let mut streams = by_basis_default(
                         derived_plan.basis,
                         Timeframe::M15,
                         time_basis_stream,
                         tick_basis_stream,
                     );
+                    if derived_plan.ticker_info.is_perps()
+                        && derived_plan.ticker_info.exchange().venue()
+                            == exchange::adapter::Venue::Binance
+                    {
+                        streams.push(liquidation_stream(&derived_plan));
+                    }
 
                     (content, streams)
                 }
@@ -968,13 +988,22 @@ impl State {
                         Message::PaneEvent(id, Event::ChartInteraction(message))
                     });
                     let settings_modal = || {
-                        kline_cfg_view(
-                            chart.study_configurator(),
-                            chart.visual_config(),
-                            chart_kind,
-                            id,
-                            chart.basis(),
-                        )
+                        if let Some(Modal::IndicatorSettings(indicator)) = self.modal {
+                            kline_indicator_cfg_view(
+                                indicator,
+                                chart.visual_config(),
+                                id,
+                                self.expanded_kline_color_picker,
+                            )
+                        } else {
+                            kline_cfg_view(
+                                chart.study_configurator(),
+                                chart.visual_config(),
+                                chart_kind,
+                                id,
+                                chart.basis(),
+                            )
+                        }
                     };
 
                     let indicator_modal = if self.modal == Some(Modal::Indicators) {
@@ -1177,6 +1206,7 @@ impl State {
             }
             Event::HideModal => {
                 self.modal = None;
+                self.expanded_kline_color_picker = None;
             }
             Event::ContentSelected(kind) => {
                 self.content = Content::placeholder(kind);
@@ -1195,7 +1225,17 @@ impl State {
                     super::chart::update(c, &msg);
                 }
                 Content::Kline { chart: Some(c), .. } => {
-                    super::chart::update(c, &msg);
+                    if let super::chart::Message::IntervalSelected(interval) = msg {
+                        c.apply_interval_selection(interval);
+                    } else if let super::chart::Message::IntervalRangePreview(start, end) = msg {
+                        c.preview_interval_range(start, end);
+                    } else if let super::chart::Message::IntervalRangeSelected(start, end) = msg {
+                        c.finish_interval_range(start, end);
+                    } else if let super::chart::Message::IntervalSelectionCancelled = msg {
+                        c.cancel_interval_selection();
+                    } else {
+                        super::chart::update(c, &msg);
+                    }
                 }
                 _ => {}
             },
@@ -1206,6 +1246,20 @@ impl State {
             },
             Event::ToggleIndicator(ind) => {
                 self.content.toggle_indicator(ind);
+            }
+            Event::ToggleKlineColorPicker(picker) => {
+                self.expanded_kline_color_picker =
+                    (self.expanded_kline_color_picker != Some(picker)).then_some(picker);
+            }
+            Event::BeginKlineIntervalSelection(selection) => {
+                if let Content::Kline {
+                    chart: Some(chart), ..
+                } = &mut self.content
+                {
+                    chart.begin_interval_selection(selection);
+                    self.modal = None;
+                    self.expanded_kline_color_picker = None;
+                }
             }
             Event::DeleteNotification(idx) => {
                 if idx < self.notifications.len() {
@@ -1712,6 +1766,13 @@ impl State {
                 padding::right(12).left(12),
                 Alignment::End,
             ),
+            Some(Modal::IndicatorSettings(_)) => stack_modal(
+                base,
+                settings_modal(),
+                on_blur,
+                padding::right(12).left(12),
+                Alignment::End,
+            ),
             Some(Modal::Indicators) => stack_modal(
                 base,
                 indicator_modal.unwrap_or_else(|| column![].into()),
@@ -1862,6 +1923,7 @@ impl Default for State {
             notifications: vec![],
             status: Status::Ready,
             link_group: None,
+            expanded_kline_color_picker: None,
         }
     }
 }
@@ -2009,19 +2071,19 @@ impl Content {
             let main_chart_split: f32 = 0.8;
             let mut splits_vec = vec![main_chart_split];
 
-            if !enabled_indicators.is_empty() {
-                let num_indicators = enabled_indicators.len();
+            let num_indicators = enabled_indicators
+                .iter()
+                .filter(|indicator| !indicator.is_overlay())
+                .count();
+            if num_indicators > 0 {
+                let indicator_total_height_ratio = 1.0 - main_chart_split;
+                let height_per_indicator_pane =
+                    indicator_total_height_ratio / num_indicators as f32;
 
-                if num_indicators > 0 {
-                    let indicator_total_height_ratio = 1.0 - main_chart_split;
-                    let height_per_indicator_pane =
-                        indicator_total_height_ratio / num_indicators as f32;
-
-                    let mut current_split_pos = main_chart_split;
-                    for _ in 0..(num_indicators - 1) {
-                        current_split_pos += height_per_indicator_pane;
-                        splits_vec.push(current_split_pos);
-                    }
+                let mut current_split_pos = main_chart_split;
+                for _ in 0..(num_indicators - 1) {
+                    current_split_pos += height_per_indicator_pane;
+                    splits_vec.push(current_split_pos);
                 }
             }
             splits_vec

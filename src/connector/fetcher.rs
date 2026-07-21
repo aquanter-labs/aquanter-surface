@@ -39,8 +39,6 @@ pub enum FetchedData {
 pub enum ReqError {
     #[error("Request is already failed: {0}")]
     Failed(String),
-    #[error("Request overlaps with an existing request")]
-    Overlaps,
 }
 
 #[derive(PartialEq, Debug)]
@@ -78,7 +76,7 @@ impl RequestHandler {
                         Ok(None)
                     }
                 }
-                RequestStatus::Pending => Err(ReqError::Overlaps),
+                RequestStatus::Pending => Ok(None),
             };
         }
 
@@ -487,4 +485,18 @@ pub fn fetch_trades_batched(
 
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_duplicate_request_is_silently_deduplicated() {
+        let mut handler = RequestHandler::default();
+        let range = FetchRange::Kline(UnixMs::new(1000), UnixMs::new(2000));
+
+        assert!(handler.add_request(range).unwrap().is_some());
+        assert_eq!(handler.add_request(range).unwrap(), None);
+    }
 }

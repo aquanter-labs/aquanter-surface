@@ -23,7 +23,7 @@ use data::{
     stream::PersistStreamKind,
 };
 use exchange::{
-    Kline, PushFrequency, StreamPairKind, TickerInfo, Trade, UnixMs,
+    Kline, Liquidation, PushFrequency, StreamPairKind, TickerInfo, Trade, UnixMs,
     adapter::{
         AdapterHandles, MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM, StreamConfig,
         StreamKind, StreamTicksize, UniqueStreams,
@@ -1049,6 +1049,32 @@ impl Dashboard {
         }
     }
 
+    pub fn ingest_liquidations(
+        &mut self,
+        stream: &StreamKind,
+        liquidations: &[Liquidation],
+        main_window: window::Id,
+    ) -> Task<Message> {
+        let mut found_match = false;
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, pane_state)| {
+                if pane_state.matches_stream(stream) {
+                    if let pane::Content::Kline {
+                        chart: Some(chart), ..
+                    } = &mut pane_state.content
+                    {
+                        chart.insert_liquidations(liquidations);
+                    }
+                    found_match = true;
+                }
+            });
+        if found_match {
+            Task::none()
+        } else {
+            self.refresh_streams(main_window)
+        }
+    }
+
     pub fn ingest_trades(
         &mut self,
         stream: &StreamKind,
@@ -1200,9 +1226,19 @@ impl Dashboard {
         &mut self,
         main_window: window::Id,
         pane_id: uuid::Uuid,
-        streams: Vec<StreamKind>,
+        mut streams: Vec<StreamKind>,
     ) -> Task<Message> {
         if let Some(state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
+            if matches!(state.content, pane::Content::Kline { .. })
+                && let Some(ticker_info) = streams.first().map(StreamKind::ticker_info)
+                && ticker_info.is_perps()
+                && ticker_info.exchange().venue() == exchange::adapter::Venue::Binance
+            {
+                let stream = StreamKind::Liquidations { ticker_info };
+                if !streams.contains(&stream) {
+                    streams.push(stream);
+                }
+            }
             state.streams = ResolvedStream::Ready(streams.clone());
         }
         self.refresh_streams(main_window)
@@ -1304,6 +1340,19 @@ impl Dashboard {
                     if !kline_subs.is_empty() {
                         subs.push(Subscription::batch(kline_subs));
                     }
+                }
+
+                if !specs.liquidation.is_empty() {
+                    let config = StreamConfig::new(
+                        specs.liquidation.clone(),
+                        exchange,
+                        None,
+                        PushFrequency::ServerDefault,
+                    );
+                    let data = (handles.clone(), config);
+                    subs.push(Subscription::run_with(data, |data| {
+                        data.0.liquidation_stream(&data.1)
+                    }));
                 }
 
                 subs

@@ -59,12 +59,13 @@ impl std::fmt::Display for Timeframe {
                 Timeframe::H4 => "4h",
                 Timeframe::H12 => "12h",
                 Timeframe::D1 => "1d",
+                Timeframe::Custom(minutes) => return write!(f, "{minutes}m"),
             }
         )
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum Timeframe {
     MS100,
     MS200,
@@ -81,6 +82,7 @@ pub enum Timeframe {
     H4,
     H12,
     D1,
+    Custom(u16),
 }
 
 impl Timeframe {
@@ -120,8 +122,29 @@ impl Timeframe {
             Timeframe::H4 => 240,
             Timeframe::H12 => 720,
             Timeframe::D1 => 1440,
+            Timeframe::Custom(minutes) => minutes,
             _ => panic!("Invalid timeframe: {:?}", self),
         }
+    }
+
+    pub fn from_minutes(minutes: u16) -> Self {
+        match minutes {
+            1 => Timeframe::M1,
+            3 => Timeframe::M3,
+            5 => Timeframe::M5,
+            15 => Timeframe::M15,
+            30 => Timeframe::M30,
+            60 => Timeframe::H1,
+            120 => Timeframe::H2,
+            240 => Timeframe::H4,
+            720 => Timeframe::H12,
+            1440 => Timeframe::D1,
+            _ => Timeframe::Custom(minutes),
+        }
+    }
+
+    pub fn is_custom(self) -> bool {
+        matches!(self, Timeframe::Custom(_))
     }
 
     pub fn to_milliseconds(self) -> u64 {
@@ -171,8 +194,30 @@ impl TryFrom<u64> for Timeframe {
             14_400_000 => Ok(Timeframe::H4),
             43_200_000 => Ok(Timeframe::H12),
             86_400_000 => Ok(Timeframe::D1),
+            _ if value > 0 && value % 60_000 == 0 && value / 60_000 <= u64::from(u16::MAX) => {
+                Ok(Timeframe::from_minutes((value / 60_000) as u16))
+            }
             _ => Err(InvalidTimeframe(value)),
         }
+    }
+}
+
+impl PartialOrd for Timeframe {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Timeframe {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.to_milliseconds()
+            .cmp(&other.to_milliseconds())
+            .then_with(|| match (self, other) {
+                (Timeframe::Custom(left), Timeframe::Custom(right)) => left.cmp(right),
+                (Timeframe::Custom(_), _) => std::cmp::Ordering::Greater,
+                (_, Timeframe::Custom(_)) => std::cmp::Ordering::Less,
+                _ => std::cmp::Ordering::Equal,
+            })
     }
 }
 
@@ -552,6 +597,15 @@ impl TickerInfo {
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct Trade {
     pub time: UnixMs,
+    pub is_sell: bool,
+    pub price: Price,
+    pub qty: Qty,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct Liquidation {
+    pub time: UnixMs,
+    /// Sell means a long position was liquidated; buy means a short was liquidated.
     pub is_sell: bool,
     pub price: Price,
     pub qty: Qty,

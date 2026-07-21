@@ -11,6 +11,9 @@ pub enum PersistStreamKind {
     Trades {
         ticker: Ticker,
     },
+    Liquidations {
+        ticker: Ticker,
+    },
     /// Deprecated combined stream, kept for backward compatibility.
     /// Will be converted to separate Depth and Trades on load.
     DepthAndTrades(PersistDepth),
@@ -22,6 +25,7 @@ impl PersistStreamKind {
             PersistStreamKind::Kline { ticker, .. } => ticker.exchange,
             PersistStreamKind::Depth(d) => d.ticker.exchange,
             PersistStreamKind::Trades { ticker } => ticker.exchange,
+            PersistStreamKind::Liquidations { ticker } => ticker.exchange,
             PersistStreamKind::DepthAndTrades(d) => d.ticker.exchange,
         }
     }
@@ -58,6 +62,9 @@ impl From<StreamKind> for PersistStreamKind {
             StreamKind::Trades { ticker_info } => PersistStreamKind::Trades {
                 ticker: ticker_info.ticker,
             },
+            StreamKind::Liquidations { ticker_info } => PersistStreamKind::Liquidations {
+                ticker: ticker_info.ticker,
+            },
         }
     }
 }
@@ -89,6 +96,9 @@ impl PersistStreamKind {
                 .ok_or_else(|| format!("Ticker metadata not found for {}", d.ticker)),
             PersistStreamKind::Trades { ticker } => resolver(&ticker)
                 .map(|ti| vec![StreamKind::Trades { ticker_info: ti }])
+                .ok_or_else(|| format!("Ticker metadata not found for {}", ticker)),
+            PersistStreamKind::Liquidations { ticker } => resolver(&ticker)
+                .map(|ti| vec![StreamKind::Liquidations { ticker_info: ti }])
                 .ok_or_else(|| format!("Ticker metadata not found for {}", ticker)),
             PersistStreamKind::DepthAndTrades(d) => resolver(&d.ticker)
                 .map(|ti| {

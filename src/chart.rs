@@ -38,6 +38,9 @@ pub enum Interaction {
     Ruler {
         start: Option<Point>,
     },
+    SelectingRange {
+        start: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +60,16 @@ pub enum Message {
     BoundsChanged(Rectangle),
     SplitDragged(usize, f32),
     DoubleClick(AxisScaleClicked),
+    IntervalSelected(u64),
+    IntervalRangePreview(u64, u64),
+    IntervalRangeSelected(u64, u64),
+    IntervalSelectionCancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntervalSelectionMode {
+    Point,
+    Range,
 }
 
 pub trait Chart: PlotConstants + canvas::Program<Message> {
@@ -81,6 +94,65 @@ pub trait Chart: PlotConstants + canvas::Program<Message> {
     fn supports_fit_autoscaling(&self) -> bool;
 
     fn is_empty(&self) -> bool;
+
+    fn interval_selection_mode(&self) -> Option<IntervalSelectionMode> {
+        None
+    }
+
+    fn editable_interval_range(&self) -> Option<(u64, u64)> {
+        None
+    }
+}
+
+fn editable_range_anchor<T: Chart>(
+    chart: &T,
+    bounds: Rectangle,
+    cursor: mouse::Cursor,
+) -> Option<u64> {
+    let (start, end) = chart.editable_interval_range()?;
+    let cursor_x = cursor.position_in(bounds)?.x;
+    let state = chart.state();
+    let screen_x = |interval| {
+        (state.interval_to_x(interval) + state.translation.x) * state.scaling + bounds.width / 2.0
+    };
+    let start_distance = (cursor_x - screen_x(start)).abs();
+    let end_distance = (cursor_x - screen_x(end)).abs();
+
+    range_anchor_from_distances(start_distance, end_distance, start, end)
+}
+
+fn range_anchor_from_distances(
+    start_distance: f32,
+    end_distance: f32,
+    start: u64,
+    end: u64,
+) -> Option<u64> {
+    if start_distance.min(end_distance) > 8.0 {
+        None
+    } else if start_distance <= end_distance {
+        Some(end)
+    } else {
+        Some(start)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn range_handle_keeps_the_opposite_endpoint_fixed() {
+        assert_eq!(
+            super::range_anchor_from_distances(2.0, 58.0, 100, 200),
+            Some(200)
+        );
+        assert_eq!(
+            super::range_anchor_from_distances(58.0, 2.0, 100, 200),
+            Some(100)
+        );
+        assert_eq!(
+            super::range_anchor_from_distances(30.0, 30.0, 100, 200),
+            None
+        );
+    }
 }
 
 fn canvas_interaction<T: Chart>(
@@ -121,6 +193,31 @@ fn canvas_interaction<T: Chart>(
                     let cursor_in_bounds = cursor_position?;
 
                     if let mouse::Button::Left = button {
+                        if let Some(mode) = chart.interval_selection_mode() {
+                            let cursor_in_chart = cursor.position_in(bounds)?;
+                            let region = state.visible_region(bounds.size());
+                            let (interval, _) =
+                                state.snap_x_to_index(cursor_in_chart.x, bounds.size(), region);
+                            return match mode {
+                                IntervalSelectionMode::Point => Some(
+                                    canvas::Action::publish(Message::IntervalSelected(interval))
+                                        .and_capture(),
+                                ),
+                                IntervalSelectionMode::Range => {
+                                    *interaction = Interaction::SelectingRange { start: interval };
+                                    Some(
+                                        canvas::Action::publish(Message::IntervalRangePreview(
+                                            interval, interval,
+                                        ))
+                                        .and_capture(),
+                                    )
+                                }
+                            };
+                        }
+                        if let Some(anchor) = editable_range_anchor(chart, bounds, cursor) {
+                            *interaction = Interaction::SelectingRange { start: anchor };
+                            return Some(canvas::Action::request_redraw().and_capture());
+                        }
                         match interaction {
                             Interaction::None
                             | Interaction::Panning { .. }
@@ -138,6 +235,7 @@ fn canvas_interaction<T: Chart>(
                             Interaction::Ruler { .. } => {
                                 *interaction = Interaction::None;
                             }
+                            Interaction::SelectingRange { .. } => {}
                         }
                     }
                     Some(canvas::Action::request_redraw().and_capture())
@@ -150,11 +248,50 @@ fn canvas_interaction<T: Chart>(
                         );
                         Some(canvas::Action::publish(msg).and_capture())
                     }
+                    Interaction::SelectingRange { start } => {
+                        let cursor_in_chart = cursor.position_in(bounds)?;
+                        let region = state.visible_region(bounds.size());
+                        let (current, _) =
+                            state.snap_x_to_index(cursor_in_chart.x, bounds.size(), region);
+                        Some(
+                            canvas::Action::publish(Message::IntervalRangePreview(start, current))
+                                .and_capture(),
+                        )
+                    }
                     Interaction::None | Interaction::Ruler { .. } => {
                         Some(canvas::Action::publish(Message::CrosshairMoved))
                     }
                     _ => None,
                 },
+                mouse::Event::ButtonReleased(mouse::Button::Left)
+                    if matches!(interaction, Interaction::SelectingRange { .. }) =>
+                {
+                    let Interaction::SelectingRange { start } = *interaction else {
+                        unreachable!();
+                    };
+                    let cursor_in_chart = if let Some(position) = cursor.position_in(bounds) {
+                        position
+                    } else if let Some(position) = cursor.position() {
+                        Point::new(
+                            (position.x - bounds.x).clamp(0.0, bounds.width),
+                            (position.y - bounds.y).clamp(0.0, bounds.height),
+                        )
+                    } else {
+                        *interaction = Interaction::None;
+                        return Some(
+                            canvas::Action::publish(Message::IntervalSelectionCancelled)
+                                .and_capture(),
+                        );
+                    };
+                    let region = state.visible_region(bounds.size());
+                    let (current, _) =
+                        state.snap_x_to_index(cursor_in_chart.x, bounds.size(), region);
+                    *interaction = Interaction::None;
+                    Some(
+                        canvas::Action::publish(Message::IntervalRangeSelected(start, current))
+                            .and_capture(),
+                    )
+                }
                 mouse::Event::WheelScrolled { delta } => {
                     cursor_position?;
 
@@ -489,6 +626,10 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
             }
         }
         Message::CrosshairMoved => return chart.invalidate_crosshair(),
+        Message::IntervalSelected(_)
+        | Message::IntervalRangePreview(_, _)
+        | Message::IntervalRangeSelected(_, _)
+        | Message::IntervalSelectionCancelled => return,
     }
     chart.invalidate_all();
 }

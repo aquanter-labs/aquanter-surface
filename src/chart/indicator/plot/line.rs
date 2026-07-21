@@ -1,7 +1,7 @@
 use std::ops::RangeInclusive;
 
 use iced::{
-    Theme,
+    Color, Theme,
     widget::canvas::{self, Path, Stroke},
 };
 
@@ -21,6 +21,7 @@ pub struct LinePlot<V, T> {
     // padding in percentage of the value range, applies both top and bottom
     pub padding: f32,
     pub stroke_width: f32,
+    pub color: Option<Color>,
     pub show_points: bool,
     pub point_radius_factor: f32,
     /// Horizontal shift in bucket units (screen-space).
@@ -46,6 +47,7 @@ impl<V, T> LinePlot<V, T> {
             tooltip: None,
             padding: 0.08,
             stroke_width: 1.0,
+            color: None,
             show_points: true,
             point_radius_factor: 0.2,
             x_shift_buckets: 0,
@@ -61,6 +63,11 @@ impl<V, T> LinePlot<V, T> {
 
     pub fn stroke_width(mut self, w: f32) -> Self {
         self.stroke_width = w;
+        self
+    }
+
+    pub fn color(mut self, color: Color) -> Self {
+        self.color = Some(color);
         self
     }
 
@@ -165,7 +172,7 @@ where
         scale: &YScale,
     ) {
         let palette = theme.extended_palette();
-        let color = palette.secondary.strong.color;
+        let color = self.color.unwrap_or(palette.secondary.strong.color);
 
         let stroke = Stroke::with_color(
             Stroke {

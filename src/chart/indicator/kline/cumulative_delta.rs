@@ -6,11 +6,14 @@ use crate::chart::{
             AvailabilityCause, BasisSeries, BasisSeriesExt, IndicatorAvailability,
             KlineIndicatorImpl,
         },
-        plot::{PlotTooltip, line::LinePlot},
+        plot::{PlotTooltip, candle::StepCandlePlot, line::LinePlot},
     },
 };
 
-use data::chart::{PlotData, kline::KlineDataPoint};
+use data::chart::{
+    PlotData,
+    kline::{IndicatorPlotStyle, IndicatorSeriesConfig, KlineDataPoint},
+};
 use data::util::format_with_commas;
 use exchange::{Kline, Trade, unit::Qty};
 
@@ -39,6 +42,7 @@ struct CumulativeDeltaPoint {
 }
 
 pub struct CumulativeDeltaIndicator {
+    config: IndicatorSeriesConfig,
     cache: Caches,
     /// Per-bucket delta. Stored separately so inserting/replacing older klines can
     /// rebuild the cumulative line without needing the full chart source.
@@ -48,8 +52,9 @@ pub struct CumulativeDeltaIndicator {
 }
 
 impl CumulativeDeltaIndicator {
-    pub fn new() -> Self {
+    pub fn new(config: IndicatorSeriesConfig) -> Self {
         Self {
+            config,
             cache: Caches::default(),
             delta: BasisSeries::default(),
             data: BasisSeries::default(),
@@ -76,27 +81,40 @@ impl CumulativeDeltaIndicator {
 
         let value_fn = |point: &CumulativeDeltaPoint| point.cumulative.to_f64() as f32;
 
-        let plot = LinePlot::new(value_fn)
-            .stroke_width(1.0)
-            .show_points(true)
-            .point_radius_factor(0.2)
-            .padding(0.08)
-            // Only treat bars as valid when they belong to a long enough
-            // run of consecutive directional data
-            .valid_when(|point: &CumulativeDeltaPoint| point.reliable)
-            .invalid_point_message(format!(
-                "CVD requires {MIN_DIRECTIONAL_RUN}+ consecutive bars\nwith directional volume",
-            ))
-            .with_tooltip(tooltip);
-
-        indicator_row(
-            main_chart,
-            &self.cache,
-            data_labels_always_visible,
-            plot,
-            self.data.as_plot_series(),
-            visible_range,
-        )
+        match self.config.style {
+            IndicatorPlotStyle::Line => {
+                let plot = LinePlot::new(value_fn)
+                    .stroke_width(self.config.line_width.clamp(0.5, 5.0))
+                    .color(self.config.line_color)
+                    .show_points(true)
+                    .point_radius_factor(0.2)
+                    .padding(0.08)
+                    .valid_when(|point: &CumulativeDeltaPoint| point.reliable)
+                    .invalid_point_message(format!(
+                        "CVD requires {MIN_DIRECTIONAL_RUN}+ consecutive bars\nwith directional volume",
+                    ))
+                    .with_tooltip(tooltip);
+                indicator_row(
+                    main_chart,
+                    &self.cache,
+                    data_labels_always_visible,
+                    plot,
+                    self.data.as_plot_series(),
+                    visible_range,
+                )
+            }
+            IndicatorPlotStyle::Candles => {
+                let plot = StepCandlePlot::new(value_fn, self.config).with_tooltip(tooltip);
+                indicator_row(
+                    main_chart,
+                    &self.cache,
+                    data_labels_always_visible,
+                    plot,
+                    self.data.as_plot_series(),
+                    visible_range,
+                )
+            }
+        }
     }
 
     fn set_availability(&mut self, has_points: bool, has_directional: bool) {
@@ -351,6 +369,15 @@ impl KlineIndicatorImpl for CumulativeDeltaIndicator {
     }
 
     fn on_basis_change(&mut self, source: &PlotData<KlineDataPoint>) {
+        self.rebuild_from_source(source);
+    }
+
+    fn on_visual_config_change(
+        &mut self,
+        config: &data::chart::kline::Config,
+        source: &PlotData<KlineDataPoint>,
+    ) {
+        self.config = config.cumulative_delta;
         self.rebuild_from_source(source);
     }
 }

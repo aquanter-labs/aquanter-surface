@@ -14,6 +14,7 @@ pub enum Modal {
     MiniTickersList(mini_tickers_list::MiniPanel),
     Settings,
     Indicators,
+    IndicatorSettings(data::chart::indicator::KlineIndicator),
     LinkGroup,
     Controls,
 }

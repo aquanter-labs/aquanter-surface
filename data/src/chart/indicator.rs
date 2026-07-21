@@ -15,7 +15,17 @@ pub enum KlineIndicator {
     Volume,
     BarAnalysis,
     CumulativeDelta,
+    StochRsi,
     OpenInterest,
+    SessionVwap,
+    AnchoredVwap,
+    Ema,
+    VolumeProfile,
+    LiquidationHeatmap,
+    OiDeltaDivergence,
+    OiFlowNet,
+    OiWeightedDelta,
+    LiquidationPressureIndex,
 }
 
 impl Indicator for KlineIndicator {
@@ -28,20 +38,46 @@ impl Indicator for KlineIndicator {
 }
 
 impl KlineIndicator {
+    pub fn is_overlay(self) -> bool {
+        matches!(
+            self,
+            Self::SessionVwap
+                | Self::AnchoredVwap
+                | Self::Ema
+                | Self::VolumeProfile
+                | Self::LiquidationHeatmap
+        )
+    }
+
     // Indicator togglers on UI menus depend on these arrays.
     // Every variant needs to be in either SPOT, PERPS or both.
     /// Indicators that can be used with spot market tickers
-    const FOR_SPOT: [KlineIndicator; 3] = [
+    const FOR_SPOT: [KlineIndicator; 8] = [
         KlineIndicator::Volume,
         KlineIndicator::BarAnalysis,
         KlineIndicator::CumulativeDelta,
+        KlineIndicator::StochRsi,
+        KlineIndicator::SessionVwap,
+        KlineIndicator::AnchoredVwap,
+        KlineIndicator::Ema,
+        KlineIndicator::VolumeProfile,
     ];
     /// Indicators that can be used with perpetual swap market tickers
-    const FOR_PERPS: [KlineIndicator; 4] = [
+    const FOR_PERPS: [KlineIndicator; 14] = [
         KlineIndicator::Volume,
         KlineIndicator::BarAnalysis,
         KlineIndicator::CumulativeDelta,
+        KlineIndicator::StochRsi,
         KlineIndicator::OpenInterest,
+        KlineIndicator::SessionVwap,
+        KlineIndicator::AnchoredVwap,
+        KlineIndicator::Ema,
+        KlineIndicator::VolumeProfile,
+        KlineIndicator::LiquidationHeatmap,
+        KlineIndicator::OiDeltaDivergence,
+        KlineIndicator::OiFlowNet,
+        KlineIndicator::OiWeightedDelta,
+        KlineIndicator::LiquidationPressureIndex,
     ];
 }
 
@@ -51,7 +87,19 @@ impl Display for KlineIndicator {
             KlineIndicator::Volume => write!(f, "Volume"),
             KlineIndicator::BarAnalysis => write!(f, "Bar Analysis"),
             KlineIndicator::CumulativeDelta => write!(f, "CVD"),
+            KlineIndicator::StochRsi => write!(f, "Stoch RSI"),
             KlineIndicator::OpenInterest => write!(f, "Open Interest"),
+            KlineIndicator::SessionVwap => write!(f, "Session VWAP"),
+            KlineIndicator::AnchoredVwap => write!(f, "Anchored VWAP"),
+            KlineIndicator::Ema => write!(f, "EMA"),
+            KlineIndicator::VolumeProfile => write!(f, "Volume Profile"),
+            KlineIndicator::LiquidationHeatmap => write!(f, "Liquidation Heatmap"),
+            KlineIndicator::OiDeltaDivergence => write!(f, "OI-Delta Divergence"),
+            KlineIndicator::OiFlowNet => write!(f, "OI Flow Net"),
+            KlineIndicator::OiWeightedDelta => write!(f, "OI-Weighted Delta"),
+            KlineIndicator::LiquidationPressureIndex => {
+                write!(f, "Liquidation Pressure Index")
+            }
         }
     }
 }

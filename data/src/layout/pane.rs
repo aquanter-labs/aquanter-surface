@@ -174,7 +174,7 @@ impl VisualConfig {
 
     pub fn kline(&self) -> Option<kline::Config> {
         match self {
-            Self::Kline(cfg) => Some(*cfg),
+            Self::Kline(cfg) => Some(cfg.clone()),
             _ => None,
         }
     }

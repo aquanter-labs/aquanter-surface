@@ -323,6 +323,10 @@ impl KlineChartKind {
         !matches!(
             (self, indicator),
             (KlineChartKind::Candles, KlineIndicator::BarAnalysis)
+                | (
+                    KlineChartKind::Footprint { .. },
+                    KlineIndicator::VolumeProfile
+                )
         )
     }
 
@@ -349,7 +353,7 @@ impl KlineChartKind {
 
     pub fn min_cell_width(&self) -> f32 {
         match self {
-            KlineChartKind::Footprint { .. } => 80.0,
+            KlineChartKind::Footprint { .. } => 32.0,
             KlineChartKind::Candles => 1.0,
         }
     }
@@ -412,7 +416,7 @@ impl std::fmt::Display for ClusterKind {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
     // Whether to show last value labels on top right/left when not hovering
@@ -422,6 +426,18 @@ pub struct Config {
     pub show_footprint_summary: bool,
     // Whether to show a small candle next to footprint table clusters.
     pub show_footprint_table_candle: bool,
+    pub session_vwap: SessionVwapConfig,
+    pub anchored_vwap: AnchoredVwapConfig,
+    pub ema: Vec<EmaConfig>,
+    pub volume_profile: VolumeProfileConfig,
+    pub stoch_rsi: StochRsiConfig,
+    pub open_interest: IndicatorSeriesConfig,
+    pub cumulative_delta: IndicatorSeriesConfig,
+    pub oi_delta_divergence: OiDeltaDivergenceConfig,
+    pub liquidation_pressure: LiquidationPressureConfig,
+    pub liquidation_heatmap: LiquidationHeatmapConfig,
+    pub oi_flow_net: OiFlowNetConfig,
+    pub oi_weighted_delta: OiWeightedDeltaConfig,
 }
 
 impl Default for Config {
@@ -430,6 +446,347 @@ impl Default for Config {
             data_labels_always_visible: false,
             show_footprint_summary: true,
             show_footprint_table_candle: true,
+            session_vwap: SessionVwapConfig::default(),
+            anchored_vwap: AnchoredVwapConfig::default(),
+            ema: vec![EmaConfig::default()],
+            volume_profile: VolumeProfileConfig::default(),
+            stoch_rsi: StochRsiConfig::default(),
+            open_interest: IndicatorSeriesConfig::default(),
+            cumulative_delta: IndicatorSeriesConfig::default(),
+            oi_delta_divergence: OiDeltaDivergenceConfig::default(),
+            liquidation_pressure: LiquidationPressureConfig::default(),
+            liquidation_heatmap: LiquidationHeatmapConfig::default(),
+            oi_flow_net: OiFlowNetConfig::default(),
+            oi_weighted_delta: OiWeightedDeltaConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+pub enum IndicatorPlotStyle {
+    #[default]
+    Line,
+    Candles,
+}
+
+impl IndicatorPlotStyle {
+    pub const ALL: [Self; 2] = [Self::Line, Self::Candles];
+}
+
+impl std::fmt::Display for IndicatorPlotStyle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Line => write!(f, "Line"),
+            Self::Candles => write!(f, "Candles"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct IndicatorSeriesConfig {
+    pub style: IndicatorPlotStyle,
+    pub line_width: f32,
+    pub line_color: iced_core::Color,
+    pub up_color: iced_core::Color,
+    pub down_color: iced_core::Color,
+}
+
+impl Default for IndicatorSeriesConfig {
+    fn default() -> Self {
+        Self {
+            style: IndicatorPlotStyle::Line,
+            line_width: 1.5,
+            line_color: iced_core::Color::from_rgb(0.43, 0.63, 0.72),
+            up_color: iced_core::Color::from_rgb(0.35, 0.68, 0.50),
+            down_color: iced_core::Color::from_rgb(0.76, 0.40, 0.42),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct StochRsiConfig {
+    pub rsi_length: u16,
+    pub stochastic_length: u16,
+    pub k_smoothing: u16,
+    pub d_smoothing: u16,
+    pub k_color: iced_core::Color,
+    pub d_color: iced_core::Color,
+    pub line_width: f32,
+}
+
+impl Default for StochRsiConfig {
+    fn default() -> Self {
+        Self {
+            rsi_length: 14,
+            stochastic_length: 14,
+            k_smoothing: 3,
+            d_smoothing: 3,
+            k_color: iced_core::Color::from_rgb(0.43, 0.63, 0.72),
+            d_color: iced_core::Color::from_rgb(0.72, 0.58, 0.38),
+            line_width: 1.5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct OiDeltaDivergenceConfig {
+    pub lookback: u16,
+    pub rsi_period: u16,
+    pub marker_size: f32,
+    pub bullish_color: iced_core::Color,
+    pub bearish_color: iced_core::Color,
+    pub cvd_color: iced_core::Color,
+    pub oi_color: iced_core::Color,
+    pub line_width: f32,
+}
+
+impl Default for OiDeltaDivergenceConfig {
+    fn default() -> Self {
+        Self {
+            lookback: 20,
+            rsi_period: 14,
+            marker_size: 4.0,
+            bullish_color: iced_core::Color::from_rgb(0.35, 0.68, 0.50),
+            bearish_color: iced_core::Color::from_rgb(0.76, 0.40, 0.42),
+            cvd_color: iced_core::Color::from_rgb(0.43, 0.63, 0.72),
+            oi_color: iced_core::Color::from_rgb(0.72, 0.58, 0.38),
+            line_width: 1.5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LiquidationPressureConfig {
+    pub bar_width: f32,
+    pub positive_color: iced_core::Color,
+    pub negative_color: iced_core::Color,
+    pub lookback: u16,
+    pub oi_drop_threshold: f32,
+    pub delta_zscore: f32,
+}
+
+impl Default for LiquidationPressureConfig {
+    fn default() -> Self {
+        Self {
+            bar_width: 0.8,
+            positive_color: iced_core::Color::from_rgb(0.35, 0.68, 0.50),
+            negative_color: iced_core::Color::from_rgb(0.76, 0.40, 0.42),
+            lookback: 20,
+            oi_drop_threshold: 2.0,
+            delta_zscore: 2.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct OiFlowNetConfig {
+    pub basis_length: u16,
+    pub burst_sensitivity: u8,
+    pub static_color: bool,
+    pub show_price_line: bool,
+    pub long_color: iced_core::Color,
+    pub short_color: iced_core::Color,
+    pub buy_outflow_color: iced_core::Color,
+    pub sell_outflow_color: iced_core::Color,
+}
+
+impl Default for OiFlowNetConfig {
+    fn default() -> Self {
+        Self {
+            basis_length: 10,
+            burst_sensitivity: 3,
+            static_color: false,
+            show_price_line: false,
+            long_color: iced_core::Color::from_rgb(0.35, 0.68, 0.50),
+            short_color: iced_core::Color::from_rgb(0.76, 0.40, 0.42),
+            buy_outflow_color: iced_core::Color::from_rgb(0.28, 0.64, 0.64),
+            sell_outflow_color: iced_core::Color::from_rgb(0.55, 0.30, 0.36),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct OiWeightedDeltaConfig {
+    pub sensitivity: f32,
+    pub max_weight: f32,
+    pub bar_width: f32,
+    pub positive_color: iced_core::Color,
+    pub negative_color: iced_core::Color,
+}
+
+impl Default for OiWeightedDeltaConfig {
+    fn default() -> Self {
+        Self {
+            sensitivity: 10.0,
+            max_weight: 2.0,
+            bar_width: 0.8,
+            positive_color: iced_core::Color::from_rgb(0.35, 0.68, 0.50),
+            negative_color: iced_core::Color::from_rgb(0.76, 0.40, 0.42),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LiquidationHeatmapConfig {
+    pub row_height: f32,
+    pub opacity: f32,
+    pub long_color: iced_core::Color,
+    pub short_color: iced_core::Color,
+}
+
+impl Default for LiquidationHeatmapConfig {
+    fn default() -> Self {
+        Self {
+            row_height: 8.0,
+            opacity: 0.9,
+            long_color: iced_core::Color::from_rgb(0.76, 0.40, 0.42),
+            short_color: iced_core::Color::from_rgb(0.35, 0.68, 0.50),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AnchoredVwapConfig {
+    pub anchor: Option<exchange::UnixMs>,
+    pub deviation_bands: u8,
+    pub color: iced_core::Color,
+    pub line_width: f32,
+}
+
+impl Default for AnchoredVwapConfig {
+    fn default() -> Self {
+        Self {
+            anchor: None,
+            deviation_bands: 2,
+            color: iced_core::Color::from_rgb(0.95, 0.45, 0.35),
+            line_width: 1.5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum VolumeProfileMode {
+    VisibleRange,
+    FixedWindow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+pub enum VolumeProfilePosition {
+    Left,
+    #[default]
+    Right,
+}
+
+impl VolumeProfilePosition {
+    pub const ALL: [Self; 2] = [Self::Left, Self::Right];
+}
+
+impl std::fmt::Display for VolumeProfilePosition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Left => write!(f, "Left"),
+            Self::Right => write!(f, "Right"),
+        }
+    }
+}
+
+impl VolumeProfileMode {
+    pub const ALL: [Self; 2] = [Self::VisibleRange, Self::FixedWindow];
+}
+
+impl std::fmt::Display for VolumeProfileMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::VisibleRange => write!(f, "Visible Range"),
+            Self::FixedWindow => write!(f, "Fixed Window"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct VolumeProfileConfig {
+    pub mode: VolumeProfileMode,
+    pub position: VolumeProfilePosition,
+    pub start: Option<exchange::UnixMs>,
+    pub end: Option<exchange::UnixMs>,
+    pub rows: u16,
+    pub color: iced_core::Color,
+    pub buy_color: iced_core::Color,
+    pub sell_color: iced_core::Color,
+}
+
+impl Default for VolumeProfileConfig {
+    fn default() -> Self {
+        Self {
+            mode: VolumeProfileMode::VisibleRange,
+            position: VolumeProfilePosition::Right,
+            start: None,
+            end: None,
+            rows: 120,
+            color: iced_core::Color::from_rgb(0.25, 0.65, 0.75),
+            buy_color: iced_core::Color::from_rgb(0.35, 0.68, 0.50),
+            sell_color: iced_core::Color::from_rgb(0.76, 0.40, 0.42),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct EmaConfig {
+    pub period: u16,
+    pub color: iced_core::Color,
+    pub line_width: f32,
+}
+
+impl Default for EmaConfig {
+    fn default() -> Self {
+        Self::for_index(0)
+    }
+}
+
+impl EmaConfig {
+    pub fn for_index(index: usize) -> Self {
+        const COLORS: [iced_core::Color; 6] = [
+            iced_core::Color::from_rgb(0.72, 0.50, 0.48),
+            iced_core::Color::from_rgb(0.43, 0.63, 0.72),
+            iced_core::Color::from_rgb(0.56, 0.67, 0.47),
+            iced_core::Color::from_rgb(0.68, 0.57, 0.75),
+            iced_core::Color::from_rgb(0.75, 0.64, 0.42),
+            iced_core::Color::from_rgb(0.42, 0.70, 0.66),
+        ];
+        Self {
+            period: 20,
+            color: COLORS[index % COLORS.len()],
+            line_width: 1.5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SessionVwapConfig {
+    pub anchor_hour_utc: u8,
+    pub deviation_bands: u8,
+    pub color: iced_core::Color,
+    pub line_width: f32,
+}
+
+impl Default for SessionVwapConfig {
+    fn default() -> Self {
+        Self {
+            anchor_hour_utc: 0,
+            deviation_bands: 3,
+            color: iced_core::Color::from_rgb(0.2, 0.7, 0.95),
+            line_width: 1.5,
         }
     }
 }
@@ -545,5 +902,25 @@ impl NPoc {
 
     pub fn unfilled(&mut self) {
         *self = NPoc::Naked;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn footprint_axis_can_zoom_out_from_default_width() {
+        let kind = KlineChartKind::Footprint {
+            clusters: ClusterKind::default(),
+            scaling: ClusterScaling::default(),
+            studies: vec![],
+        };
+
+        assert!(kind.min_cell_width() < kind.default_cell_width());
+        assert!(!kind.allows_indicator(KlineIndicator::VolumeProfile));
+        assert!(kind.allows_indicator(KlineIndicator::LiquidationHeatmap));
+        assert!(KlineIndicator::LiquidationHeatmap.is_overlay());
+        assert!(!KlineIndicator::LiquidationPressureIndex.is_overlay());
     }
 }

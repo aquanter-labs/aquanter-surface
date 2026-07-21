@@ -1,7 +1,5 @@
 use crate::screen::dashboard::pane::{self, Message};
 use crate::style::{self, Icon, icon_text};
-use crate::widget::{column_drag, dragger_row};
-
 use data::chart::indicator::{Indicator, UiIndicator};
 use iced::{
     Element, Length, padding,
@@ -17,21 +15,15 @@ pub fn view<'a, I>(
 where
     I: Indicator + Copy + Into<UiIndicator>,
 {
-    let content_allows_dragging = matches!(state.content, pane::Content::Kline { .. });
     let content_row = if let Some(market) = market_type {
-        content_row(
-            pane,
-            &state.content,
-            selected,
-            market,
-            content_allows_dragging,
-        )
+        content_row(pane, &state.content, selected, market)
     } else {
         column![].spacing(4).into()
     };
 
     container(content_row)
-        .max_width(200)
+        .width(280)
+        .max_width(280)
         .padding(16)
         .style(style::chart_modal)
         .into()
@@ -56,62 +48,45 @@ where
         row![text(indicator.to_string())].width(Length::Fill)
     };
 
-    button(content)
+    let toggle = button(content)
         .on_press(Message::PaneEvent(
             pane,
             pane::Event::ToggleIndicator((*indicator).into()),
         ))
         .width(Length::Fill)
-        .style(move |theme, status| style::button::modifier(theme, status, is_selected))
-        .into()
-}
+        .style(move |theme, status| style::button::modifier(theme, status, is_selected));
 
-fn selected_list<'a, I>(
-    pane: pane_grid::Pane,
-    selected: &[I],
-    reorderable: bool,
-) -> Element<'a, Message>
-where
-    I: Indicator + Copy + Into<UiIndicator>,
-{
-    let elements: Vec<Element<_>> = selected
-        .iter()
-        .map(|indicator| {
-            let base = build_indicator_row(pane, indicator, true);
-            dragger_row(base, reorderable)
-        })
-        .collect();
-
-    if reorderable {
-        let mut draggable_column = column_drag::Column::new()
-            .on_drag(move |event| Message::PaneEvent(pane, pane::Event::ReorderIndicator(event)))
-            .spacing(4);
-        for element in elements {
-            draggable_column = draggable_column.push(element);
-        }
-        draggable_column.into()
-    } else {
-        iced::widget::Column::with_children(elements)
-            .spacing(4)
-            .into()
-    }
-}
-
-fn available_list<'a, I>(pane: pane_grid::Pane, available: &[I]) -> Element<'a, Message>
-where
-    I: Indicator + Copy + Into<UiIndicator>,
-{
-    let elements: Vec<Element<_>> = available
-        .iter()
-        .map(|indicator| {
-            let base = build_indicator_row(pane, indicator, false);
-            dragger_row(base, false)
-        })
-        .collect();
-
-    iced::widget::Column::with_children(elements)
+    let ui_indicator = (*indicator).into();
+    if is_selected
+        && let data::chart::indicator::UiIndicator::Kline(kline) = ui_indicator
+        && matches!(
+            kline,
+            data::chart::indicator::KlineIndicator::SessionVwap
+                | data::chart::indicator::KlineIndicator::CumulativeDelta
+                | data::chart::indicator::KlineIndicator::StochRsi
+                | data::chart::indicator::KlineIndicator::OpenInterest
+                | data::chart::indicator::KlineIndicator::AnchoredVwap
+                | data::chart::indicator::KlineIndicator::Ema
+                | data::chart::indicator::KlineIndicator::VolumeProfile
+                | data::chart::indicator::KlineIndicator::LiquidationHeatmap
+                | data::chart::indicator::KlineIndicator::OiDeltaDivergence
+                | data::chart::indicator::KlineIndicator::OiFlowNet
+                | data::chart::indicator::KlineIndicator::OiWeightedDelta
+                | data::chart::indicator::KlineIndicator::LiquidationPressureIndex
+        )
+    {
+        row![
+            toggle,
+            button(icon_text(Icon::Cog, 11)).on_press(Message::PaneEvent(
+                pane,
+                pane::Event::ShowModal(crate::modal::pane::Modal::IndicatorSettings(kline)),
+            ))
+        ]
         .spacing(4)
         .into()
+    } else {
+        toggle.into()
+    }
 }
 
 fn content_row<'a, I>(
@@ -119,50 +94,20 @@ fn content_row<'a, I>(
     content: &pane::Content,
     selected: &[I],
     market: exchange::adapter::MarketKind,
-    allows_drag: bool,
 ) -> Element<'a, Message>
 where
     I: Indicator + Copy + Into<UiIndicator>,
 {
-    let reorderable = allows_drag && selected.len() >= 2;
-
-    let selected: Vec<I> = selected
+    let indicators: Vec<Element<_>> = I::for_market(market)
         .iter()
-        .copied()
-        .filter(|indicator| content.allows_indicator((*indicator).into()))
+        .filter(|indicator| content.allows_indicator((**indicator).into()))
+        .map(|indicator| build_indicator_row(pane, indicator, selected.contains(indicator)))
         .collect();
-
-    let selected_list = if !selected.is_empty() {
-        Some(selected_list(pane, &selected, reorderable))
-    } else {
-        None
-    };
-
-    let available: Vec<I> = I::for_market(market)
-        .iter()
-        .filter(|indicator| {
-            !selected.contains(indicator) && content.allows_indicator((**indicator).into())
-        })
-        .cloned()
-        .collect();
-    let available_list = if !available.is_empty() {
-        Some(available_list(pane, &available))
-    } else {
-        None
-    };
-
-    let mut col = iced::widget::Column::new();
-    if let Some(sel) = selected_list {
-        col = col.push(sel);
-    }
-    if let Some(avail) = available_list {
-        col = col.push(avail);
-    }
 
     column![
         container(text("Indicators").size(crate::style::text_size::SECTION))
             .padding(padding::bottom(8)),
-        col.spacing(4)
+        iced::widget::Column::with_children(indicators).spacing(4)
     ]
     .spacing(4)
     .into()

@@ -17,7 +17,7 @@ use data::chart::{Autoscale, KlineChartKind, ViewConfig};
 use data::config::theme::{composite_color, contrast_ratio, mix_color};
 use data::util::abbr_large_numbers;
 use exchange::unit::{Price, PriceStep, Qty};
-use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade, UnixMs};
+use exchange::{Kline, Liquidation, OpenInterest as OIData, TickerInfo, Trade, UnixMs};
 
 use iced::task::Handle;
 use iced::theme::palette::Extended;
@@ -25,7 +25,10 @@ use iced::widget::canvas::{self, Event, Geometry, Path, Stroke};
 use iced::{Alignment, Color, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
 use enum_map::EnumMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::time::Instant;
+
+const MAX_CACHED_LIQUIDATIONS: usize = 10_000;
 
 impl Chart for KlineChart {
     type IndicatorKind = KlineIndicator;
@@ -70,6 +73,9 @@ impl Chart for KlineChart {
                 continue;
             }
             if let Some(indi) = self.indicators[*selected_indicator].as_ref() {
+                if indi.is_overlay() {
+                    continue;
+                }
                 elements.push(indi.element(
                     chart_state,
                     data_labels_always_visible,
@@ -128,6 +134,24 @@ impl Chart for KlineChart {
             PlotData::TickBased(tick_aggr) => tick_aggr.datapoints.is_empty(),
         }
     }
+
+    fn interval_selection_mode(&self) -> Option<super::IntervalSelectionMode> {
+        self.interval_selection.map(|selection| match selection {
+            IntervalSelection::AnchoredVwap => super::IntervalSelectionMode::Point,
+            IntervalSelection::VolumeProfileStart => super::IntervalSelectionMode::Range,
+        })
+    }
+
+    fn editable_interval_range(&self) -> Option<(u64, u64)> {
+        let profile = self.visual_config.volume_profile;
+        if self.indicators[KlineIndicator::VolumeProfile].is_some()
+            && profile.mode == data::chart::kline::VolumeProfileMode::FixedWindow
+        {
+            Some((profile.start?.as_u64(), profile.end?.as_u64()))
+        } else {
+            None
+        }
+    }
 }
 
 impl PlotConstants for KlineChart {
@@ -164,6 +188,8 @@ pub struct KlineChart {
     chart: ViewState,
     data_source: PlotData<KlineDataPoint>,
     raw_trades: Vec<Trade>,
+    open_interest: BTreeMap<UnixMs, f64>,
+    liquidations: VecDeque<Liquidation>,
     indicators: EnumMap<KlineIndicator, Option<Box<dyn KlineIndicatorImpl>>>,
     fetching_trades: (bool, Option<Handle>),
     pub(crate) kind: KlineChartKind,
@@ -171,6 +197,13 @@ pub struct KlineChart {
     study_configurator: study::Configurator<FootprintStudy>,
     last_tick: Instant,
     visual_config: Config,
+    interval_selection: Option<IntervalSelection>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum IntervalSelection {
+    AnchoredVwap,
+    VolumeProfileStart,
 }
 
 impl KlineChart {
@@ -255,7 +288,7 @@ impl KlineChart {
                     if !kind.allows_indicator(i) {
                         continue;
                     }
-                    let mut indi = indicator::kline::make_empty(i);
+                    let mut indi = indicator::kline::make_empty(i, &visual_config);
                     indi.rebuild_from_source(&data_source);
                     indicators[i] = Some(indi);
                 }
@@ -263,8 +296,11 @@ impl KlineChart {
                 KlineChart {
                     chart,
                     visual_config,
+                    interval_selection: None,
                     data_source,
                     raw_trades,
+                    open_interest: BTreeMap::new(),
+                    liquidations: VecDeque::new(),
                     indicators,
                     fetching_trades: (false, None),
                     request_handler: RequestHandler::default(),
@@ -315,7 +351,7 @@ impl KlineChart {
                     if !kind.allows_indicator(i) {
                         continue;
                     }
-                    let mut indi = indicator::kline::make_empty(i);
+                    let mut indi = indicator::kline::make_empty(i, &visual_config);
                     indi.rebuild_from_source(&data_source);
                     indicators[i] = Some(indi);
                 }
@@ -323,8 +359,11 @@ impl KlineChart {
                 KlineChart {
                     chart,
                     visual_config,
+                    interval_selection: None,
                     data_source,
                     raw_trades,
+                    open_interest: BTreeMap::new(),
+                    liquidations: VecDeque::new(),
                     indicators,
                     fetching_trades: (false, None),
                     request_handler: RequestHandler::default(),
@@ -512,16 +551,81 @@ impl KlineChart {
     }
 
     pub fn visual_config(&self) -> Config {
-        self.visual_config
+        self.visual_config.clone()
     }
 
     pub fn set_visual_config(&mut self, visual_config: Config) {
-        self.visual_config = visual_config;
+        self.visual_config = visual_config.clone();
         self.chart.cache.clear_all();
         self.indicators
             .values_mut()
             .filter_map(Option::as_mut)
-            .for_each(|indi| indi.clear_all_caches());
+            .for_each(|indi| {
+                indi.on_visual_config_change(&visual_config, &self.data_source);
+                indi.clear_all_caches();
+            });
+    }
+
+    pub fn begin_interval_selection(&mut self, selection: IntervalSelection) {
+        self.interval_selection = Some(selection);
+        if matches!(selection, IntervalSelection::VolumeProfileStart) {
+            let mut config = self.visual_config.clone();
+            config.volume_profile.mode = data::chart::kline::VolumeProfileMode::FixedWindow;
+            config.volume_profile.start = None;
+            config.volume_profile.end = None;
+            self.set_visual_config(config);
+        }
+    }
+
+    pub fn apply_interval_selection(&mut self, interval: u64) {
+        let Some(selection) = self.interval_selection else {
+            return;
+        };
+        let time = match self.chart.basis {
+            Basis::Time(timeframe) => UnixMs::new(interval).floor_to(timeframe),
+            Basis::Tick(_) => return,
+        };
+        let mut config = self.visual_config.clone();
+        match selection {
+            IntervalSelection::AnchoredVwap => {
+                config.anchored_vwap.anchor = Some(time);
+                self.interval_selection = None;
+            }
+            IntervalSelection::VolumeProfileStart => return,
+        }
+        self.set_visual_config(config);
+    }
+
+    pub fn preview_interval_range(&mut self, start: u64, end: u64) {
+        let selecting_new = matches!(
+            self.interval_selection,
+            Some(IntervalSelection::VolumeProfileStart)
+        );
+        let profile = self.visual_config.volume_profile;
+        let editing_existing = profile.mode == data::chart::kline::VolumeProfileMode::FixedWindow
+            && profile.start.is_some()
+            && profile.end.is_some();
+        if !selecting_new && !editing_existing {
+            return;
+        }
+        let Basis::Time(timeframe) = self.chart.basis else {
+            return;
+        };
+        let start = UnixMs::new(start).floor_to(timeframe);
+        let end = UnixMs::new(end).floor_to(timeframe);
+        let mut config = self.visual_config.clone();
+        config.volume_profile.start = Some(start.min(end));
+        config.volume_profile.end = Some(start.max(end));
+        self.set_visual_config(config);
+    }
+
+    pub fn finish_interval_range(&mut self, start: u64, end: u64) {
+        self.preview_interval_range(start, end);
+        self.interval_selection = None;
+    }
+
+    pub fn cancel_interval_selection(&mut self) {
+        self.interval_selection = None;
     }
 
     pub fn set_cluster_kind(&mut self, new_kind: ClusterKind) {
@@ -673,6 +777,18 @@ impl KlineChart {
         }
     }
 
+    pub fn insert_liquidations(&mut self, liquidations: &[Liquidation]) {
+        self.liquidations.extend(liquidations.iter().copied());
+        while self.liquidations.len() > MAX_CACHED_LIQUIDATIONS {
+            self.liquidations.pop_front();
+        }
+        self.indicators
+            .values_mut()
+            .filter_map(Option::as_mut)
+            .for_each(|indicator| indicator.on_liquidations(liquidations));
+        self.invalidate(None);
+    }
+
     pub fn insert_raw_trades(&mut self, raw_trades: Vec<Trade>, is_batches_done: bool) {
         if matches!(&self.data_source, PlotData::TickBased(_)) {
             if is_batches_done {
@@ -732,9 +848,14 @@ impl KlineChart {
             }
         }
 
-        if let Some(indi) = self.indicators[KlineIndicator::OpenInterest].as_mut() {
-            indi.on_open_interest(oi_data);
-        }
+        self.open_interest
+            .extend(oi_data.iter().map(|item| (item.time, item.value)));
+
+        self.indicators
+            .values_mut()
+            .filter_map(Option::as_mut)
+            .for_each(|indicator| indicator.on_open_interest(oi_data));
+        self.invalidate(None);
     }
 
     fn calc_qty_scales(
@@ -919,18 +1040,34 @@ impl KlineChart {
             return;
         }
 
-        let prev_indi_count = self.indicators.values().filter(|v| v.is_some()).count();
+        let panel_count =
+            |indicators: &EnumMap<KlineIndicator, Option<Box<dyn KlineIndicatorImpl>>>| {
+                indicators
+                    .values()
+                    .filter_map(Option::as_ref)
+                    .filter(|indicator| !indicator.is_overlay())
+                    .count()
+            };
+        let prev_indi_count = panel_count(&self.indicators);
 
         if self.indicators[indicator].is_some() {
             self.indicators[indicator] = None;
         } else {
-            let mut box_indi = indicator::kline::make_empty(indicator);
+            let mut box_indi = indicator::kline::make_empty(indicator, &self.visual_config);
             box_indi.rebuild_from_source(&self.data_source);
+            let cached_oi = self
+                .open_interest
+                .iter()
+                .map(|(&time, &value)| OIData { time, value })
+                .collect::<Vec<_>>();
+            box_indi.on_open_interest(&cached_oi);
+            let cached_liquidations = self.liquidations.iter().copied().collect::<Vec<_>>();
+            box_indi.on_liquidations(&cached_liquidations);
             self.indicators[indicator] = Some(box_indi);
         }
 
         if let Some(main_split) = self.chart.layout.splits.first() {
-            let current_indi_count = self.indicators.values().filter(|v| v.is_some()).count();
+            let current_indi_count = panel_count(&self.indicators);
             self.chart.layout.splits = data::util::calc_panel_splits(
                 *main_split,
                 current_indi_count,
@@ -1118,6 +1255,10 @@ impl canvas::Program<Message> for KlineChart {
                 }
             }
 
+            for indicator in self.indicators.values().filter_map(Option::as_ref) {
+                indicator.draw_overlay(frame, chart, theme, earliest..=latest);
+            }
+
             chart.draw_last_price_line(frame, palette, region);
         });
 
@@ -1160,10 +1301,13 @@ impl canvas::Program<Message> for KlineChart {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
+        if super::editable_range_anchor(self, bounds, cursor).is_some() {
+            return mouse::Interaction::ResizingHorizontally;
+        }
         match interaction {
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
             Interaction::Zoomin { .. } => mouse::Interaction::ZoomIn,
-            Interaction::None | Interaction::Ruler { .. } => {
+            Interaction::None | Interaction::Ruler { .. } | Interaction::SelectingRange { .. } => {
                 if cursor.is_over(bounds) {
                     mouse::Interaction::Crosshair
                 } else {

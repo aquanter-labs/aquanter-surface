@@ -7,6 +7,93 @@ use crate::chart::{
     indicator::plot::{Plot, PlotTooltip, Series, TooltipFn, YScale},
 };
 
+pub struct SignedBarPlot<V, T> {
+    value: V,
+    bar_width_factor: f32,
+    positive_color: iced::Color,
+    negative_color: iced::Color,
+    tooltip: Option<TooltipFn<T>>,
+}
+
+impl<V, T> SignedBarPlot<V, T> {
+    pub fn new(
+        value: V,
+        bar_width_factor: f32,
+        positive_color: iced::Color,
+        negative_color: iced::Color,
+    ) -> Self {
+        Self {
+            value,
+            bar_width_factor,
+            positive_color,
+            negative_color,
+            tooltip: None,
+        }
+    }
+
+    pub fn with_tooltip<F>(mut self, tooltip: F) -> Self
+    where
+        F: Fn(&T, Option<&T>) -> PlotTooltip + 'static,
+    {
+        self.tooltip = Some(Box::new(tooltip));
+        self
+    }
+}
+
+impl<S, V> Plot<S> for SignedBarPlot<V, S::Y>
+where
+    S: Series,
+    V: Fn(&S::Y) -> f32,
+{
+    fn y_extents(&self, data: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)> {
+        let mut min = 0.0_f32;
+        let mut max = 0.0_f32;
+        let mut found = false;
+        data.for_each_in(range, |_, point| {
+            let value = (self.value)(point);
+            min = min.min(value);
+            max = max.max(value);
+            found = true;
+        });
+        found.then_some((min, max.max(min + f32::EPSILON)))
+    }
+
+    fn adjust_extents(&self, min: f32, max: f32) -> (f32, f32) {
+        let padding = (max - min) * 0.05;
+        (min - padding, max + padding)
+    }
+
+    fn draw(
+        &self,
+        frame: &mut canvas::Frame,
+        chart: &ViewState,
+        _theme: &Theme,
+        data: &S,
+        range: RangeInclusive<u64>,
+        scale: &YScale,
+    ) {
+        let zero = scale.to_y(0.0);
+        let width = chart.cell_width * self.bar_width_factor.clamp(0.2, 0.95);
+        data.for_each_in(range, |time, point| {
+            let value = (self.value)(point);
+            let y = scale.to_y(value);
+            frame.fill_rectangle(
+                Point::new(chart.interval_to_x(time) - width / 2.0, y.min(zero)),
+                Size::new(width, (zero - y).abs().max(1.0 / chart.scaling)),
+                if value >= 0.0 {
+                    self.positive_color
+                } else {
+                    self.negative_color
+                },
+            );
+        });
+    }
+
+    fn tooltip_fn(&self) -> Option<&TooltipFn<S::Y>> {
+        self.tooltip.as_ref()
+    }
+}
+
 #[derive(Clone, Copy)]
 #[allow(unused)]
 /// How to anchor bar heights.

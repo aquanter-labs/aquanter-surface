@@ -98,6 +98,9 @@ pub enum StreamKind {
     Trades {
         ticker_info: TickerInfo,
     },
+    Liquidations {
+        ticker_info: TickerInfo,
+    },
 }
 
 impl StreamKind {
@@ -105,7 +108,8 @@ impl StreamKind {
         match self {
             StreamKind::Kline { ticker_info, .. }
             | StreamKind::Depth { ticker_info, .. }
-            | StreamKind::Trades { ticker_info, .. } => *ticker_info,
+            | StreamKind::Trades { ticker_info, .. }
+            | StreamKind::Liquidations { ticker_info, .. } => *ticker_info,
         }
     }
 
@@ -136,6 +140,13 @@ impl StreamKind {
             _ => None,
         }
     }
+
+    pub fn as_liquidation_stream(&self) -> Option<TickerInfo> {
+        match self {
+            StreamKind::Liquidations { ticker_info } => Some(*ticker_info),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -157,7 +168,8 @@ impl UniqueStreams {
         let (exchange, ticker_info) = match stream {
             StreamKind::Kline { ticker_info, .. }
             | StreamKind::Depth { ticker_info, .. }
-            | StreamKind::Trades { ticker_info, .. } => (ticker_info.exchange(), ticker_info),
+            | StreamKind::Trades { ticker_info, .. }
+            | StreamKind::Liquidations { ticker_info, .. } => (ticker_info.exchange(), ticker_info),
         };
 
         self.streams[exchange]
@@ -179,11 +191,13 @@ impl UniqueStreams {
         let depth_streams = self.depth_streams(Some(exchange));
         let trade_streams = self.trade_streams(Some(exchange));
         let kline_streams = self.kline_streams(Some(exchange));
+        let liquidation_streams = self.liquidation_streams(Some(exchange));
 
         self.specs[exchange] = Some(StreamSpecs {
             depth: depth_streams,
             trade: trade_streams,
             kline: kline_streams,
+            liquidation: liquidation_streams,
         });
     }
 
@@ -222,6 +236,10 @@ impl UniqueStreams {
         self.streams(exchange_filter, |_, stream| stream.as_trade_stream())
     }
 
+    pub fn liquidation_streams(&self, exchange_filter: Option<Exchange>) -> Vec<TickerInfo> {
+        self.streams(exchange_filter, |_, stream| stream.as_liquidation_stream())
+    }
+
     pub fn combined_used(&self) -> impl Iterator<Item = (Exchange, &StreamSpecs)> {
         self.specs
             .iter()
@@ -249,6 +267,7 @@ pub struct StreamSpecs {
     pub depth: Vec<(TickerInfo, StreamTicksize, PushFrequency)>,
     pub trade: Vec<TickerInfo>,
     pub kline: Vec<(TickerInfo, Timeframe)>,
+    pub liquidation: Vec<TickerInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -426,6 +445,9 @@ impl Exchange {
     }
 
     pub fn supports_heatmap_timeframe(&self, tf: Timeframe) -> bool {
+        if !Timeframe::HEATMAP.contains(&tf) {
+            return false;
+        }
         match self {
             Exchange::BybitSpot
             | Exchange::MexcSpot
@@ -442,6 +464,45 @@ impl Exchange {
     }
 
     pub fn supports_kline_timeframe(&self, tf: Timeframe) -> bool {
+        self.kline_source_timeframe(tf).is_some()
+    }
+
+    pub fn open_interest_source_timeframe(&self, timeframe: Timeframe) -> Option<Timeframe> {
+        if !self.is_perps()
+            || matches!(
+                self,
+                Exchange::HyperliquidLinear | Exchange::MexcLinear | Exchange::MexcInverse
+            )
+        {
+            return None;
+        }
+        match timeframe {
+            Timeframe::M5 | Timeframe::M15 | Timeframe::M30 | Timeframe::H1 | Timeframe::H4 => {
+                Some(timeframe)
+            }
+            Timeframe::Custom(minutes) if (5..=240).contains(&minutes) && minutes % 5 == 0 => {
+                Some(Timeframe::M5)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn kline_source_timeframe(&self, tf: Timeframe) -> Option<Timeframe> {
+        if !matches!(tf, Timeframe::Custom(_)) && !Timeframe::KLINE.contains(&tf) {
+            return None;
+        }
+
+        let target_minutes = tf.to_minutes();
+        if target_minutes == 0 {
+            return None;
+        }
+        Timeframe::KLINE.iter().rev().copied().find(|source| {
+            target_minutes % source.to_minutes() == 0
+                && self.supports_native_kline_timeframe(*source)
+        })
+    }
+
+    fn supports_native_kline_timeframe(&self, tf: Timeframe) -> bool {
         match self.venue() {
             Venue::Binance | Venue::Bybit | Venue::Hyperliquid | Venue::Okex => {
                 Timeframe::KLINE.contains(&tf)
@@ -525,6 +586,7 @@ pub enum Event {
     DepthReceived(StreamKind, UnixMs, Arc<Depth>),
     TradesReceived(StreamKind, UnixMs, Box<[Trade]>),
     KlineReceived(StreamKind, Kline),
+    LiquidationsReceived(StreamKind, Box<[crate::Liquidation]>),
 }
 
 #[derive(Debug, Clone, Hash)]

@@ -238,6 +238,14 @@ impl Flowsurface {
                                 event: msg,
                             });
                     }
+                    exchange::Event::LiquidationsReceived(stream, liquidations) => {
+                        return dashboard
+                            .ingest_liquidations(&stream, &liquidations, main_window_id)
+                            .map(move |msg| Message::Dashboard {
+                                layout_id: None,
+                                event: msg,
+                            });
+                    }
                 }
             }
             Message::Tick(now) => {

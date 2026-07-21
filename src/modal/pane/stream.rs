@@ -22,6 +22,9 @@ const NUMERIC_INPUT_BUF_SIZE: usize = 5; // Max 5 digits for u16 (65535)
 const TICK_COUNT_MIN: u16 = 4;
 const TICK_COUNT_MAX: u16 = 10000;
 
+const CUSTOM_TIMEFRAME_MIN: u16 = 2;
+const CUSTOM_TIMEFRAME_MAX: u16 = 1440;
+
 const TICK_MULTIPLIER_MIN: u16 = 1;
 const TICK_MULTIPLIER_MAX: u16 = 2000;
 
@@ -67,6 +70,10 @@ impl NumericInput {
         Self::from_str(&tc.0.to_string())
     }
 
+    pub fn from_timeframe(timeframe: Timeframe) -> Self {
+        Self::from_str(&timeframe.to_minutes().to_string())
+    }
+
     pub fn to_display_string(self) -> String {
         if self.len == 0 {
             return String::new();
@@ -96,6 +103,16 @@ impl NumericInput {
             .ok()
             .and_then(|s| s.parse::<u16>().ok())
             .map(data::aggr::TickCount)
+    }
+
+    pub fn parse_timeframe(self) -> Option<Timeframe> {
+        if self.len == 0 {
+            return None;
+        }
+        std::str::from_utf8(&self.buffer[..self.len as usize])
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .map(Timeframe::from_minutes)
     }
 }
 
@@ -138,6 +155,7 @@ pub enum Message {
     TicksizeInputChanged(String),
     TicksizeSelected(TickMultiplier),
     TickCountInputChanged(String),
+    TimeframeInputChanged(String),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -148,11 +166,31 @@ pub struct Modifier {
     price_step: Option<PriceStep>,
     min_ticksize: Option<MinTicksize>,
     exchange: Option<Exchange>,
+    #[serde(default)]
+    timeframe_input: NumericInput,
+    #[serde(default)]
+    parsed_timeframe: Option<Timeframe>,
+    #[serde(default = "default_true")]
+    timeframe_input_is_valid: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Modifier {
     pub fn new(kind: ModifierKind) -> Self {
         let tab = SelectedTab::from(&kind);
+        let selected_timeframe = match kind {
+            ModifierKind::Candlestick(Basis::Time(tf))
+            | ModifierKind::Footprint(Basis::Time(tf), _)
+            | ModifierKind::Comparison(Basis::Time(tf))
+                if tf.is_custom() =>
+            {
+                Some(tf)
+            }
+            _ => None,
+        };
 
         Self {
             tab,
@@ -161,6 +199,10 @@ impl Modifier {
             price_step: None,
             min_ticksize: None,
             exchange: None,
+            timeframe_input: selected_timeframe
+                .map_or_else(NumericInput::default, NumericInput::from_timeframe),
+            parsed_timeframe: selected_timeframe,
+            timeframe_input_is_valid: true,
         }
     }
 
@@ -230,7 +272,14 @@ impl Modifier {
         match message {
             Message::TabSelected(tab) => Some(Action::TabSelected(tab)),
             Message::BasisSelected(basis) => match basis {
-                Basis::Time(_) => Some(Action::BasisSelected(basis)),
+                Basis::Time(timeframe) => {
+                    if self.parsed_timeframe != Some(timeframe) {
+                        self.timeframe_input = NumericInput::default();
+                        self.parsed_timeframe = None;
+                    }
+                    self.timeframe_input_is_valid = true;
+                    Some(Action::BasisSelected(basis))
+                }
                 Basis::Tick(new_tc) => {
                     if let SelectedTab::TickCount {
                         raw_input_buf,
@@ -324,6 +373,19 @@ impl Modifier {
                         }
                     }
                 }
+                None
+            }
+            Message::TimeframeInputChanged(value_str) => {
+                let numeric_value_str: String =
+                    value_str.chars().filter(char::is_ascii_digit).collect();
+
+                self.timeframe_input = NumericInput::from_str(&numeric_value_str);
+                self.parsed_timeframe = self.timeframe_input.parse_timeframe();
+                self.timeframe_input_is_valid = self.timeframe_input.is_empty()
+                    || self.parsed_timeframe.is_some_and(|timeframe| {
+                        let minutes = timeframe.to_minutes();
+                        (CUSTOM_TIMEFRAME_MIN..=CUSTOM_TIMEFRAME_MAX).contains(&minutes)
+                    });
                 None
             }
         }
@@ -476,6 +538,44 @@ impl Modifier {
                                 items_per_row,
                             );
                             basis_selection_column = basis_selection_column.push(timeframe_grid);
+
+                            if matches!(
+                                kind,
+                                ModifierKind::Candlestick(_)
+                                    | ModifierKind::Footprint(_, _)
+                                    | ModifierKind::Comparison(_)
+                            ) {
+                                let custom_timeframe = self.parsed_timeframe.filter(|timeframe| {
+                                    let supported = |ticker_info: &exchange::TickerInfo| {
+                                        ticker_info.exchange().supports_kline_timeframe(*timeframe)
+                                    };
+                                    match stream_pair.as_ref() {
+                                        Some(StreamPairKind::SingleSource(ticker_info)) => {
+                                            supported(ticker_info)
+                                        }
+                                        Some(StreamPairKind::MultiSource(ticker_infos)) => {
+                                            ticker_infos.iter().all(supported)
+                                        }
+                                        None => true,
+                                    }
+                                });
+                                basis_selection_column =
+                                    basis_selection_column.push(numeric_input_box::<_, Message>(
+                                        "Custom: ",
+                                        &format!(
+                                            "{}-{} min",
+                                            CUSTOM_TIMEFRAME_MIN, CUSTOM_TIMEFRAME_MAX
+                                        ),
+                                        &self.timeframe_input.to_display_string(),
+                                        self.timeframe_input_is_valid
+                                            && (self.parsed_timeframe.is_none()
+                                                || custom_timeframe.is_some()),
+                                        Message::TimeframeInputChanged,
+                                        custom_timeframe.map(|timeframe| {
+                                            Message::BasisSelected(Basis::Time(timeframe))
+                                        }),
+                                    ));
+                            }
                         }
                     }
                     SelectedTab::TickCount {
@@ -707,9 +807,15 @@ fn supported_kline_timeframes(stream_pair: Option<&StreamPairKind>) -> Vec<Timef
         _ => true,
     };
 
-    Timeframe::KLINE
+    let mut timeframes = Timeframe::KLINE.to_vec();
+    let position = timeframes
         .iter()
-        .copied()
+        .position(|timeframe| *timeframe == Timeframe::M15)
+        .unwrap_or(timeframes.len());
+    timeframes.insert(position, Timeframe::Custom(10));
+
+    timeframes
+        .into_iter()
         .filter(|tf| is_supported(*tf))
         .collect()
 }
@@ -750,5 +856,21 @@ impl From<&ModifierKind> for SelectedTab {
                 },
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ten_minutes_is_a_common_timeframe_between_five_and_fifteen() {
+        let timeframes = supported_kline_timeframes(None);
+        let position = timeframes
+            .iter()
+            .position(|timeframe| *timeframe == Timeframe::Custom(10))
+            .unwrap();
+        assert_eq!(timeframes[position - 1], Timeframe::M5);
+        assert_eq!(timeframes[position + 1], Timeframe::M15);
     }
 }
