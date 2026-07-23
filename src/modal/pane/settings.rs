@@ -51,6 +51,7 @@ pub enum KlineColorPicker {
     OiFlowShort,
     OiFlowBuyOutflow,
     OiFlowSellOutflow,
+    OiFlowExtremeBand,
     OwdPositive,
     OwdNegative,
     LpiPositive,
@@ -1494,6 +1495,15 @@ pub fn kline_indicator_cfg_view<'a>(
                     Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
                 },
             );
+            let extreme_band_cfg = cfg.clone();
+            let extreme_band_picker = color_picker(
+                data::config::theme::to_hsva(flow.extreme_band_color),
+                move |value| {
+                    let mut next = extreme_band_cfg.clone();
+                    next.oi_flow_net.extreme_band_color = data::config::theme::from_hsva(value);
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
             column![
                 text("OI Flow Net").size(crate::style::text_size::SECTION),
                 text(format!("Relative basis length: {}", flow.basis_length)),
@@ -1529,6 +1539,16 @@ pub fn kline_indicator_cfg_view<'a>(
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
+                row![
+                    text("Extreme regions"),
+                    color_swatch(
+                        pane,
+                        flow.extreme_band_color,
+                        KlineColorPicker::OiFlowExtremeBand
+                    ),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
                 if expanded == Some(KlineColorPicker::OiFlowLong) {
                     long_picker
                 } else if expanded == Some(KlineColorPicker::OiFlowShort) {
@@ -1537,6 +1557,8 @@ pub fn kline_indicator_cfg_view<'a>(
                     buy_outflow_picker
                 } else if expanded == Some(KlineColorPicker::OiFlowSellOutflow) {
                     sell_outflow_picker
+                } else if expanded == Some(KlineColorPicker::OiFlowExtremeBand) {
+                    extreme_band_picker
                 } else {
                     space::vertical().height(0).into()
                 },

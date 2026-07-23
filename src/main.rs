@@ -199,7 +199,6 @@ impl Flowsurface {
         match message {
             Message::MarketWsEvent(event) => {
                 let main_window_id = self.main_window.id;
-                let dashboard = self.active_dashboard_mut();
 
                 match event {
                     exchange::Event::Connected(_streams) => {}
@@ -207,44 +206,56 @@ impl Flowsurface {
                         log::info!("a stream disconnected from WS: {reason:?}");
                     }
                     exchange::Event::DepthReceived(stream, update_t, depth) => {
-                        let task = dashboard
-                            .ingest_depth(&stream, update_t, &depth, main_window_id)
-                            .map(move |msg| Message::Dashboard {
-                                layout_id: None,
-                                event: msg,
-                            });
-
-                        return task;
+                        return Task::batch(self.layout_manager.layouts.iter_mut().map(|layout| {
+                            let layout_id = layout.id.unique;
+                            layout
+                                .dashboard
+                                .ingest_depth(&stream, update_t, &depth, main_window_id)
+                                .map(move |event| Message::Dashboard {
+                                    layout_id: Some(layout_id),
+                                    event,
+                                })
+                        }));
                     }
                     exchange::Event::TradesReceived(stream, update_t, buffer) => {
-                        let task = dashboard
-                            .ingest_trades(&stream, &buffer, update_t, main_window_id)
-                            .map(move |msg| Message::Dashboard {
-                                layout_id: None,
-                                event: msg,
-                            });
-
                         if let Some(msg) = self.audio_stream.try_play_sound(&stream, &buffer) {
                             self.notifications.push(Toast::error(msg));
                         }
 
-                        return task;
+                        return Task::batch(self.layout_manager.layouts.iter_mut().map(|layout| {
+                            let layout_id = layout.id.unique;
+                            layout
+                                .dashboard
+                                .ingest_trades(&stream, &buffer, update_t, main_window_id)
+                                .map(move |event| Message::Dashboard {
+                                    layout_id: Some(layout_id),
+                                    event,
+                                })
+                        }));
                     }
                     exchange::Event::KlineReceived(stream, kline) => {
-                        return dashboard
-                            .update_latest_klines(&stream, &kline, main_window_id)
-                            .map(move |msg| Message::Dashboard {
-                                layout_id: None,
-                                event: msg,
-                            });
+                        return Task::batch(self.layout_manager.layouts.iter_mut().map(|layout| {
+                            let layout_id = layout.id.unique;
+                            layout
+                                .dashboard
+                                .update_latest_klines(&stream, &kline, main_window_id)
+                                .map(move |event| Message::Dashboard {
+                                    layout_id: Some(layout_id),
+                                    event,
+                                })
+                        }));
                     }
                     exchange::Event::LiquidationsReceived(stream, liquidations) => {
-                        return dashboard
-                            .ingest_liquidations(&stream, &liquidations, main_window_id)
-                            .map(move |msg| Message::Dashboard {
-                                layout_id: None,
-                                event: msg,
-                            });
+                        return Task::batch(self.layout_manager.layouts.iter_mut().map(|layout| {
+                            let layout_id = layout.id.unique;
+                            layout
+                                .dashboard
+                                .ingest_liquidations(&stream, &liquidations, main_window_id)
+                                .map(move |event| Message::Dashboard {
+                                    layout_id: Some(layout_id),
+                                    event,
+                                })
+                        }));
                     }
                 }
             }
@@ -768,10 +779,9 @@ impl Flowsurface {
         let window_events = window::events().map(Message::WindowEvent);
         let sidebar = self.sidebar.subscription().map(Message::Sidebar);
 
-        let exchange_streams = self
-            .active_dashboard()
-            .market_subscriptions(&self.handles)
-            .map(Message::MarketWsEvent);
+        let streams = self.layout_manager.combined_streams();
+        let exchange_streams =
+            Dashboard::market_subscriptions(&streams, &self.handles).map(Message::MarketWsEvent);
 
         let tick = iced::window::frames().map(Message::Tick);
 

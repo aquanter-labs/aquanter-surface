@@ -10,7 +10,9 @@ use exchange::{Kline, UnixMs};
 use iced::widget::{Space, canvas};
 use iced::{Element, Point, Rectangle, Theme};
 
-use super::{AvailabilityCause, IndicatorAvailability, KlineIndicatorImpl};
+use super::{
+    AvailabilityCause, IndicatorAvailability, KlineIndicatorImpl, ThemeColor, themed_color,
+};
 use crate::chart::{Message, ViewState};
 
 #[derive(Clone, Copy)]
@@ -202,7 +204,7 @@ impl KlineIndicatorImpl for VolumeProfileIndicator {
         &self,
         frame: &mut canvas::Frame,
         chart: &ViewState,
-        _theme: &Theme,
+        theme: &Theme,
         visible: RangeInclusive<u64>,
     ) {
         let range = match self.config.mode {
@@ -252,9 +254,25 @@ impl KlineIndicatorImpl for VolumeProfileIndicator {
                 )
             }
         };
-        let mut buy_color = self.config.buy_color;
-        let mut sell_color = self.config.sell_color;
-        let mut neutral_color = self.config.color;
+        let defaults = VolumeProfileConfig::default();
+        let mut buy_color = themed_color(
+            theme,
+            self.config.buy_color,
+            defaults.buy_color,
+            ThemeColor::Success,
+        );
+        let mut sell_color = themed_color(
+            theme,
+            self.config.sell_color,
+            defaults.sell_color,
+            ThemeColor::Danger,
+        );
+        let mut neutral_color = themed_color(
+            theme,
+            self.config.color,
+            defaults.color,
+            ThemeColor::Secondary,
+        );
         buy_color.a = 0.55;
         sell_color.a = 0.55;
         neutral_color.a = 0.45;

@@ -5,6 +5,7 @@ use crate::widget::column_drag::{self, DragEvent};
 use crate::widget::dragger_row;
 use crate::{style, tooltip};
 
+use exchange::adapter::UniqueStreams;
 use iced::widget::{
     button, center, column, container, row, scrollable, space, text, text_input,
     tooltip::Position as TooltipPosition,
@@ -120,6 +121,14 @@ impl LayoutManager {
 
     pub fn iter_dashboards_mut(&mut self) -> impl Iterator<Item = &mut Dashboard> {
         self.layouts.iter_mut().map(|entry| &mut entry.dashboard)
+    }
+
+    pub fn combined_streams(&self) -> UniqueStreams {
+        UniqueStreams::from(
+            self.layouts
+                .iter()
+                .flat_map(|layout| layout.dashboard.streams.iter()),
+        )
     }
 
     pub fn mut_dashboard(&mut self, id: Uuid) -> Option<&mut Dashboard> {
@@ -346,6 +355,58 @@ impl LayoutManager {
             ),
         )
         .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::{Layout, LayoutId};
+    use exchange::adapter::{Exchange, StreamKind};
+    use exchange::{Ticker, TickerInfo};
+
+    #[test]
+    fn combines_and_deduplicates_streams_from_all_layouts() {
+        let btc = TickerInfo::new(
+            Ticker::new("BTCUSDT", Exchange::BinanceLinear),
+            0.1,
+            0.001,
+            None,
+        );
+        let eth = TickerInfo::new(
+            Ticker::new("ETHUSDT", Exchange::BinanceLinear),
+            0.01,
+            0.001,
+            None,
+        );
+        let btc_stream = StreamKind::Trades { ticker_info: btc };
+        let eth_stream = StreamKind::Trades { ticker_info: eth };
+        let mut first = Dashboard::default();
+        first.streams.add(btc_stream);
+        let mut second = Dashboard::default();
+        second.streams.add(btc_stream);
+        second.streams.add(eth_stream);
+        let manager = LayoutManager::from_config(
+            vec![
+                Layout {
+                    id: LayoutId {
+                        unique: Uuid::new_v4(),
+                        name: "First".into(),
+                    },
+                    dashboard: first,
+                },
+                Layout {
+                    id: LayoutId {
+                        unique: Uuid::new_v4(),
+                        name: "Second".into(),
+                    },
+                    dashboard: second,
+                },
+            ],
+            None,
+        );
+
+        assert_eq!(manager.combined_streams().trade_streams(None).len(), 2);
     }
 }
 

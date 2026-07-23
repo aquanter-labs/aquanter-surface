@@ -85,7 +85,6 @@ impl CumulativeDeltaIndicator {
             IndicatorPlotStyle::Line => {
                 let plot = LinePlot::new(value_fn)
                     .stroke_width(self.config.line_width.clamp(0.5, 5.0))
-                    .color(self.config.line_color)
                     .show_points(true)
                     .point_radius_factor(0.2)
                     .padding(0.08)
@@ -94,6 +93,12 @@ impl CumulativeDeltaIndicator {
                         "CVD requires {MIN_DIRECTIONAL_RUN}+ consecutive bars\nwith directional volume",
                     ))
                     .with_tooltip(tooltip);
+                let plot = if self.config.line_color == IndicatorSeriesConfig::default().line_color
+                {
+                    plot
+                } else {
+                    plot.color(self.config.line_color)
+                };
                 indicator_row(
                     main_chart,
                     &self.cache,

@@ -7,7 +7,9 @@ use exchange::{Kline, Trade, UnixMs};
 use iced::widget::{canvas, center, text};
 use iced::{Element, Point, Theme};
 
-use super::{AvailabilityCause, IndicatorAvailability, KlineIndicatorImpl};
+use super::{
+    AvailabilityCause, IndicatorAvailability, KlineIndicatorImpl, ThemeColor, themed_color,
+};
 use crate::chart::indicator::indicator_row;
 use crate::chart::indicator::plot::{AnySeries, Plot, PlotTooltip, Series, TooltipFn, YScale};
 use crate::chart::{Caches, Message, ViewState};
@@ -143,14 +145,24 @@ impl Plot<AnySeries<'_, StochRsiPoint>> for StochRsiPlot {
         }
         let mut previous_k = None;
         let mut previous_d = None;
+        let defaults = StochRsiConfig::default();
+        let k_color = themed_color(
+            theme,
+            self.config.k_color,
+            defaults.k_color,
+            ThemeColor::Primary,
+        );
+        let d_color = themed_color(
+            theme,
+            self.config.d_color,
+            defaults.d_color,
+            ThemeColor::Warning,
+        );
         data.for_each_in(range, |time, point| {
             let x = chart.interval_to_x(time);
             let k = Point::new(x, scale.to_y(point.k as f32));
             let d = Point::new(x, scale.to_y(point.d as f32));
-            for (previous, current, color) in [
-                (previous_k, k, self.config.k_color),
-                (previous_d, d, self.config.d_color),
-            ] {
+            for (previous, current, color) in [(previous_k, k, k_color), (previous_d, d, d_color)] {
                 if let Some(previous) = previous {
                     frame.stroke(
                         &canvas::Path::line(previous, current),

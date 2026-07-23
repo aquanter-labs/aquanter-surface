@@ -12,6 +12,8 @@ pub struct SignedBarPlot<V, T> {
     bar_width_factor: f32,
     positive_color: iced::Color,
     negative_color: iced::Color,
+    theme_positive: bool,
+    theme_negative: bool,
     tooltip: Option<TooltipFn<T>>,
 }
 
@@ -27,8 +29,16 @@ impl<V, T> SignedBarPlot<V, T> {
             bar_width_factor,
             positive_color,
             negative_color,
+            theme_positive: false,
+            theme_negative: false,
             tooltip: None,
         }
+    }
+
+    pub fn theme_colors(mut self, positive: bool, negative: bool) -> Self {
+        self.theme_positive = positive;
+        self.theme_negative = negative;
+        self
     }
 
     pub fn with_tooltip<F>(mut self, tooltip: F) -> Self
@@ -67,7 +77,7 @@ where
         &self,
         frame: &mut canvas::Frame,
         chart: &ViewState,
-        _theme: &Theme,
+        theme: &Theme,
         data: &S,
         range: RangeInclusive<u64>,
         scale: &YScale,
@@ -81,7 +91,13 @@ where
                 Point::new(chart.interval_to_x(time) - width / 2.0, y.min(zero)),
                 Size::new(width, (zero - y).abs().max(1.0 / chart.scaling)),
                 if value >= 0.0 {
-                    self.positive_color
+                    if self.theme_positive {
+                        theme.extended_palette().success.base.color
+                    } else {
+                        self.positive_color
+                    }
+                } else if self.theme_negative {
+                    theme.extended_palette().danger.base.color
                 } else {
                     self.negative_color
                 },

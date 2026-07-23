@@ -1,5 +1,6 @@
 use crate::screen::dashboard::pane::{self, Message};
 use crate::style::{self, Icon, icon_text};
+use crate::widget::scrollable_content;
 use data::chart::indicator::{Indicator, UiIndicator};
 use iced::{
     Element, Length, padding,
@@ -21,7 +22,7 @@ where
         column![].spacing(4).into()
     };
 
-    container(content_row)
+    container(scrollable_content(content_row))
         .width(280)
         .max_width(280)
         .padding(16)
@@ -54,7 +55,7 @@ where
             pane::Event::ToggleIndicator((*indicator).into()),
         ))
         .width(Length::Fill)
-        .style(move |theme, status| style::button::modifier(theme, status, is_selected));
+        .style(move |theme, status| style::button::menu_body(theme, status, is_selected));
 
     let ui_indicator = (*indicator).into();
     if is_selected
@@ -77,10 +78,13 @@ where
     {
         row![
             toggle,
-            button(icon_text(Icon::Cog, 11)).on_press(Message::PaneEvent(
-                pane,
-                pane::Event::ShowModal(crate::modal::pane::Modal::IndicatorSettings(kline)),
-            ))
+            button(icon_text(Icon::Cog, 11))
+                .on_press(Message::PaneEvent(
+                    pane,
+                    pane::Event::ShowModal(crate::modal::pane::Modal::IndicatorSettings(kline)),
+                ))
+                .width(32)
+                .style(move |theme, status| style::button::menu_body(theme, status, false))
         ]
         .spacing(4)
         .into()

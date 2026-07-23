@@ -63,7 +63,7 @@ where
         &self,
         frame: &mut canvas::Frame,
         chart: &ViewState,
-        _theme: &Theme,
+        theme: &Theme,
         data: &S,
         range: RangeInclusive<u64>,
         scale: &YScale,
@@ -79,10 +79,21 @@ where
             let x = chart.interval_to_x(time) + shift;
             let open_y = scale.to_y(open);
             let close_y = scale.to_y(close);
+            let defaults = IndicatorSeriesConfig::default();
             let color = if close >= open {
-                self.config.up_color
+                super::super::kline::themed_color(
+                    theme,
+                    self.config.up_color,
+                    defaults.up_color,
+                    super::super::kline::ThemeColor::Success,
+                )
             } else {
-                self.config.down_color
+                super::super::kline::themed_color(
+                    theme,
+                    self.config.down_color,
+                    defaults.down_color,
+                    super::super::kline::ThemeColor::Danger,
+                )
             };
             frame.stroke(
                 &Path::line(Point::new(x, open_y), Point::new(x, close_y)),

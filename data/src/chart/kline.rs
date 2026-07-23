@@ -593,6 +593,7 @@ pub struct OiFlowNetConfig {
     pub short_color: iced_core::Color,
     pub buy_outflow_color: iced_core::Color,
     pub sell_outflow_color: iced_core::Color,
+    pub extreme_band_color: iced_core::Color,
 }
 
 impl Default for OiFlowNetConfig {
@@ -606,6 +607,7 @@ impl Default for OiFlowNetConfig {
             short_color: iced_core::Color::from_rgb(0.76, 0.40, 0.42),
             buy_outflow_color: iced_core::Color::from_rgb(0.28, 0.64, 0.64),
             sell_outflow_color: iced_core::Color::from_rgb(0.55, 0.30, 0.36),
+            extreme_band_color: iced_core::Color::from_rgb(0.72, 0.74, 0.77),
         }
     }
 }

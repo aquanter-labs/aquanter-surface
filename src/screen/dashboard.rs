@@ -1264,9 +1264,11 @@ impl Dashboard {
         }
     }
 
-    pub fn market_subscriptions(&self, handles: &AdapterHandles) -> Subscription<exchange::Event> {
-        let unique_streams = self
-            .streams
+    pub fn market_subscriptions(
+        streams: &UniqueStreams,
+        handles: &AdapterHandles,
+    ) -> Subscription<exchange::Event> {
+        let unique_streams = streams
             .combined_used()
             .flat_map(|(exchange, specs)| {
                 let mut subs = vec![];

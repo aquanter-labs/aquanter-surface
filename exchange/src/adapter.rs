@@ -187,6 +187,14 @@ impl UniqueStreams {
         }
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = &StreamKind> {
+        self.streams
+            .iter()
+            .flat_map(|(_, ticker_map)| ticker_map.as_ref().into_iter())
+            .flat_map(|ticker_map| ticker_map.values())
+            .flatten()
+    }
+
     fn update_specs_for_exchange(&mut self, exchange: Exchange) {
         let depth_streams = self.depth_streams(Some(exchange));
         let trade_streams = self.trade_streams(Some(exchange));

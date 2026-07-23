@@ -8,7 +8,7 @@ use exchange::adapter::Exchange;
 use exchange::{Kline, Timeframe, Trade, UnixMs};
 
 use super::plot::AnySeries;
-use iced::{Theme, widget::canvas};
+use iced::{Color, Theme, widget::canvas};
 
 pub mod anchored_vwap;
 pub mod bar_analysis;
@@ -21,6 +21,29 @@ pub mod stoch_rsi;
 pub mod volume;
 pub mod volume_profile;
 pub mod vwap;
+
+#[derive(Clone, Copy)]
+pub enum ThemeColor {
+    Primary,
+    Secondary,
+    Success,
+    Danger,
+    Warning,
+}
+
+pub fn themed_color(theme: &Theme, configured: Color, default: Color, role: ThemeColor) -> Color {
+    if configured != default {
+        return configured;
+    }
+    let palette = theme.extended_palette();
+    match role {
+        ThemeColor::Primary => palette.primary.strong.color,
+        ThemeColor::Secondary => palette.secondary.strong.color,
+        ThemeColor::Success => palette.success.base.color,
+        ThemeColor::Danger => palette.danger.base.color,
+        ThemeColor::Warning => palette.warning.strong.color,
+    }
+}
 
 /// UI adapter methods for converting domain `BasisSeries` into plot-ready series.
 trait BasisSeriesExt<T> {
@@ -201,5 +224,25 @@ pub fn make_empty(which: KlineIndicator, config: &Config) -> Box<dyn KlineIndica
                 config.liquidation_pressure,
             ),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_indicator_colors_follow_theme_but_custom_colors_do_not() {
+        let theme = Theme::Dark;
+        let default = Color::from_rgb(0.1, 0.2, 0.3);
+        assert_eq!(
+            themed_color(&theme, default, default, ThemeColor::Success),
+            theme.extended_palette().success.base.color
+        );
+        let custom = Color::from_rgb(0.8, 0.2, 0.1);
+        assert_eq!(
+            themed_color(&theme, custom, default, ThemeColor::Success),
+            custom
+        );
     }
 }

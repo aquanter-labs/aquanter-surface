@@ -9,7 +9,9 @@ use exchange::adapter::Venue;
 use iced::widget::{Space, canvas};
 use iced::{Element, Point, Theme};
 
-use super::{AvailabilityCause, IndicatorAvailability, KlineIndicatorImpl};
+use super::{
+    AvailabilityCause, IndicatorAvailability, KlineIndicatorImpl, ThemeColor, themed_color,
+};
 use crate::chart::{Message, ViewState};
 
 const MAX_EVENTS: usize = 10_000;
@@ -80,7 +82,7 @@ impl KlineIndicatorImpl for LiquidationHeatmapIndicator {
         &self,
         frame: &mut canvas::Frame,
         chart: &ViewState,
-        _theme: &Theme,
+        theme: &Theme,
         visible: RangeInclusive<u64>,
     ) {
         let Basis::Time(timeframe) = chart.basis else {
@@ -119,8 +121,19 @@ impl KlineIndicatorImpl for LiquidationHeatmapIndicator {
             let y = row as f32 * row_height / chart.scaling - chart.translation.y;
             let height = row_height / chart.scaling;
             let long_width = width * (bin.longs / total) as f32;
-            let mut long_color = self.config.long_color;
-            let mut short_color = self.config.short_color;
+            let defaults = LiquidationHeatmapConfig::default();
+            let mut long_color = themed_color(
+                theme,
+                self.config.long_color,
+                defaults.long_color,
+                ThemeColor::Danger,
+            );
+            let mut short_color = themed_color(
+                theme,
+                self.config.short_color,
+                defaults.short_color,
+                ThemeColor::Success,
+            );
             long_color.a = heat_alpha(bin.longs, max, self.config.opacity);
             short_color.a = heat_alpha(bin.shorts, max, self.config.opacity);
             if long_width > 0.0 {

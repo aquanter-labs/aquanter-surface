@@ -12,7 +12,10 @@ use exchange::{Kline, OpenInterest, Trade, UnixMs};
 use iced::widget::{canvas, center, text};
 use iced::{Alignment, Element, Point, Size, Theme};
 
-use super::{AvailabilityCause, FetchCtx, IndicatorAvailability, KlineIndicatorImpl};
+use super::{
+    AvailabilityCause, FetchCtx, IndicatorAvailability, KlineIndicatorImpl, ThemeColor,
+    themed_color,
+};
 use crate::chart::indicator::indicator_row;
 use crate::chart::indicator::plot::{
     AnySeries, Plot, PlotTooltip, Series, TooltipFn, YScale, bar::SignedBarPlot,
@@ -272,6 +275,19 @@ impl Plot<AnySeries<'_, RsiPoint>> for RsiPlot {
             );
         }
         let width = self.config.line_width.clamp(0.5, 5.0);
+        let defaults = OiDeltaDivergenceConfig::default();
+        let cvd_color = themed_color(
+            theme,
+            self.config.cvd_color,
+            defaults.cvd_color,
+            ThemeColor::Primary,
+        );
+        let oi_color = themed_color(
+            theme,
+            self.config.oi_color,
+            defaults.oi_color,
+            ThemeColor::Warning,
+        );
         let mut previous_cvd = None;
         let mut previous_oi = None;
         data.for_each_in(range, |time, point| {
@@ -283,7 +299,7 @@ impl Plot<AnySeries<'_, RsiPoint>> for RsiPlot {
                     &canvas::Path::line(previous, cvd),
                     canvas::Stroke::default()
                         .with_width(width)
-                        .with_color(self.config.cvd_color),
+                        .with_color(cvd_color),
                 );
             }
             if let Some(previous) = previous_oi {
@@ -291,7 +307,7 @@ impl Plot<AnySeries<'_, RsiPoint>> for RsiPlot {
                     &canvas::Path::line(previous, oi),
                     canvas::Stroke::default()
                         .with_width(width)
-                        .with_color(self.config.oi_color),
+                        .with_color(oi_color),
                 );
             }
             previous_cvd = Some(cvd);
@@ -445,9 +461,10 @@ impl KlineIndicatorImpl for OiDeltaDivergenceIndicator {
         &self,
         frame: &mut canvas::Frame,
         chart: &ViewState,
-        _theme: &Theme,
+        theme: &Theme,
         visible: RangeInclusive<u64>,
     ) {
+        let defaults = OiDeltaDivergenceConfig::default();
         for marker in self
             .markers
             .iter()
@@ -455,9 +472,19 @@ impl KlineIndicatorImpl for OiDeltaDivergenceIndicator {
         {
             let size = (self.config.marker_size + marker.strength).clamp(2.0, 12.0);
             let mut color = if marker.bullish {
-                self.config.bullish_color
+                themed_color(
+                    theme,
+                    self.config.bullish_color,
+                    defaults.bullish_color,
+                    ThemeColor::Success,
+                )
             } else {
-                self.config.bearish_color
+                themed_color(
+                    theme,
+                    self.config.bearish_color,
+                    defaults.bearish_color,
+                    ThemeColor::Danger,
+                )
             };
             color.a = 0.9;
             let y = chart.price_to_y(exchange::unit::Price::from_f64(marker.price));
@@ -678,17 +705,23 @@ impl Plot<AnySeries<'_, OiFlowPoint>> for OiFlowPlot {
         scale: &YScale,
     ) {
         let palette = theme.extended_palette();
+        let defaults = OiFlowNetConfig::default();
+        let extreme_band_color = if self.config.extreme_band_color == defaults.extreme_band_color {
+            palette.background.strong.color
+        } else {
+            self.config.extreme_band_color
+        };
         let left = chart.interval_to_x(*range.start()) - chart.cell_width / 2.0;
         let right = chart.interval_to_x(*range.end()) + chart.cell_width / 2.0;
         for (low, high, color) in [
             (1.0, 2.0, palette.background.strong.color.scale_alpha(0.12)),
-            (2.0, 3.0, palette.danger.base.color.scale_alpha(0.10)),
+            (2.0, 3.0, extreme_band_color.scale_alpha(0.16)),
             (
                 -2.0,
                 -1.0,
                 palette.background.strong.color.scale_alpha(0.12),
             ),
-            (-3.0, -2.0, palette.danger.base.color.scale_alpha(0.10)),
+            (-3.0, -2.0, extreme_band_color.scale_alpha(0.16)),
         ] {
             let y1 = scale.to_y(low);
             let y2 = scale.to_y(high);
@@ -707,12 +740,29 @@ impl Plot<AnySeries<'_, OiFlowPoint>> for OiFlowPlot {
             let center = chart.interval_to_x(time);
             let value = point.relative_oi as f32;
             let y = scale.to_y(value);
-            let base_color = match point.state {
-                OiFlowState::BuyInflow => self.config.long_color,
-                OiFlowState::SellInflow => self.config.short_color,
-                OiFlowState::BuyOutflow => self.config.buy_outflow_color,
-                OiFlowState::SellOutflow => self.config.sell_outflow_color,
+            let (configured, default, role) = match point.state {
+                OiFlowState::BuyInflow => (
+                    self.config.long_color,
+                    defaults.long_color,
+                    ThemeColor::Success,
+                ),
+                OiFlowState::SellInflow => (
+                    self.config.short_color,
+                    defaults.short_color,
+                    ThemeColor::Danger,
+                ),
+                OiFlowState::BuyOutflow => (
+                    self.config.buy_outflow_color,
+                    defaults.buy_outflow_color,
+                    ThemeColor::Primary,
+                ),
+                OiFlowState::SellOutflow => (
+                    self.config.sell_outflow_color,
+                    defaults.sell_outflow_color,
+                    ThemeColor::Warning,
+                ),
             };
+            let base_color = themed_color(theme, configured, default, role);
             let color = if self.config.static_color {
                 base_color
             } else {
@@ -951,6 +1001,10 @@ impl KlineIndicatorImpl for OiWeightedDeltaIndicator {
             self.config.positive_color,
             self.config.negative_color,
         )
+        .theme_colors(
+            self.config.positive_color == OiWeightedDeltaConfig::default().positive_color,
+            self.config.negative_color == OiWeightedDeltaConfig::default().negative_color,
+        )
         .with_tooltip(|value: &f64, _| {
             PlotTooltip::new(format!("OI-weighted Delta: {}", abbr_large_numbers(*value)))
         });
@@ -1001,6 +1055,7 @@ struct LiquidationSignal {
     score: f64,
     estimated: f64,
     oi_change_pct: f64,
+    triggered: bool,
 }
 
 fn liquidation_signal(
@@ -1011,7 +1066,7 @@ fn liquidation_signal(
     config: LiquidationPressureConfig,
 ) -> LiquidationSignal {
     let oi_change_pct = (point.oi / point.previous_oi.max(f64::EPSILON) - 1.0) * 100.0;
-    let threshold = delta_mean + config.delta_zscore.max(0.1) as f64 * delta_stddev;
+    let threshold = delta_mean + config.delta_zscore.max(0.0) as f64 * delta_stddev;
     let price_change = point.bar.close - previous_close;
     let direction = if point.bar.delta > 0.0 && price_change > 0.0 {
         1.0
@@ -1024,21 +1079,18 @@ fn liquidation_signal(
         && point.bar.delta.abs() >= threshold
         && direction != 0.0;
     LiquidationSignal {
-        score: if triggered {
-            direction
-                * ((-oi_change_pct / config.oi_drop_threshold.max(0.01) as f64)
-                    * (point.bar.delta.abs() / threshold.max(f64::EPSILON))
-                    * 100.0)
-                    .min(500.0)
-        } else {
-            0.0
-        },
+        score: direction
+            * ((-oi_change_pct).max(0.0)
+                * (point.bar.delta.abs() / delta_mean.max(f64::EPSILON))
+                * 100.0)
+                .min(500.0),
         estimated: if triggered {
             (point.oi - point.previous_oi).abs()
         } else {
             0.0
         },
         oi_change_pct,
+        triggered,
     }
 }
 
@@ -1115,11 +1167,16 @@ impl KlineIndicatorImpl for LiquidationPressureIndicator {
             self.config.positive_color,
             self.config.negative_color,
         )
+        .theme_colors(
+            self.config.positive_color == LiquidationPressureConfig::default().positive_color,
+            self.config.negative_color == LiquidationPressureConfig::default().negative_color,
+        )
         .with_tooltip(|value: &LiquidationSignal, _| {
             PlotTooltip::new(format!(
-                "LPI: {:.0}\nOI change: {:.2}%\nEstimated liquidation: {}",
+                "LPI pressure: {:.0}\nOI change: {:.2}%\nSignal: {}\nEstimated liquidation: {}",
                 value.score,
                 value.oi_change_pct,
+                if value.triggered { "Triggered" } else { "No" },
                 abbr_large_numbers(value.estimated),
             ))
         });
@@ -1139,22 +1196,33 @@ impl KlineIndicatorImpl for LiquidationPressureIndicator {
         &self,
         frame: &mut canvas::Frame,
         chart: &ViewState,
-        _theme: &Theme,
+        theme: &Theme,
         visible: RangeInclusive<u64>,
     ) {
+        let defaults = LiquidationPressureConfig::default();
         for (&time, signal) in self
             .data
             .range(UnixMs::new(*visible.start())..=UnixMs::new(*visible.end()))
-            .filter(|(_, signal)| signal.score != 0.0)
+            .filter(|(_, signal)| signal.triggered)
         {
             let Some(bar) = self.source.bars.get(&time) else {
                 continue;
             };
             let bullish = signal.score > 0.0;
             let color = if bullish {
-                self.config.positive_color
+                themed_color(
+                    theme,
+                    self.config.positive_color,
+                    defaults.positive_color,
+                    ThemeColor::Success,
+                )
             } else {
-                self.config.negative_color
+                themed_color(
+                    theme,
+                    self.config.negative_color,
+                    defaults.negative_color,
+                    ThemeColor::Danger,
+                )
             };
             let price = if bullish { bar.low } else { bar.high };
             let position = Point::new(
@@ -1279,6 +1347,28 @@ mod tests {
             LiquidationPressureConfig::default(),
         );
         assert!(signal.score > 0.0);
+        assert!(signal.triggered);
         assert_eq!(signal.estimated, 3.0);
+
+        let pressure_only = liquidation_signal(
+            AlignedFlow {
+                time: UnixMs::ZERO,
+                bar: FlowBar {
+                    high: 102.0,
+                    low: 99.0,
+                    close: 102.0,
+                    delta: 30.0,
+                },
+                oi: 99.0,
+                previous_oi: 100.0,
+            },
+            100.0,
+            20.0,
+            10.0,
+            LiquidationPressureConfig::default(),
+        );
+        assert!(pressure_only.score > 0.0);
+        assert!(!pressure_only.triggered);
+        assert_eq!(pressure_only.estimated, 0.0);
     }
 }

@@ -8,7 +8,9 @@ use exchange::{Kline, UnixMs};
 use iced::widget::{Space, canvas};
 use iced::{Element, Point, Theme};
 
-use super::{AvailabilityCause, IndicatorAvailability, KlineIndicatorImpl};
+use super::{
+    AvailabilityCause, IndicatorAvailability, KlineIndicatorImpl, ThemeColor, themed_color,
+};
 use crate::chart::{Message, ViewState};
 
 #[derive(Clone, Copy)]
@@ -128,10 +130,15 @@ impl KlineIndicatorImpl for AnchoredVwapIndicator {
         &self,
         frame: &mut canvas::Frame,
         chart: &ViewState,
-        _theme: &Theme,
+        theme: &Theme,
         range: RangeInclusive<u64>,
     ) {
-        let mut color = self.config.color;
+        let mut color = themed_color(
+            theme,
+            self.config.color,
+            AnchoredVwapConfig::default().color,
+            ThemeColor::Warning,
+        );
         self.draw_line(frame, chart, range.clone(), 0, color);
         color.a = 0.65;
         for band in 1..=self.config.deviation_bands.min(3) as i8 {

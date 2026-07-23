@@ -7,7 +7,9 @@ use exchange::{Kline, UnixMs, unit::Price};
 use iced::widget::{Space, canvas};
 use iced::{Element, Point, Theme};
 
-use crate::chart::indicator::kline::{IndicatorAvailability, KlineIndicatorImpl};
+use crate::chart::indicator::kline::{
+    IndicatorAvailability, KlineIndicatorImpl, ThemeColor, themed_color,
+};
 use crate::chart::{Basis, Message, ViewState};
 
 const DAY_MS: u64 = 86_400_000;
@@ -170,10 +172,15 @@ impl KlineIndicatorImpl for SessionVwapIndicator {
         &self,
         frame: &mut canvas::Frame,
         chart: &ViewState,
-        _theme: &Theme,
+        theme: &Theme,
         visible_range: RangeInclusive<u64>,
     ) {
-        let mut color = self.config.color;
+        let mut color = themed_color(
+            theme,
+            self.config.color,
+            SessionVwapConfig::default().color,
+            ThemeColor::Primary,
+        );
         self.draw_line(frame, chart, visible_range.clone(), color, 0);
         color.a = 0.65;
         for band in 1..=self.config.deviation_bands.min(3) as i8 {

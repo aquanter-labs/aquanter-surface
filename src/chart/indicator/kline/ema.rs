@@ -117,10 +117,21 @@ impl KlineIndicatorImpl for EmaIndicator {
         &self,
         frame: &mut canvas::Frame,
         chart: &ViewState,
-        _theme: &Theme,
+        theme: &Theme,
         visible_range: RangeInclusive<u64>,
     ) {
+        let palette = theme.extended_palette();
         for line in &self.lines {
+            let auto_index =
+                (0..6).find(|index| line.config.color == EmaConfig::for_index(*index).color);
+            let color = auto_index.map_or(line.config.color, |index| match index {
+                0 => palette.danger.base.color,
+                1 => palette.primary.strong.color,
+                2 => palette.success.base.color,
+                3 => palette.secondary.strong.color,
+                4 => palette.warning.strong.color,
+                _ => palette.primary.weak.color,
+            });
             let mut previous = None;
             line.points
                 .as_plot_series()
@@ -137,7 +148,7 @@ impl KlineIndicatorImpl for EmaIndicator {
                                     width: line.config.line_width.clamp(0.5, 5.0) / chart.scaling,
                                     ..canvas::Stroke::default()
                                 },
-                                line.config.color,
+                                color,
                             ),
                         );
                     }
