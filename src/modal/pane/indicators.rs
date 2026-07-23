@@ -69,6 +69,7 @@ where
                 | data::chart::indicator::KlineIndicator::AnchoredVwap
                 | data::chart::indicator::KlineIndicator::Ema
                 | data::chart::indicator::KlineIndicator::VolumeProfile
+                | data::chart::indicator::KlineIndicator::FixedVolumeProfile
                 | data::chart::indicator::KlineIndicator::LiquidationHeatmap
                 | data::chart::indicator::KlineIndicator::OiDeltaDivergence
                 | data::chart::indicator::KlineIndicator::OiFlowNet

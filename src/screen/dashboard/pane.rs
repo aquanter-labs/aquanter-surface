@@ -242,6 +242,7 @@ impl State {
                         },
                         || vec![trades_stream(&derived_plan)],
                     );
+                    streams.push(depth_stream(&derived_plan));
                     if derived_plan.ticker_info.is_perps()
                         && derived_plan.ticker_info.exchange().venue()
                             == exchange::adapter::Venue::Binance
@@ -516,6 +517,16 @@ impl State {
             _ => {
                 log::error!("pane content not candlestick or footprint");
             }
+        }
+    }
+
+    pub fn insert_shared_klines(&mut self, timeframe: Timeframe, klines: &[Kline]) {
+        if let Content::Kline {
+            chart: Some(chart), ..
+        } = &mut self.content
+            && chart.basis() == Basis::Time(timeframe)
+        {
+            chart.insert_shared_klines(klines);
         }
     }
 
@@ -992,6 +1003,8 @@ impl State {
                             kline_indicator_cfg_view(
                                 indicator,
                                 chart.visual_config(),
+                                chart_kind,
+                                chart.basis(),
                                 id,
                                 self.expanded_kline_color_picker,
                             )
@@ -1227,12 +1240,6 @@ impl State {
                 Content::Kline { chart: Some(c), .. } => {
                     if let super::chart::Message::IntervalSelected(interval) = msg {
                         c.apply_interval_selection(interval);
-                    } else if let super::chart::Message::IntervalRangePreview(start, end) = msg {
-                        c.preview_interval_range(start, end);
-                    } else if let super::chart::Message::IntervalRangeSelected(start, end) = msg {
-                        c.finish_interval_range(start, end);
-                    } else if let super::chart::Message::IntervalSelectionCancelled = msg {
-                        c.cancel_interval_selection();
                     } else {
                         super::chart::update(c, &msg);
                     }
@@ -1470,6 +1477,16 @@ impl State {
                                                         streams.push(StreamKind::Trades {
                                                             ticker_info: base_ticker,
                                                         });
+                                                        streams.push(StreamKind::Depth {
+                                                            ticker_info: base_ticker,
+                                                            depth_aggr: base_ticker
+                                                                .exchange()
+                                                                .stream_ticksize(
+                                                                    self.settings.tick_multiply,
+                                                                    TickMultiplier(50),
+                                                                ),
+                                                            push_freq: exchange::PushFrequency::ServerDefault,
+                                                        });
                                                     }
 
                                                     self.streams = ResolvedStream::Ready(streams);
@@ -1486,6 +1503,16 @@ impl State {
                                                     self.streams = ResolvedStream::Ready(vec![
                                                         StreamKind::Trades {
                                                             ticker_info: base_ticker,
+                                                        },
+                                                        StreamKind::Depth {
+                                                            ticker_info: base_ticker,
+                                                            depth_aggr: base_ticker
+                                                                .exchange()
+                                                                .stream_ticksize(
+                                                                    self.settings.tick_multiply,
+                                                                    TickMultiplier(50),
+                                                                ),
+                                                            push_freq: exchange::PushFrequency::ServerDefault,
                                                         },
                                                     ]);
                                                     c.set_basis(new_basis);

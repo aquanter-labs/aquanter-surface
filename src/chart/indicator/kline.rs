@@ -25,7 +25,6 @@ pub mod vwap;
 #[derive(Clone, Copy)]
 pub enum ThemeColor {
     Primary,
-    Secondary,
     Success,
     Danger,
     Warning,
@@ -38,7 +37,6 @@ pub fn themed_color(theme: &Theme, configured: Color, default: Color, role: Them
     let palette = theme.extended_palette();
     match role {
         ThemeColor::Primary => palette.primary.strong.color,
-        ThemeColor::Secondary => palette.secondary.strong.color,
         ThemeColor::Success => palette.success.base.color,
         ThemeColor::Danger => palette.danger.base.color,
         ThemeColor::Warning => palette.warning.strong.color,
@@ -138,6 +136,18 @@ pub trait KlineIndicatorImpl {
     ) {
     }
 
+    fn on_timezone_change(&self, _timezone: data::UserTimezone) {}
+
+    fn obscures_footprint_cell(
+        &self,
+        _interval: u64,
+        _cell_x: f32,
+        _chart: &ViewState,
+        _visible_region: iced::Rectangle,
+    ) -> bool {
+        false
+    }
+
     fn unavailable_message(&self, chart: &ViewState, indicator: &str) -> Option<String> {
         self.availability(chart).unavailable_message(indicator)
     }
@@ -180,7 +190,11 @@ pub struct FetchCtx<'a> {
     pub prefetch_earliest: UnixMs,
 }
 
-pub fn make_empty(which: KlineIndicator, config: &Config) -> Box<dyn KlineIndicatorImpl> {
+pub fn make_empty(
+    which: KlineIndicator,
+    config: &Config,
+    is_footprint: bool,
+) -> Box<dyn KlineIndicatorImpl> {
     match which {
         KlineIndicator::Volume => Box::new(super::kline::volume::VolumeIndicator::new()),
         KlineIndicator::BarAnalysis => {
@@ -202,9 +216,22 @@ pub fn make_empty(which: KlineIndicator, config: &Config) -> Box<dyn KlineIndica
             super::kline::anchored_vwap::AnchoredVwapIndicator::new(config.anchored_vwap),
         ),
         KlineIndicator::Ema => Box::new(super::kline::ema::EmaIndicator::new(config.ema.clone())),
-        KlineIndicator::VolumeProfile => Box::new(
-            super::kline::volume_profile::VolumeProfileIndicator::new(config.volume_profile),
-        ),
+        KlineIndicator::VolumeProfile => {
+            Box::new(super::kline::volume_profile::VolumeProfileIndicator::new(
+                config.volume_profile,
+                config.quantity_format,
+                false,
+                is_footprint,
+            ))
+        }
+        KlineIndicator::FixedVolumeProfile => {
+            Box::new(super::kline::volume_profile::VolumeProfileIndicator::new(
+                config.fixed_volume_profile,
+                config.quantity_format,
+                true,
+                is_footprint,
+            ))
+        }
         KlineIndicator::LiquidationHeatmap => Box::new(
             super::kline::liquidation_heatmap::LiquidationHeatmapIndicator::new(
                 config.liquidation_heatmap,

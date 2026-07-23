@@ -40,9 +40,6 @@ pub enum KlineColorPicker {
     OiDown,
     AnchoredVwap,
     Ema(usize),
-    VolumeProfileBuy,
-    VolumeProfileSell,
-    VolumeProfileNeutral,
     OidBullish,
     OidBearish,
     OidCvd,
@@ -698,6 +695,39 @@ pub fn kline_cfg_view<'a>(
                 TooltipPosition::Top,
             );
 
+            let orderbook_cfg = cfg.clone();
+            let orderbook_checkbox = checkbox(cfg.show_footprint_orderbook)
+                .label("Show order book")
+                .on_toggle(move |value| {
+                    Message::VisualConfigChanged(
+                        pane,
+                        VisualConfig::Kline(data::chart::kline::Config {
+                            show_footprint_orderbook: value,
+                            ..orderbook_cfg.clone()
+                        }),
+                        false,
+                    )
+                });
+            let decimals_cfg = cfg.clone();
+            let quantity_decimals = slider(
+                0..=6,
+                cfg.quantity_format.decimals.min(6),
+                move |decimals| {
+                    let mut next = decimals_cfg.clone();
+                    next.quantity_format.decimals = decimals;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let rounding_cfg = cfg.clone();
+            let quantity_rounding = pick_list(
+                data::chart::kline::QuantityRounding::ALL,
+                Some(cfg.quantity_format.rounding),
+                move |rounding| {
+                    let mut next = rounding_cfg.clone();
+                    next.quantity_format.rounding = rounding;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
             let scaling = {
                 let picklist = pick_list(
                     data::chart::kline::ClusterScaling::ALL,
@@ -757,6 +787,20 @@ pub fn kline_cfg_view<'a>(
             let mut content = split_column![
                 display_readout_section,
                 column![text("Footprint summary").size(crate::style::text_size::SECTION), footprint_summary_checkbox].spacing(8),
+                column![
+                    text("Order book").size(crate::style::text_size::SECTION),
+                    orderbook_checkbox,
+                ].spacing(8),
+                column![
+                    text("Quantity format").size(crate::style::text_size::SECTION),
+                    row![
+                        text(format!("Decimals: {}", cfg.quantity_format.decimals)),
+                        quantity_decimals,
+                    ].spacing(8).align_y(Alignment::Center),
+                    row![text("Method"), quantity_rounding]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                ].spacing(8),
                 column![text("Cluster type").size(crate::style::text_size::SECTION), cluster_picklist].spacing(8),
                 ; spacing = 12, align_x = Alignment::Start
             ];
@@ -792,6 +836,8 @@ pub fn kline_cfg_view<'a>(
 pub fn kline_indicator_cfg_view<'a>(
     indicator: data::chart::indicator::KlineIndicator,
     cfg: data::chart::kline::Config,
+    chart_kind: &data::chart::KlineChartKind,
+    basis: data::chart::Basis,
     pane: pane_grid::Pane,
     expanded: Option<KlineColorPicker>,
 ) -> Element<'a, Message> {
@@ -1197,117 +1243,147 @@ pub fn kline_indicator_cfg_view<'a>(
                 )))
                 .into()
         }
-        KlineIndicator::VolumeProfile => {
-            let profile = cfg.volume_profile;
-            let mode_cfg = cfg.clone();
-            let mode = pick_list(
-                data::chart::kline::VolumeProfileMode::ALL,
-                Some(profile.mode),
-                move |mode| {
-                    let mut next = mode_cfg.clone();
-                    next.volume_profile.mode = mode;
+        KlineIndicator::VolumeProfile | KlineIndicator::FixedVolumeProfile => {
+            let is_fixed = indicator == KlineIndicator::FixedVolumeProfile;
+            let is_footprint = matches!(chart_kind, data::chart::KlineChartKind::Footprint { .. });
+            let profile = if is_fixed {
+                cfg.fixed_volume_profile
+            } else {
+                cfg.volume_profile
+            };
+            let display_cfg = cfg.clone();
+            let display = pick_list(
+                data::chart::kline::VolumeProfileDisplay::ALL,
+                Some(profile.display),
+                move |display| {
+                    let mut next = display_cfg.clone();
+                    if is_fixed {
+                        next.fixed_volume_profile.display = display;
+                    } else {
+                        next.volume_profile.display = display;
+                    }
                     Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
                 },
             );
+            let range_cfg = cfg.clone();
+            let range: Element<_> = pick_list(
+                data::chart::kline::VolumeProfileRange::ALL,
+                Some(profile.range),
+                move |range| {
+                    let mut next = range_cfg.clone();
+                    next.volume_profile.range = range;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            )
+            .into();
+            let past_end_cfg = cfg.clone();
+            let past_end = pick_list(
+                data::chart::kline::VolumeProfilePastEnd::ALL,
+                Some(profile.past_duration_end),
+                move |past_duration_end| {
+                    let mut next = past_end_cfg.clone();
+                    next.volume_profile.past_duration_end = past_duration_end;
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let multiplier_cfg = cfg.clone();
+            let multiplier = slider(
+                1..=100,
+                profile.timeframe_multiplier.clamp(1, 100),
+                move |value| {
+                    let mut next = multiplier_cfg.clone();
+                    if is_fixed {
+                        next.fixed_volume_profile.timeframe_multiplier = value;
+                    } else {
+                        next.volume_profile.timeframe_multiplier = value;
+                    }
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            );
+            let multiplier_label = match basis {
+                data::chart::Basis::Time(timeframe) => format!(
+                    "{}x ({}m)",
+                    profile.timeframe_multiplier,
+                    timeframe.to_milliseconds() * u64::from(profile.timeframe_multiplier) / 60_000
+                ),
+                data::chart::Basis::Tick(_) => format!("{}x", profile.timeframe_multiplier),
+            };
             let rows_cfg = cfg.clone();
             let rows_value = profile.rows.clamp(16, 400).to_string();
-            let rows = text_input("Rows", &rows_value)
+            let rows: Element<_> = text_input("Rows", &rows_value)
                 .on_input(move |value| {
                     let mut next = rows_cfg.clone();
                     if let Ok(rows) = value.parse::<u16>() {
-                        next.volume_profile.rows = rows.clamp(16, 400);
+                        if is_fixed {
+                            next.fixed_volume_profile.rows = rows.clamp(16, 400);
+                        } else {
+                            next.volume_profile.rows = rows.clamp(16, 400);
+                        }
                     }
                     Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
                 })
-                .width(80);
-            let position_cfg = cfg.clone();
-            let position: Element<_> = row![
-                text("Position"),
-                pick_list(
-                    data::chart::kline::VolumeProfilePosition::ALL,
-                    Some(profile.position),
-                    move |position| {
-                        let mut next = position_cfg.clone();
-                        next.volume_profile.position = position;
-                        Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
-                    },
-                )
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center)
-            .into();
-            let buy_cfg = cfg.clone();
-            let buy_picker = color_picker(
-                data::config::theme::to_hsva(profile.buy_color),
+                .width(80)
+                .into();
+            let width_cfg = cfg.clone();
+            let max_width = slider(
+                5..=50,
+                profile.max_width_percent.clamp(5, 50),
                 move |value| {
-                    let mut next = buy_cfg.clone();
-                    next.volume_profile.buy_color = data::config::theme::from_hsva(value);
+                    let mut next = width_cfg.clone();
+                    if is_fixed {
+                        next.fixed_volume_profile.max_width_percent = value;
+                    } else {
+                        next.volume_profile.max_width_percent = value;
+                    }
                     Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
                 },
             );
-            let sell_cfg = cfg.clone();
-            let sell_picker = color_picker(
-                data::config::theme::to_hsva(profile.sell_color),
-                move |value| {
-                    let mut next = sell_cfg.clone();
-                    next.volume_profile.sell_color = data::config::theme::from_hsva(value);
-                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
-                },
-            );
-            let neutral_cfg = cfg.clone();
-            let neutral_picker =
-                color_picker(data::config::theme::to_hsva(profile.color), move |value| {
-                    let mut next = neutral_cfg.clone();
-                    next.volume_profile.color = data::config::theme::from_hsva(value);
-                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
-                });
-            let window_button: Element<_> =
-                if profile.mode == data::chart::kline::VolumeProfileMode::FixedWindow {
-                    button("Select window on chart")
-                        .on_press(Message::PaneEvent(
-                            pane,
-                            Event::BeginKlineIntervalSelection(
-                                crate::chart::kline::IntervalSelection::VolumeProfileStart,
-                            ),
-                        ))
-                        .into()
-                } else {
-                    space::vertical().height(0).into()
-                };
-            column![
-                text("Volume Profile").size(crate::style::text_size::SECTION),
-                mode,
-                row![text("Rows"), rows]
+            let mut content = column![
+                text(indicator.to_string()).size(crate::style::text_size::SECTION),
+                row![text("Display"), display]
                     .spacing(8)
                     .align_y(Alignment::Center),
-                position,
-                window_button,
                 row![
-                    text("Buy"),
-                    color_swatch(pane, profile.buy_color, KlineColorPicker::VolumeProfileBuy),
-                    text("Sell"),
-                    color_swatch(
-                        pane,
-                        profile.sell_color,
-                        KlineColorPicker::VolumeProfileSell
-                    ),
-                    text("Undirected"),
-                    color_swatch(pane, profile.color, KlineColorPicker::VolumeProfileNeutral),
+                    text(format!("Maximum width: {}%", profile.max_width_percent)),
+                    max_width
                 ]
-                .spacing(6)
+                .spacing(8)
                 .align_y(Alignment::Center),
-                if expanded == Some(KlineColorPicker::VolumeProfileBuy) {
-                    buy_picker
-                } else if expanded == Some(KlineColorPicker::VolumeProfileSell) {
-                    sell_picker
-                } else if expanded == Some(KlineColorPicker::VolumeProfileNeutral) {
-                    neutral_picker
-                } else {
-                    space::vertical().height(0).into()
-                },
             ]
-            .spacing(8)
-            .into()
+            .spacing(8);
+            if !is_fixed {
+                content = content.push(
+                    row![text("Range"), range]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                );
+            }
+            if is_fixed || profile.range == data::chart::kline::VolumeProfileRange::PastDuration {
+                if !is_fixed {
+                    content = content.push(
+                        row![text("End at"), past_end]
+                            .spacing(8)
+                            .align_y(Alignment::Center),
+                    );
+                }
+                content = content.push(
+                    row![
+                        text(if is_fixed { "Window" } else { "Past duration" }),
+                        text(multiplier_label),
+                        multiplier
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                );
+            }
+            if !is_footprint {
+                content = content.push(
+                    row![text("Rows"), rows]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                );
+            }
+            content.into()
         }
         KlineIndicator::OiDeltaDivergence => {
             let oid = cfg.oi_delta_divergence;

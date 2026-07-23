@@ -323,10 +323,6 @@ impl KlineChartKind {
         !matches!(
             (self, indicator),
             (KlineChartKind::Candles, KlineIndicator::BarAnalysis)
-                | (
-                    KlineChartKind::Footprint { .. },
-                    KlineIndicator::VolumeProfile
-                )
         )
     }
 
@@ -426,10 +422,13 @@ pub struct Config {
     pub show_footprint_summary: bool,
     // Whether to show a small candle next to footprint table clusters.
     pub show_footprint_table_candle: bool,
+    pub show_footprint_orderbook: bool,
+    pub quantity_format: QuantityFormat,
     pub session_vwap: SessionVwapConfig,
     pub anchored_vwap: AnchoredVwapConfig,
     pub ema: Vec<EmaConfig>,
     pub volume_profile: VolumeProfileConfig,
+    pub fixed_volume_profile: VolumeProfileConfig,
     pub stoch_rsi: StochRsiConfig,
     pub open_interest: IndicatorSeriesConfig,
     pub cumulative_delta: IndicatorSeriesConfig,
@@ -446,10 +445,13 @@ impl Default for Config {
             data_labels_always_visible: false,
             show_footprint_summary: true,
             show_footprint_table_candle: true,
+            show_footprint_orderbook: false,
+            quantity_format: QuantityFormat::default(),
             session_vwap: SessionVwapConfig::default(),
             anchored_vwap: AnchoredVwapConfig::default(),
             ema: vec![EmaConfig::default()],
             volume_profile: VolumeProfileConfig::default(),
+            fixed_volume_profile: VolumeProfileConfig::default(),
             stoch_rsi: StochRsiConfig::default(),
             open_interest: IndicatorSeriesConfig::default(),
             cumulative_delta: IndicatorSeriesConfig::default(),
@@ -459,6 +461,62 @@ impl Default for Config {
             oi_flow_net: OiFlowNetConfig::default(),
             oi_weighted_delta: OiWeightedDeltaConfig::default(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+pub enum QuantityRounding {
+    #[default]
+    Round,
+    Truncate,
+}
+
+impl QuantityRounding {
+    pub const ALL: [Self; 2] = [Self::Round, Self::Truncate];
+}
+
+impl std::fmt::Display for QuantityRounding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Round => write!(f, "Round"),
+            Self::Truncate => write!(f, "Truncate"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct QuantityFormat {
+    pub decimals: u8,
+    pub rounding: QuantityRounding,
+}
+
+impl Default for QuantityFormat {
+    fn default() -> Self {
+        Self {
+            decimals: 2,
+            rounding: QuantityRounding::Round,
+        }
+    }
+}
+
+impl QuantityFormat {
+    pub fn format(self, value: f64) -> String {
+        let (divisor, suffix) = match value.abs() {
+            value if value >= 1_000_000_000.0 => (1_000_000_000.0, "b"),
+            value if value >= 1_000_000.0 => (1_000_000.0, "m"),
+            value if value >= 1_000.0 => (1_000.0, "k"),
+            _ => (1.0, ""),
+        };
+        let decimals = self.decimals.min(6);
+        let factor = 10_f64.powi(i32::from(decimals));
+        let scaled = value / divisor * factor;
+        let adjusted = match self.rounding {
+            QuantityRounding::Round => scaled.round(),
+            QuantityRounding::Truncate => scaled.trunc(),
+        } / factor;
+        let adjusted = if adjusted == 0.0 { 0.0 } else { adjusted };
+        format!("{:.*}{suffix}", usize::from(decimals), adjusted)
     }
 }
 
@@ -674,41 +732,62 @@ impl Default for AnchoredVwapConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-pub enum VolumeProfileMode {
-    VisibleRange,
-    FixedWindow,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-pub enum VolumeProfilePosition {
-    Left,
+pub enum VolumeProfileRange {
     #[default]
-    Right,
+    Visible,
+    PastDuration,
 }
 
-impl VolumeProfilePosition {
-    pub const ALL: [Self; 2] = [Self::Left, Self::Right];
+impl VolumeProfileRange {
+    pub const ALL: [Self; 2] = [Self::Visible, Self::PastDuration];
 }
 
-impl std::fmt::Display for VolumeProfilePosition {
+impl std::fmt::Display for VolumeProfileRange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Left => write!(f, "Left"),
-            Self::Right => write!(f, "Right"),
+            Self::Visible => write!(f, "Visible"),
+            Self::PastDuration => write!(f, "Past Duration"),
         }
     }
 }
 
-impl VolumeProfileMode {
-    pub const ALL: [Self; 2] = [Self::VisibleRange, Self::FixedWindow];
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+pub enum VolumeProfilePastEnd {
+    #[default]
+    ChartRight,
+    LatestData,
 }
 
-impl std::fmt::Display for VolumeProfileMode {
+impl VolumeProfilePastEnd {
+    pub const ALL: [Self; 2] = [Self::ChartRight, Self::LatestData];
+}
+
+impl std::fmt::Display for VolumeProfilePastEnd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::VisibleRange => write!(f, "Visible Range"),
-            Self::FixedWindow => write!(f, "Fixed Window"),
+            Self::ChartRight => write!(f, "Chart Right"),
+            Self::LatestData => write!(f, "Latest Data"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+pub enum VolumeProfileDisplay {
+    #[default]
+    Volume,
+    Delta,
+}
+
+impl VolumeProfileDisplay {
+    pub const ALL: [Self; 2] = [Self::Volume, Self::Delta];
+}
+
+impl std::fmt::Display for VolumeProfileDisplay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Volume => write!(f, "Volume"),
+            Self::Delta => write!(f, "Delta"),
         }
     }
 }
@@ -716,27 +795,23 @@ impl std::fmt::Display for VolumeProfileMode {
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct VolumeProfileConfig {
-    pub mode: VolumeProfileMode,
-    pub position: VolumeProfilePosition,
-    pub start: Option<exchange::UnixMs>,
-    pub end: Option<exchange::UnixMs>,
+    pub range: VolumeProfileRange,
+    pub past_duration_end: VolumeProfilePastEnd,
+    pub display: VolumeProfileDisplay,
+    pub timeframe_multiplier: u8,
     pub rows: u16,
-    pub color: iced_core::Color,
-    pub buy_color: iced_core::Color,
-    pub sell_color: iced_core::Color,
+    pub max_width_percent: u8,
 }
 
 impl Default for VolumeProfileConfig {
     fn default() -> Self {
         Self {
-            mode: VolumeProfileMode::VisibleRange,
-            position: VolumeProfilePosition::Right,
-            start: None,
-            end: None,
+            range: VolumeProfileRange::Visible,
+            past_duration_end: VolumeProfilePastEnd::ChartRight,
+            display: VolumeProfileDisplay::Volume,
+            timeframe_multiplier: 10,
             rows: 120,
-            color: iced_core::Color::from_rgb(0.25, 0.65, 0.75),
-            buy_color: iced_core::Color::from_rgb(0.35, 0.68, 0.50),
-            sell_color: iced_core::Color::from_rgb(0.76, 0.40, 0.42),
+            max_width_percent: 30,
         }
     }
 }
@@ -920,9 +995,26 @@ mod tests {
         };
 
         assert!(kind.min_cell_width() < kind.default_cell_width());
-        assert!(!kind.allows_indicator(KlineIndicator::VolumeProfile));
+        assert!(kind.allows_indicator(KlineIndicator::VolumeProfile));
+        assert!(kind.allows_indicator(KlineIndicator::FixedVolumeProfile));
         assert!(kind.allows_indicator(KlineIndicator::LiquidationHeatmap));
         assert!(KlineIndicator::LiquidationHeatmap.is_overlay());
         assert!(!KlineIndicator::LiquidationPressureIndex.is_overlay());
+    }
+
+    #[test]
+    fn quantity_format_rounds_or_truncates_at_the_selected_precision() {
+        let rounded = QuantityFormat {
+            decimals: 1,
+            rounding: QuantityRounding::Round,
+        };
+        let truncated = QuantityFormat {
+            decimals: 1,
+            rounding: QuantityRounding::Truncate,
+        };
+
+        assert_eq!(rounded.format(1_256.0), "1.3k");
+        assert_eq!(truncated.format(1_256.0), "1.2k");
+        assert_eq!(truncated.format(-12.89), "-12.8");
     }
 }

@@ -46,6 +46,11 @@ pub enum Message {
     ChangePaneStatus(uuid::Uuid, pane::Status),
     SavePopoutSpecs(HashMap<window::Id, WindowSpec>),
     ErrorOccurred(Option<uuid::Uuid>, DashboardError),
+    FetchFailed {
+        pane_id: uuid::Uuid,
+        req_id: Option<uuid::Uuid>,
+        error: String,
+    },
     Notification(Toast),
     DistributeFetchedData {
         layout_id: uuid::Uuid,
@@ -205,6 +210,24 @@ impl Dashboard {
                     );
                 }
             },
+            Message::FetchFailed {
+                pane_id,
+                req_id,
+                error,
+            } => {
+                if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, pane_id) {
+                    state.status = pane::Status::Ready;
+                    if let pane::Content::Kline {
+                        chart: Some(chart), ..
+                    } = &mut state.content
+                    {
+                        chart.fail_request(req_id, error.clone());
+                    }
+                    state
+                        .notifications
+                        .push(Toast::error(DashboardError::Fetch(error).to_string()));
+                }
+            }
             Message::Pane(window, message) => match message {
                 pane::Message::PaneClicked(pane) => {
                     self.focus = Some((window, pane));
@@ -879,13 +902,24 @@ impl Dashboard {
         stream_type: StreamKind,
     ) -> Task<Message> {
         match data {
-            FetchedData::Trades { batch, until_time } => {
+            FetchedData::Trades {
+                batch,
+                until_time,
+                req_id,
+                is_batches_done,
+            } => {
                 let last_trade_time = batch.last().map_or(UnixMs::ZERO, |trade| trade.time);
+                let reached_end = last_trade_time >= until_time;
+                let is_batches_done = is_batches_done || reached_end;
 
-                if last_trade_time < until_time {
-                    if let Err(reason) =
-                        self.insert_fetched_trades(main_window, pane_id, &batch, false)
-                    {
+                if !reached_end {
+                    if let Err(reason) = self.insert_fetched_trades(
+                        main_window,
+                        pane_id,
+                        &batch,
+                        is_batches_done,
+                        req_id,
+                    ) {
                         return self.handle_error(Some(pane_id), &reason, main_window);
                     }
                 } else {
@@ -895,24 +929,37 @@ impl Dashboard {
                         .copied()
                         .collect::<Vec<_>>();
 
-                    if let Err(reason) =
-                        self.insert_fetched_trades(main_window, pane_id, &filtered_batch, true)
-                    {
+                    if let Err(reason) = self.insert_fetched_trades(
+                        main_window,
+                        pane_id,
+                        &filtered_batch,
+                        true,
+                        req_id,
+                    ) {
                         return self.handle_error(Some(pane_id), &reason, main_window);
                     }
                 }
             }
             FetchedData::Klines { data, req_id } => {
-                if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
-                    pane_state.status = pane::Status::Ready;
-
-                    if let StreamKind::Kline {
-                        timeframe,
-                        ticker_info,
-                    } = stream_type
+                if let StreamKind::Kline {
+                    timeframe,
+                    ticker_info,
+                } = stream_type
+                {
+                    if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id)
                     {
+                        pane_state.status = pane::Status::Ready;
                         pane_state.insert_hist_klines(req_id, timeframe, ticker_info, &data);
                     }
+
+                    self.iter_all_panes_mut(main_window)
+                        .filter(|(_, _, state)| {
+                            state.unique_id() != pane_id
+                                && state.streams.matches_stream(&stream_type)
+                        })
+                        .for_each(|(_, _, state)| {
+                            state.insert_shared_klines(timeframe, &data);
+                        });
                 }
             }
             FetchedData::OI { data, req_id } => {
@@ -935,6 +982,7 @@ impl Dashboard {
         pane_id: uuid::Uuid,
         trades: &[Trade],
         is_batches_done: bool,
+        req_id: uuid::Uuid,
     ) -> Result<(), DashboardError> {
         let pane_state = self
             .get_mut_pane_state_by_uuid(main_window, pane_id)
@@ -956,7 +1004,7 @@ impl Dashboard {
         match &mut pane_state.content {
             pane::Content::Kline { chart, .. } => {
                 if let Some(c) = chart {
-                    c.insert_raw_trades(trades.to_owned(), is_batches_done);
+                    c.insert_raw_trades(trades.to_owned(), is_batches_done, req_id);
 
                     if is_batches_done {
                         pane_state.status = pane::Status::Ready;
@@ -1032,6 +1080,11 @@ impl Dashboard {
                         pane::Content::Ladder(panel) => {
                             if let Some(panel) = panel {
                                 panel.insert_depth(depth, update_t);
+                            }
+                        }
+                        pane::Content::Kline { chart, .. } => {
+                            if let Some(chart) = chart {
+                                chart.insert_depth(depth, update_t);
                             }
                         }
                         _ => {
@@ -1403,9 +1456,15 @@ impl From<fetcher::FetchUpdate> for Message {
                 stream,
                 data,
             },
-            fetcher::FetchUpdate::Error { pane_id, error } => {
-                Message::ErrorOccurred(Some(pane_id), DashboardError::Fetch(error))
-            }
+            fetcher::FetchUpdate::Error {
+                pane_id,
+                req_id,
+                error,
+            } => Message::FetchFailed {
+                pane_id,
+                req_id,
+                error,
+            },
         }
     }
 }

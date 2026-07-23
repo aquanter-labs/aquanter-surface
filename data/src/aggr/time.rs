@@ -409,9 +409,6 @@ impl TimeSeries<KlineDataPoint> {
 
         self.find_trade_gap()
             .and_then(|(last_t_before_gap, first_t_after_gap)| {
-                if last_t_before_gap.is_none() && first_t_after_gap.is_none() {
-                    return None;
-                }
                 let (data_earliest, data_latest) = self.timerange();
 
                 let fetch_from = last_t_before_gap
@@ -547,5 +544,60 @@ impl From<&TimeSeries<KlineDataPoint>> for BTreeMap<UnixMs, exchange::Volume> {
             .iter()
             .map(|(time, dp)| (*time, dp.kline.volume))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suggests_visible_trade_range_when_all_footprints_are_empty() {
+        let kline = |time| Kline {
+            time: UnixMs::new(time),
+            open: Price::from_f32(100.0),
+            high: Price::from_f32(101.0),
+            low: Price::from_f32(99.0),
+            close: Price::from_f32(100.0),
+            volume: Volume::empty_buy_sell(),
+        };
+        let series = TimeSeries::<KlineDataPoint>::new(
+            Timeframe::M1,
+            PriceStep { units: 1 },
+            &[kline(1_000), kline(2_000), kline(3_000)],
+        );
+
+        assert_eq!(
+            series.suggest_trade_fetch_range(UnixMs::new(1_500), UnixMs::new(2_500)),
+            Some((UnixMs::new(1_500), UnixMs::new(2_500)))
+        );
+    }
+
+    #[test]
+    fn backfilled_klines_accept_historical_trades_after_live_data() {
+        let kline = |time| Kline {
+            time: UnixMs::new(time),
+            open: Price::from_f32(100.0),
+            high: Price::from_f32(101.0),
+            low: Price::from_f32(99.0),
+            close: Price::from_f32(100.0),
+            volume: Volume::empty_buy_sell(),
+        };
+        let mut series = TimeSeries::<KlineDataPoint>::new(
+            Timeframe::M1,
+            PriceStep { units: 1 },
+            &[kline(120_000)],
+        );
+
+        series.insert_klines(&[kline(0), kline(60_000)]);
+        series.insert_trades_existing_buckets(&[Trade {
+            time: UnixMs::new(30_000),
+            is_sell: false,
+            price: Price::from_f32(100.0),
+            qty: Qty::from_f64(1.0),
+        }]);
+
+        assert!(!series.datapoints[&UnixMs::ZERO].footprint.trades.is_empty());
+        assert!(series.datapoints.contains_key(&UnixMs::new(120_000)));
     }
 }

@@ -783,7 +783,7 @@ impl Flowsurface {
         let exchange_streams =
             Dashboard::market_subscriptions(&streams, &self.handles).map(Message::MarketWsEvent);
 
-        let tick = iced::window::frames().map(Message::Tick);
+        let tick = iced::time::every(std::time::Duration::from_millis(250)).map(Message::Tick);
 
         let hotkeys = keyboard::listen().filter_map(|event| {
             let keyboard::Event::KeyPressed { key, .. } = event else {

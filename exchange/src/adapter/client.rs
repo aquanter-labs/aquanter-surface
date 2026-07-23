@@ -88,6 +88,19 @@ fn aggregate_klines(mut klines: Vec<Kline>, timeframe: Timeframe) -> Vec<Kline> 
     aggregated.into_values().collect()
 }
 
+fn kline_fetch_range(
+    source: Timeframe,
+    target: Timeframe,
+    range: Option<(UnixMs, UnixMs)>,
+) -> Option<(UnixMs, UnixMs)> {
+    range.or_else(|| {
+        (source != target).then(|| {
+            let now = UnixMs::now();
+            (now.saturating_sub(400 * target.to_milliseconds()), now)
+        })
+    })
+}
+
 #[derive(Clone)]
 pub struct AdapterHandles {
     binance: Option<binance::BinanceHandle>,
@@ -631,6 +644,7 @@ impl AdapterHandles {
         let source = exchange.kline_source_timeframe(timeframe).ok_or_else(|| {
             AdapterError::InvalidRequest(format!("Unsupported kline timeframe: {timeframe}"))
         })?;
+        let range = kline_fetch_range(source, timeframe, range);
 
         let klines = match venue {
             Venue::Binance => {
@@ -799,6 +813,20 @@ mod tests {
         );
         assert_eq!(
             Exchange::BinanceLinear.open_interest_source_timeframe(Timeframe::Custom(11)),
+            None
+        );
+    }
+
+    #[test]
+    fn custom_timeframe_initial_fetch_requests_400_target_candles() {
+        let (from, to) = kline_fetch_range(Timeframe::M5, Timeframe::Custom(10), None).unwrap();
+
+        assert_eq!(
+            to.as_u64() - from.as_u64(),
+            400 * Timeframe::Custom(10).to_milliseconds()
+        );
+        assert_eq!(
+            kline_fetch_range(Timeframe::M15, Timeframe::M15, None),
             None
         );
     }

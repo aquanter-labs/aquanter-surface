@@ -24,6 +24,8 @@ pub enum FetchedData {
     Trades {
         batch: Vec<Trade>,
         until_time: UnixMs,
+        req_id: Uuid,
+        is_batches_done: bool,
     },
     Klines {
         data: Vec<Kline>,
@@ -35,17 +37,11 @@ pub enum FetchedData {
     },
 }
 
-#[derive(thiserror::Error, Debug, Clone)]
-pub enum ReqError {
-    #[error("Request is already failed: {0}")]
-    Failed(String),
-}
-
 #[derive(PartialEq, Debug)]
 enum RequestStatus {
     Pending,
     Completed(u64),
-    Failed(String),
+    Failed(u64),
 }
 
 #[derive(Default)]
@@ -54,34 +50,32 @@ pub struct RequestHandler {
 }
 
 impl RequestHandler {
-    pub fn add_request(&mut self, fetch: FetchRange) -> Result<Option<Uuid>, ReqError> {
+    pub fn add_request(&mut self, fetch: FetchRange) -> Option<Uuid> {
         let request = FetchRequest::new(fetch);
         let id = Uuid::new_v4();
 
-        if let Some((existing_id, existing_req)) = self.requests.iter().find_map(|(k, v)| {
-            if v.same_with(&request) {
-                Some((*k, v))
-            } else {
-                None
-            }
-        }) {
-            return match &existing_req.status {
-                RequestStatus::Failed(error_msg) => Err(ReqError::Failed(error_msg.clone())),
-                RequestStatus::Completed(ts) => {
-                    // retry completed requests after a cooldown
-                    // to handle data source failures or outdated results gracefully
-                    if chrono::Utc::now().timestamp_millis() as u64 - ts > 30_000 {
-                        Ok(Some(existing_id))
-                    } else {
-                        Ok(None)
-                    }
+        if let Some(existing_id) = self
+            .requests
+            .iter()
+            .find_map(|(id, existing)| existing.same_with(&request).then_some(*id))
+        {
+            let existing = self.requests.get_mut(&existing_id).expect("request exists");
+            let retry = match existing.status {
+                RequestStatus::Completed(timestamp) | RequestStatus::Failed(timestamp) => {
+                    (chrono::Utc::now().timestamp_millis() as u64).saturating_sub(timestamp)
+                        > 30_000
                 }
-                RequestStatus::Pending => Ok(None),
+                RequestStatus::Pending => false,
             };
+            if retry {
+                existing.status = RequestStatus::Pending;
+                return Some(existing_id);
+            }
+            return None;
         }
 
         self.requests.insert(id, request);
-        Ok(Some(id))
+        Some(id)
     }
 
     pub fn mark_completed(&mut self, id: Uuid) {
@@ -93,11 +87,15 @@ impl RequestHandler {
         }
     }
 
-    pub fn mark_failed(&mut self, id: Uuid, error: String) {
+    pub fn mark_failed(&mut self, id: Uuid, error: String) -> bool {
         if let Some(request) = self.requests.get_mut(&id) {
-            request.status = RequestStatus::Failed(error);
+            let is_trade = matches!(request.fetch_type, FetchRange::Trades(..));
+            log::debug!("Request {id} failed: {error}");
+            request.status = RequestStatus::Failed(chrono::Utc::now().timestamp_millis() as u64);
+            is_trade
         } else {
             log::warn!("Request not found: {:?}", id);
+            false
         }
     }
 }
@@ -129,6 +127,7 @@ impl FetchRequest {
             (FetchRange::OpenInterest(s1, e1), FetchRange::OpenInterest(s2, e2)) => {
                 e1 == e2 && s1 == s2
             }
+            (FetchRange::Trades(s1, e1), FetchRange::Trades(s2, e2)) => e1 == e2 && s1 == s2,
             _ => false,
         }
     }
@@ -197,6 +196,7 @@ pub enum FetchUpdate {
     },
     Error {
         pane_id: Uuid,
+        req_id: Option<Uuid>,
         error: String,
     },
 }
@@ -290,6 +290,8 @@ pub fn request_fetch(
                             let data = FetchedData::Trades {
                                 batch,
                                 until_time: to_time,
+                                req_id,
+                                is_batches_done: false,
                             };
 
                             FetchUpdate::Data {
@@ -300,14 +302,22 @@ pub fn request_fetch(
                             }
                         },
                         move |result| match result {
-                            Ok(()) => FetchUpdate::Status {
+                            Ok(()) => FetchUpdate::Data {
+                                layout_id,
                                 pane_id,
-                                status: FetchTaskStatus::Completed,
+                                stream,
+                                data: FetchedData::Trades {
+                                    batch: vec![],
+                                    until_time: to_time,
+                                    req_id,
+                                    is_batches_done: true,
+                                },
                             },
                             Err(err) => {
                                 log::error!("Trade fetch failed: {err}");
                                 FetchUpdate::Error {
                                     pane_id,
+                                    req_id: Some(req_id),
                                     error: err.ui_message(),
                                 }
                             }
@@ -393,6 +403,7 @@ pub fn oi_fetch_task(
                     }
                     Err(err) => FetchUpdate::Error {
                         pane_id,
+                        req_id,
                         error: err,
                     },
                 },
@@ -444,6 +455,7 @@ pub fn kline_fetch_task(
                     }
                     Err(err) => FetchUpdate::Error {
                         pane_id,
+                        req_id,
                         error: err,
                     },
                 },
@@ -496,7 +508,24 @@ mod tests {
         let mut handler = RequestHandler::default();
         let range = FetchRange::Kline(UnixMs::new(1000), UnixMs::new(2000));
 
-        assert!(handler.add_request(range).unwrap().is_some());
-        assert_eq!(handler.add_request(range).unwrap(), None);
+        assert!(handler.add_request(range).is_some());
+        assert_eq!(handler.add_request(range), None);
+    }
+
+    #[test]
+    fn failed_requests_retry_after_cooldown() {
+        let mut handler = RequestHandler::default();
+        let range = FetchRange::Kline(UnixMs::new(1000), UnixMs::new(2000));
+        let id = handler.add_request(range).expect("new request");
+        assert!(!handler.mark_failed(id, "temporary".to_string()));
+        assert_eq!(handler.add_request(range), None);
+
+        handler.requests.get_mut(&id).unwrap().status = RequestStatus::Failed(0);
+        assert_eq!(handler.add_request(range), Some(id));
+        assert_eq!(handler.requests[&id].status, RequestStatus::Pending);
+
+        let trade = FetchRange::Trades(UnixMs::new(1000), UnixMs::new(2000));
+        let trade_id = handler.add_request(trade).expect("new trade request");
+        assert!(handler.mark_failed(trade_id, "temporary".to_string()));
     }
 }

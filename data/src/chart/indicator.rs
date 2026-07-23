@@ -21,6 +21,7 @@ pub enum KlineIndicator {
     AnchoredVwap,
     Ema,
     VolumeProfile,
+    FixedVolumeProfile,
     LiquidationHeatmap,
     OiDeltaDivergence,
     OiFlowNet,
@@ -45,6 +46,7 @@ impl KlineIndicator {
                 | Self::AnchoredVwap
                 | Self::Ema
                 | Self::VolumeProfile
+                | Self::FixedVolumeProfile
                 | Self::LiquidationHeatmap
         )
     }
@@ -52,7 +54,7 @@ impl KlineIndicator {
     // Indicator togglers on UI menus depend on these arrays.
     // Every variant needs to be in either SPOT, PERPS or both.
     /// Indicators that can be used with spot market tickers
-    const FOR_SPOT: [KlineIndicator; 8] = [
+    const FOR_SPOT: [KlineIndicator; 9] = [
         KlineIndicator::Volume,
         KlineIndicator::BarAnalysis,
         KlineIndicator::CumulativeDelta,
@@ -61,9 +63,10 @@ impl KlineIndicator {
         KlineIndicator::AnchoredVwap,
         KlineIndicator::Ema,
         KlineIndicator::VolumeProfile,
+        KlineIndicator::FixedVolumeProfile,
     ];
     /// Indicators that can be used with perpetual swap market tickers
-    const FOR_PERPS: [KlineIndicator; 14] = [
+    const FOR_PERPS: [KlineIndicator; 15] = [
         KlineIndicator::Volume,
         KlineIndicator::BarAnalysis,
         KlineIndicator::CumulativeDelta,
@@ -73,6 +76,7 @@ impl KlineIndicator {
         KlineIndicator::AnchoredVwap,
         KlineIndicator::Ema,
         KlineIndicator::VolumeProfile,
+        KlineIndicator::FixedVolumeProfile,
         KlineIndicator::LiquidationHeatmap,
         KlineIndicator::OiDeltaDivergence,
         KlineIndicator::OiFlowNet,
@@ -93,6 +97,7 @@ impl Display for KlineIndicator {
             KlineIndicator::AnchoredVwap => write!(f, "Anchored VWAP"),
             KlineIndicator::Ema => write!(f, "EMA"),
             KlineIndicator::VolumeProfile => write!(f, "Volume Profile"),
+            KlineIndicator::FixedVolumeProfile => write!(f, "Fixed Window Volume Profile"),
             KlineIndicator::LiquidationHeatmap => write!(f, "Liquidation Heatmap"),
             KlineIndicator::OiDeltaDivergence => write!(f, "OI-Delta Divergence"),
             KlineIndicator::OiFlowNet => write!(f, "OI Flow Net"),
