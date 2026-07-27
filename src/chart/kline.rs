@@ -230,7 +230,7 @@ impl KlineChart {
         visual_config: Option<Config>,
     ) -> Self {
         let visual_config = visual_config.unwrap_or_default();
-        let kind = Self::sanitized_kind(kind.clone());
+        let kind = kind.clone();
 
         match basis {
             Basis::Time(interval) => {
@@ -632,13 +632,10 @@ impl KlineChart {
 
     pub fn set_cluster_kind(&mut self, new_kind: ClusterKind) {
         if let KlineChartKind::Footprint {
-            ref mut clusters,
-            ref mut studies,
-            ..
+            ref mut clusters, ..
         } = self.kind
         {
             *clusters = new_kind;
-            studies.retain(|study| new_kind.allows_study(study));
         }
 
         self.invalidate(None);
@@ -731,15 +728,10 @@ impl KlineChart {
 
     pub fn set_studies(&mut self, new_studies: Vec<FootprintStudy>) {
         if let KlineChartKind::Footprint {
-            clusters,
-            ref mut studies,
-            ..
+            ref mut studies, ..
         } = self.kind
         {
-            *studies = new_studies
-                .into_iter()
-                .filter(|study| clusters.allows_study(study))
-                .collect();
+            *studies = new_studies;
         }
 
         self.invalidate(None);
@@ -1028,10 +1020,9 @@ impl KlineChart {
 
                                     if self.visual_config.show_footprint_summary {
                                         bottom_padding =
-                                            bottom_padding.max(footprint_summary_padding(
+                                            bottom_padding.max(FootprintSummaryLayout::padding(
                                                 provisional_cell_height,
                                                 chart.scaling,
-                                                chart.cell_width,
                                                 tick_size,
                                             ));
                                     }
@@ -1109,19 +1100,6 @@ impl KlineChart {
     }
 }
 
-impl KlineChart {
-    fn sanitized_kind(mut kind: KlineChartKind) -> KlineChartKind {
-        if let KlineChartKind::Footprint {
-            clusters, studies, ..
-        } = &mut kind
-        {
-            studies.retain(|study| clusters.allows_study(study));
-        }
-
-        kind
-    }
-}
-
 impl canvas::Program<Message> for KlineChart {
     type State = Interaction;
 
@@ -1182,9 +1160,12 @@ impl canvas::Program<Message> for KlineChart {
                         *clusters,
                     );
 
+<<<<<<< HEAD
                     let cell_height_unscaled = chart.cell_height * chart.scaling;
                     let text_size = footprint_cluster_text_size(cell_height_unscaled);
 
+=======
+>>>>>>> upstream/main
                     let candle_width = 0.1 * chart.cell_width;
                     let content_spacing = ContentGaps::from_view(candle_width, chart.scaling);
 
@@ -1201,7 +1182,10 @@ impl canvas::Program<Message> for KlineChart {
                         }
                     });
 
+<<<<<<< HEAD
                     let show_text = should_show_text(cell_height_unscaled);
+=======
+>>>>>>> upstream/main
                     let cell_layout = FootprintCellLayout {
                         cell_w: chart.cell_width,
                         cell_h: chart.cell_height,
@@ -1212,19 +1196,20 @@ impl canvas::Program<Message> for KlineChart {
                         quantity_format: self.visual_config.quantity_format,
                     };
 
-                    if *clusters != ClusterKind::Table {
-                        draw_all_npocs(
-                            &self.data_source,
-                            frame,
-                            price_to_y,
-                            interval_to_x,
-                            &cell_layout,
-                            studies,
-                            earliest,
-                            latest,
-                            imbalance.is_some(),
-                        );
-                    }
+                    let text_size = cell_layout.text_size(chart.scaling);
+                    let show_text = cell_layout.should_show_text(chart.scaling);
+
+                    draw_all_npocs(
+                        &self.data_source,
+                        frame,
+                        price_to_y,
+                        interval_to_x,
+                        &cell_layout,
+                        studies,
+                        earliest,
+                        latest,
+                        imbalance.is_some(),
+                    );
 
                     render_data_source(
                         &self.data_source,
@@ -1233,6 +1218,7 @@ impl canvas::Program<Message> for KlineChart {
                         latest,
                         interval_to_x,
                         |frame, x_position, kline, trades| {
+<<<<<<< HEAD
                             let text_is_obscured =
                                 self.indicators.values().filter_map(Option::as_ref).any(
                                     |indicator| {
@@ -1250,6 +1236,11 @@ impl canvas::Program<Message> for KlineChart {
                                 trades,
                                 cell_layout.cluster,
                             );
+=======
+                            let individual_max = trades.max_cluster_qty_all(cell_layout.cluster);
+                            let cluster_scaling =
+                                scaling.effective_qty(max_cluster_qty, individual_max);
+>>>>>>> upstream/main
 
                             draw_clusters(
                                 frame,
@@ -1615,7 +1606,8 @@ fn draw_all_npocs(
 
     let start_x_for = |cell_center_x: f32| -> f32 {
         match layout.cluster {
-            ClusterKind::BidAsk | ClusterKind::Table => {
+            ClusterKind::Table => cell_center_x + (layout.cell_w / 2.0) - inset,
+            ClusterKind::BidAsk => {
                 cell_center_x + (layout.candle_w / 2.0) + layout.gaps.candle_to_cluster
             }
             ClusterKind::VolumeProfile | ClusterKind::DeltaProfile => {
@@ -1652,7 +1644,19 @@ fn draw_all_npocs(
 
     let end_x_for = |cell_center_x: f32| -> f32 {
         match layout.cluster {
-            ClusterKind::BidAsk | ClusterKind::Table => {
+            ClusterKind::Table => {
+                let content_left = cell_center_x - (layout.cell_w / 2.0) + inset;
+                let content_right = cell_center_x + (layout.cell_w / 2.0) - inset;
+                let table_layout = TableLayout::new(
+                    content_left,
+                    content_right,
+                    layout.candle_w,
+                    layout.gaps,
+                    imb_study_on,
+                );
+                table_layout.table_left
+            }
+            ClusterKind::BidAsk => {
                 cell_center_x - (layout.candle_w / 2.0) - layout.gaps.candle_to_cluster
             }
             ClusterKind::VolumeProfile | ClusterKind::DeltaProfile => wick_x_for(cell_center_x),
@@ -1727,43 +1731,6 @@ fn draw_all_npocs(
     }
 }
 
-fn effective_cluster_qty(
-    scaling: ClusterScaling,
-    visible_max: f64,
-    footprint: &KlineTrades,
-    cluster_kind: ClusterKind,
-) -> f64 {
-    let individual_max = match cluster_kind {
-        ClusterKind::BidAsk | ClusterKind::Table => footprint
-            .trades
-            .values()
-            .map(|group| group.buy_qty.max(group.sell_qty))
-            .max()
-            .unwrap_or_default(),
-        ClusterKind::DeltaProfile => footprint
-            .trades
-            .values()
-            .map(|group| group.buy_qty.abs_diff(group.sell_qty))
-            .max()
-            .unwrap_or_default(),
-        ClusterKind::VolumeProfile => footprint
-            .trades
-            .values()
-            .map(|group| group.buy_qty + group.sell_qty)
-            .max()
-            .unwrap_or_default(),
-    };
-
-    match scaling {
-        ClusterScaling::VisibleRange => Qty::scale_or_one(visible_max),
-        ClusterScaling::Datapoint => individual_max.to_scale_or_one(),
-        ClusterScaling::Hybrid { weight } => {
-            let w = weight.clamp(0.0, 1.0) as f64;
-            Qty::scale_or_one(visible_max * w + individual_max.to_f64() * (1.0 - w))
-        }
-    }
-}
-
 fn draw_clusters(
     frame: &mut canvas::Frame,
     price_to_y: impl Fn(Price) -> f32,
@@ -1787,6 +1754,8 @@ fn draw_clusters(
     let cell_left = x_position - (layout.cell_w / 2.0);
     let content_left = cell_left + inset;
     let content_right = x_position + (layout.cell_w / 2.0) - inset;
+
+    let mut table_layout: Option<TableLayout> = None;
 
     match layout.cluster {
         ClusterKind::VolumeProfile | ClusterKind::DeltaProfile => {
@@ -1913,16 +1882,15 @@ fn draw_clusters(
             );
         }
         ClusterKind::Table => {
-            let area = TableArea::new(
-                frame,
-                &price_to_y,
+            let tl = TableLayout::new(
                 content_left,
                 content_right,
                 layout.candle_w,
-                kline,
-                layout.pal,
                 layout.gaps,
+                imbalance.is_some(),
             );
+            let area = TableArea::new(frame, &price_to_y, &tl, layout.candle_w, kline, layout.pal);
+            table_layout = Some(tl);
             let table_width = area.width();
             let half_width = table_width / 2.0;
             let cell_border = 1.0;
@@ -1936,40 +1904,28 @@ fn draw_clusters(
                 frame.fill_rectangle(
                     Point::new(area.table_left, row_top),
                     Size::new(half_width, layout.cell_h),
-                    volume_cell_background(
-                        layout.pal,
-                        ImbalanceSide::Sell,
-                        sell_qty,
-                        max_cluster_qty,
-                    ),
+                    ImbalanceSide::Sell.volume_bg_color(sell_qty, max_cluster_qty, layout.pal),
                 );
                 frame.fill_rectangle(
                     Point::new(area.table_left + half_width, row_top),
                     Size::new(half_width, layout.cell_h),
-                    volume_cell_background(
-                        layout.pal,
-                        ImbalanceSide::Buy,
-                        buy_qty,
-                        max_cluster_qty,
-                    ),
+                    ImbalanceSide::Buy.volume_bg_color(buy_qty, max_cluster_qty, layout.pal),
                 );
-                let sell_text_color = volume_cell_text_color(
-                    layout.pal,
-                    ImbalanceSide::Sell,
+                let sell_text_color = ImbalanceSide::Sell.volume_text_color(
                     sell_qty,
                     max_cluster_qty,
                     text_color,
-                );
-                let buy_text_color = volume_cell_text_color(
                     layout.pal,
-                    ImbalanceSide::Buy,
+                );
+                let buy_text_color = ImbalanceSide::Buy.volume_text_color(
                     buy_qty,
                     max_cluster_qty,
                     text_color,
+                    layout.pal,
                 );
 
                 if let Some((threshold, color_scale, ignore_zeros)) = imbalance {
-                    if let Some(alpha) = sell_imbalance_alpha(
+                    if let Some(alpha) = ImbalanceSide::Sell.color_alpha(
                         footprint,
                         *price,
                         sell_qty,
@@ -1978,10 +1934,9 @@ fn draw_clusters(
                         color_scale,
                         ignore_zeros,
                     ) {
-                        draw_table_imbalance_marker(
+                        ImbalanceSide::Sell.draw_table_marker(
                             frame,
                             layout.pal,
-                            ImbalanceSide::Sell,
                             alpha,
                             sell_qty,
                             max_cluster_qty,
@@ -1992,7 +1947,7 @@ fn draw_clusters(
                         );
                     }
 
-                    if let Some(alpha) = buy_imbalance_alpha(
+                    if let Some(alpha) = ImbalanceSide::Buy.color_alpha(
                         footprint,
                         *price,
                         buy_qty,
@@ -2001,10 +1956,9 @@ fn draw_clusters(
                         color_scale,
                         ignore_zeros,
                     ) {
-                        draw_table_imbalance_marker(
+                        ImbalanceSide::Buy.draw_table_marker(
                             frame,
                             layout.pal,
-                            ImbalanceSide::Buy,
                             alpha,
                             buy_qty,
                             max_cluster_qty,
@@ -2195,11 +2149,12 @@ fn draw_clusters(
         }
     }
 
-    if show_text && show_summary {
+    if show_summary {
         let Some(summary) = FootprintSummary::from_trades(footprint) else {
             return;
         };
 
+<<<<<<< HEAD
         let text_size = style::text_size::TINY;
         let volume_label = format!(
             "V: {}",
@@ -2214,22 +2169,38 @@ fn draw_clusters(
         {
             return;
         }
+=======
+        let summary_layout = FootprintSummaryLayout::new(layout.cell_h, scaling);
+
+        let summary_x = match layout.cluster {
+            ClusterKind::Table => {
+                let tl = table_layout
+                    .as_ref()
+                    .expect("TableLayout must be set for Table cluster");
+                (tl.table_left + tl.table_right) / 2.0
+            }
+            _ => x_position,
+        };
+
+>>>>>>> upstream/main
         let lowest_trade_price = footprint.trades.keys().min();
 
-        let line_spacing = (text_size * 1.2) / scaling;
-        let line_height = text_size / scaling;
-        let summary_padding = line_height + line_spacing + line_height;
-
         let summary_y = match lowest_trade_price {
-            Some(p) => price_to_y(*p) + layout.cell_h / 2.0 + summary_padding,
-            None => price_to_y(kline.low) + layout.cell_h / 2.0 + summary_padding,
+            Some(p) => price_to_y(*p) + layout.cell_h / 2.0 + summary_layout.gap,
+            None => price_to_y(kline.low) + layout.cell_h / 2.0 + summary_layout.gap,
         };
 
         draw_cluster_text(
             frame,
+<<<<<<< HEAD
             &volume_label,
             Point::new(x_position, summary_y),
             text_size,
+=======
+            &format!("V: {}", abbr_large_numbers(summary.total.to_f64())),
+            Point::new(summary_x, summary_y),
+            summary_layout.text_size,
+>>>>>>> upstream/main
             layout.pal.background.weakest.text,
             Alignment::Center,
             Alignment::Start,
@@ -2243,9 +2214,18 @@ fn draw_clusters(
 
         draw_cluster_text(
             frame,
+<<<<<<< HEAD
             &delta_label,
             Point::new(x_position, summary_y + line_spacing),
             text_size,
+=======
+            &format!("Δ: {}", abbr_large_numbers(summary.delta.to_f64())),
+            Point::new(
+                summary_x,
+                summary_y + summary_layout.text_size + summary_layout.line_gap,
+            ),
+            summary_layout.text_size,
+>>>>>>> upstream/main
             delta_color,
             Alignment::Center,
             Alignment::Start,
@@ -2301,7 +2281,7 @@ fn draw_imbalance_markers(
                 frame.fill_rectangle(
                     Point::new(buyside_x, y - (rect_height / 2.0)),
                     Size::new(rect_width, rect_height),
-                    imbalance_background(palette, ImbalanceSide::Buy, alpha),
+                    ImbalanceSide::Buy.marker_bg_color(palette, alpha),
                 );
             }
         } else {
@@ -2314,13 +2294,14 @@ fn draw_imbalance_markers(
                 frame.fill_rectangle(
                     Point::new(sellside_x, y - (rect_height / 2.0)),
                     Size::new(rect_width, rect_height),
-                    imbalance_background(palette, ImbalanceSide::Sell, alpha),
+                    ImbalanceSide::Sell.marker_bg_color(palette, alpha),
                 );
             }
         }
     }
 }
 
+<<<<<<< HEAD
 #[derive(Clone, Copy)]
 enum ImbalanceSide {
     Buy,
@@ -2523,6 +2504,8 @@ struct FootprintCellLayout<'a> {
     quantity_format: QuantityFormat,
 }
 
+=======
+>>>>>>> upstream/main
 fn draw_cluster_text(
     frame: &mut canvas::Frame,
     text: &str,
@@ -2684,6 +2667,197 @@ fn draw_crosshair_tooltip(
     }
 }
 
+#[derive(Clone, Copy)]
+enum ImbalanceSide {
+    Buy,
+    Sell,
+}
+
+impl ImbalanceSide {
+    fn volume_bg_color(self, qty: f64, max_qty: f64, palette: &Extended) -> Color {
+        const MIN_ALPHA: f32 = 0.04;
+
+        let intensity = if max_qty > 0.0 {
+            (qty / max_qty).clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        };
+        let alpha = MIN_ALPHA + intensity * (1.0 - MIN_ALPHA);
+
+        match self {
+            ImbalanceSide::Buy => palette.success.base.color.scale_alpha(alpha),
+            ImbalanceSide::Sell => palette.danger.base.color.scale_alpha(alpha),
+        }
+    }
+
+    fn volume_text_color(
+        self,
+        qty: f64,
+        max_qty: f64,
+        default_color: Color,
+        palette: &Extended,
+    ) -> Color {
+        let cell_color = self.volume_bg_color(qty, max_qty, palette);
+        let cell_background = composite_color(cell_color, palette.background.base.color);
+        let inverted_color = palette.background.base.color;
+
+        if contrast_ratio(cell_background, inverted_color)
+            > contrast_ratio(cell_background, default_color)
+        {
+            inverted_color
+        } else {
+            default_color
+        }
+    }
+
+    fn marker_bg_color(self, palette: &Extended, alpha: f32) -> Color {
+        let accent = match self {
+            ImbalanceSide::Buy => palette.success.strong.color,
+            ImbalanceSide::Sell => palette.danger.strong.color,
+        };
+        let alpha = alpha.clamp(0.0, 1.0);
+
+        if palette.is_dark {
+            let tint = 0.28 + (alpha * 0.32);
+            mix_color(accent, palette.background.strongest.color, tint)
+        } else {
+            let tint = 0.18 + (alpha * 0.24);
+            mix_color(accent, palette.background.weak.color, tint)
+        }
+    }
+
+    fn color_alpha(
+        self,
+        footprint: &KlineTrades,
+        price: Price,
+        qty: f64,
+        step: PriceStep,
+        threshold: usize,
+        color_scale: Option<usize>,
+        ignore_zeros: bool,
+    ) -> Option<f32> {
+        let diagonal_price = match self {
+            ImbalanceSide::Buy => price.add_steps(-1, step),
+            ImbalanceSide::Sell => price.add_steps(1, step),
+        };
+        let diagonal_qty = footprint
+            .trades
+            .get(&diagonal_price)
+            .map(|group| match self {
+                ImbalanceSide::Buy => group.sell_qty.to_f64(),
+                ImbalanceSide::Sell => group.buy_qty.to_f64(),
+            })
+            .unwrap_or_default();
+
+        if ignore_zeros && (qty <= 0.0 || diagonal_qty <= 0.0) {
+            return None;
+        }
+
+        let required_qty = diagonal_qty * (100 + threshold) as f64 / 100.0;
+
+        if required_qty <= 0.0 {
+            return (qty > 0.0).then_some(1.0);
+        }
+
+        if qty <= required_qty {
+            return None;
+        }
+
+        let ratio = qty / required_qty;
+        Some(if let Some(scale) = color_scale {
+            let divisor = (scale as f64 / 10.0) - 1.0;
+            (0.2 + 0.8 * ((ratio - 1.0) / divisor).min(1.0)).min(1.0) as f32
+        } else {
+            1.0
+        })
+    }
+
+    fn draw_table_marker(
+        self,
+        frame: &mut canvas::Frame,
+        palette: &Extended,
+        alpha: f32,
+        qty: f64,
+        max_qty: f64,
+        cell: Rectangle,
+    ) {
+        if cell.height <= 0.0 {
+            return;
+        }
+
+        let bar_width = 2.5;
+        let gap = 1.5;
+
+        let volume_intensity = if max_qty > 0.0 {
+            (qty / max_qty).clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        };
+        let imbalance_strength = alpha.clamp(0.0, 1.0);
+        let marker_alpha = 0.38 + (volume_intensity * 0.24) + (imbalance_strength * 0.38);
+        let marker_alpha = marker_alpha.clamp(0.38, 1.0);
+
+        let color = palette.warning.strong.color.scale_alpha(marker_alpha);
+
+        let (x, bar_w) = match self {
+            ImbalanceSide::Sell => (cell.x - bar_width - gap, bar_width),
+            ImbalanceSide::Buy => (cell.x + cell.width + gap, bar_width),
+        };
+
+        frame.fill_rectangle(Point::new(x, cell.y), Size::new(bar_w, cell.height), color);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ContentGaps {
+    /// Space between imb. markers candle body
+    marker_to_candle: f32,
+    /// Space between candle body and clusters
+    candle_to_cluster: f32,
+    /// Inner space reserved between imb. markers and clusters (used for BidAsk)
+    marker_to_bars: f32,
+}
+
+impl ContentGaps {
+    fn from_view(candle_width: f32, scaling: f32) -> Self {
+        let px = |p: f32| p / scaling;
+        let base = (candle_width * 0.2).max(px(2.0));
+        Self {
+            marker_to_candle: base,
+            candle_to_cluster: base,
+            marker_to_bars: px(2.0),
+        }
+    }
+}
+
+/// Layout and style parameters shared across footprint cell draw functions.
+struct FootprintCellLayout<'a> {
+    cell_w: f32,
+    cell_h: f32,
+    candle_w: f32,
+    pal: &'a Extended,
+    cluster: ClusterKind,
+    gaps: ContentGaps,
+}
+
+impl FootprintCellLayout<'_> {
+    /// Compute the text size for cluster labels based on on-screen cell dimensions.
+    fn text_size(&self, scaling: f32) -> f32 {
+        let cell_height_unscaled = self.cell_h * scaling;
+        let cell_width_unscaled = self.cell_w * scaling;
+        let from_height = cell_height_unscaled.round().min(16.0) - 3.0;
+        let from_width = (cell_width_unscaled * 0.1).round().min(16.0) - 3.0;
+        from_height.min(from_width)
+    }
+
+    /// Whether cluster text labels should be drawn given current zoom level.
+    fn should_show_text(&self, scaling: f32) -> bool {
+        const THRESHOLD: f32 = 8.0;
+        self.cell_h * scaling > THRESHOLD
+            && self.cell_w * scaling > self.cluster.min_footprint_width()
+    }
+}
+
 struct ProfileArea {
     imb_marker_left: f32,
     imb_marker_width: f32,
@@ -2758,6 +2932,39 @@ impl BidAskArea {
     }
 }
 
+struct TableLayout {
+    table_left: f32,
+    table_right: f32,
+    candle_center_x: f32,
+}
+
+impl TableLayout {
+    fn new(
+        content_left: f32,
+        content_right: f32,
+        candle_width: f32,
+        spacing: ContentGaps,
+        has_imbalance: bool,
+    ) -> Self {
+        let (candle_center_x, table_left) = if has_imbalance {
+            let ccx = content_left + candle_width / 2.0;
+            let tl = (content_left + candle_width + spacing.candle_to_cluster).min(content_right);
+            (ccx, tl)
+        } else {
+            let thin_candle = candle_width * 0.25;
+            let ccx = content_left + thin_candle / 2.0;
+            let tl = (content_left + thin_candle + spacing.candle_to_cluster).min(content_right);
+            (ccx, tl)
+        };
+
+        Self {
+            table_left,
+            table_right: content_right,
+            candle_center_x,
+        }
+    }
+}
+
 struct TableArea {
     table_left: f32,
     table_right: f32,
@@ -2767,27 +2974,23 @@ impl TableArea {
     fn new(
         frame: &mut canvas::Frame,
         price_to_y: &impl Fn(Price) -> f32,
-        content_left: f32,
-        content_right: f32,
+        table_layout: &TableLayout,
         candle_width: f32,
         kline: &Kline,
         palette: &Extended,
-        spacing: ContentGaps,
     ) -> Self {
-        let candle_center_x = content_left + candle_width / 2.0;
         draw_footprint_kline(
             frame,
             price_to_y,
-            candle_center_x,
+            table_layout.candle_center_x,
             candle_width,
             kline,
             palette,
         );
 
         Self {
-            table_left: (content_left + candle_width + spacing.candle_to_cluster)
-                .min(content_right),
-            table_right: content_right,
+            table_left: table_layout.table_left,
+            table_right: table_layout.table_right,
         }
     }
 
@@ -2796,6 +2999,7 @@ impl TableArea {
     }
 }
 
+<<<<<<< HEAD
 #[inline]
 pub(crate) fn footprint_cluster_text_size(cell_height_unscaled: f32) -> f32 {
     cell_height_unscaled.round().min(16.0) - 3.0
@@ -2803,6 +3007,54 @@ pub(crate) fn footprint_cluster_text_size(cell_height_unscaled: f32) -> f32 {
 
 pub(crate) fn footprint_text_fits(text: &str, text_size: f32, available_width: f32) -> bool {
     text.chars().count() as f32 * text_size * 0.62 <= available_width
+=======
+struct FootprintSummaryLayout {
+    text_size: f32,
+    gap: f32,
+    line_gap: f32,
+}
+
+impl FootprintSummaryLayout {
+    /// Computes the text size, gap, and line gap for footprint summary text.
+    /// Scales the font down when the on-screen cell height is too small.
+    fn new(cell_height: f32, scaling: f32) -> FootprintSummaryLayout {
+        const MIN_SCREEN_CELL_H_PX: f32 = 6.0;
+        const MIN_TEXT_SIZE_PX: f32 = 3.0;
+        const SUMMARY_GAP_PX: f32 = 8.0;
+        const SUMMARY_LINE_GAP_PX: f32 = 2.0;
+
+        let max_text_size = style::text_size::TINY;
+        let screen_cell_h = cell_height * scaling;
+        let text_size = if screen_cell_h < MIN_SCREEN_CELL_H_PX {
+            (max_text_size * (screen_cell_h / MIN_SCREEN_CELL_H_PX)).max(MIN_TEXT_SIZE_PX)
+        } else {
+            max_text_size
+        };
+
+        let gap = SUMMARY_GAP_PX / scaling;
+        let line_gap = SUMMARY_LINE_GAP_PX / scaling;
+
+        FootprintSummaryLayout {
+            text_size,
+            gap,
+            line_gap,
+        }
+    }
+
+    fn padding(cell_height: f32, scaling: f32, tick_size: f32) -> f32 {
+        if cell_height <= f32::EPSILON {
+            return 0.0;
+        }
+
+        let layout = Self::new(cell_height, scaling);
+
+        let first_line_bottom = layout.gap + layout.text_size;
+        let second_line_bottom = first_line_bottom + layout.line_gap + layout.text_size;
+
+        let summary_ticks = second_line_bottom / cell_height;
+        summary_ticks * tick_size
+    }
+>>>>>>> upstream/main
 }
 
 #[inline]
@@ -2815,6 +3067,7 @@ fn price_padding_from_pixels(cell_height: f32, tick_size: f32) -> f32 {
 
     (OUTER_BOUND_PADDING_PX / cell_height) * tick_size
 }
+<<<<<<< HEAD
 
 fn footprint_summary_padding(
     cell_height: f32,
@@ -2886,3 +3139,5 @@ mod tests {
         assert!(!footprint_text_fits("123.45", 9.0, 33.0));
     }
 }
+=======
+>>>>>>> upstream/main
