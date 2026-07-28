@@ -661,8 +661,8 @@ async fn get_hist_trades_with_client(
 
         trades.extend(csv_reader.records().filter_map(|record| {
             record.ok().and_then(|record| {
-                let time = record[5].parse::<u64>().ok()?;
-                let is_sell = record[6].parse::<bool>().ok()?;
+                let time = normalize_archive_timestamp(record[5].parse::<u64>().ok()?);
+                let is_sell = parse_archive_bool(&record[6])?;
                 let price_f64 = record[1].parse::<f64>().ok()?;
 
                 let price = Price::from_f64(price_f64).round_to_min_tick(ticker_info.min_ticksize);
@@ -679,6 +679,25 @@ async fn get_hist_trades_with_client(
     }
 
     Ok(trades)
+}
+
+fn normalize_archive_timestamp(timestamp: u64) -> u64 {
+    // Binance Spot archive timestamps use microseconds from 2025 onward.
+    if timestamp > 9_999_999_999_999 {
+        timestamp / 1_000
+    } else {
+        timestamp
+    }
+}
+
+fn parse_archive_bool(value: &str) -> Option<bool> {
+    if value.eq_ignore_ascii_case("true") {
+        Some(true)
+    } else if value.eq_ignore_ascii_case("false") {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 pub(super) async fn fetch_trades(
@@ -736,5 +755,29 @@ pub(super) async fn fetch_trades(
             );
             fetch_intraday_trades(hub, ticker_info, from_time).await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_archive_timestamp, parse_archive_bool};
+
+    #[test]
+    fn archive_timestamps_accept_milliseconds_and_microseconds() {
+        assert_eq!(
+            normalize_archive_timestamp(1_785_024_000_771),
+            1_785_024_000_771
+        );
+        assert_eq!(
+            normalize_archive_timestamp(1_785_024_000_771_753),
+            1_785_024_000_771
+        );
+    }
+
+    #[test]
+    fn archive_boole_accept_binance_title_case() {
+        assert_eq!(parse_archive_bool("True"), Some(true));
+        assert_eq!(parse_archive_bool("False"), Some(false));
+        assert_eq!(parse_archive_bool("invalid"), None);
     }
 }

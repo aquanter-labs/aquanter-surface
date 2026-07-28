@@ -1,6 +1,7 @@
 use super::{
-    Action, Basis, Chart, Interaction, Message, PlotConstants, PlotData, TEXT_SIZE, ViewState,
-    indicator, request_fetch, scale::linear::PriceInfoLabel,
+    Action, Basis, Chart, Drawing, DrawingAnchor, DrawingPart, DrawingTool, Interaction, Message,
+    PlotConstants, PlotData, TEXT_SIZE, ViewState, indicator, request_fetch,
+    scale::linear::PriceInfoLabel,
 };
 use crate::chart::indicator::kline::KlineIndicatorImpl;
 use crate::connector::fetcher::{FetchRange, RequestHandler, is_trade_fetch_enabled};
@@ -210,6 +211,17 @@ pub struct KlineChart {
     visual_config: Config,
     interval_selection: Option<IntervalSelection>,
     timezone: Cell<data::UserTimezone>,
+    ai_annotation: Option<crate::ai::ChartAnnotation>,
+    drawing_tool: Option<DrawingTool>,
+    drawings: Vec<Drawing>,
+    selected_drawing: Option<usize>,
+    drawing_context_menu: Option<DrawingContextMenu>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DrawingContextMenu {
+    index: usize,
+    position: Point,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -218,6 +230,212 @@ pub enum IntervalSelection {
 }
 
 impl KlineChart {
+    pub(crate) fn alert_observation(
+        &self,
+        pane_id: uuid::Uuid,
+    ) -> Option<crate::alerts::Observation> {
+        let PlotData::TimeBased(timeseries) = &self.data_source else {
+            return None;
+        };
+        let mut datapoints = timeseries.datapoints.values().rev();
+        let latest = datapoints.next()?;
+        let previous = datapoints.next();
+        Some(crate::alerts::Observation {
+            pane_id,
+            price: latest.kline.close.to_f64(),
+            volume: latest.kline.volume.total().to_f64(),
+            reference_volume: previous.map(|point| point.kline.volume.total().to_f64()),
+            market_time_ms: latest.kline.time.as_u64(),
+        })
+    }
+
+    pub fn market_snapshot(
+        &self,
+        short_bar_count: usize,
+        long_bar_count: usize,
+        exclude_current_bar: bool,
+    ) -> Result<crate::ai::MarketSnapshot, String> {
+        let PlotData::TimeBased(timeseries) = &self.data_source else {
+            return Err("AI analysis currently requires a time-based Kline chart.".to_string());
+        };
+        let limit = long_bar_count.max(short_bar_count).clamp(20, 500);
+        let mut datapoints = timeseries
+            .datapoints
+            .values()
+            .rev()
+            .take(limit)
+            .collect::<Vec<_>>();
+        datapoints.reverse();
+        if exclude_current_bar {
+            datapoints.pop();
+        }
+        if datapoints.len() < short_bar_count.min(20) {
+            return Err(format!(
+                "Not enough loaded history for analysis: {} bars available.",
+                datapoints.len()
+            ));
+        }
+
+        let mut directional_count = 0usize;
+        let mut bars = datapoints
+            .iter()
+            .copied()
+            .map(|datapoint| {
+                let kline = datapoint.kline;
+                let (buy_volume, sell_volume) = kline
+                    .volume
+                    .buy_sell()
+                    .map(|(buy, sell)| (Some(buy.to_f64()), Some(sell.to_f64())))
+                    .unwrap_or_else(|| {
+                        let buy = datapoint
+                            .footprint
+                            .trades
+                            .values()
+                            .map(|group| group.buy_qty.to_f64())
+                            .sum::<f64>();
+                        let sell = datapoint
+                            .footprint
+                            .trades
+                            .values()
+                            .map(|group| group.sell_qty.to_f64())
+                            .sum::<f64>();
+                        if buy > 0.0 || sell > 0.0 {
+                            (Some(buy), Some(sell))
+                        } else {
+                            (None, None)
+                        }
+                    });
+                if buy_volume.is_some() {
+                    directional_count += 1;
+                }
+                crate::ai::MarketBar {
+                    time_ms: kline.time.as_u64(),
+                    open: kline.open.to_f64(),
+                    high: kline.high.to_f64(),
+                    low: kline.low.to_f64(),
+                    close: kline.close.to_f64(),
+                    volume: kline.volume.total().to_f64(),
+                    buy_volume,
+                    sell_volume,
+                    delta: buy_volume.zip(sell_volume).map(|(buy, sell)| buy - sell),
+                    cvd: None,
+                    open_interest: self
+                        .open_interest
+                        .range(..=kline.time)
+                        .next_back()
+                        .map(|(_, value)| *value),
+                }
+            })
+            .collect::<Vec<_>>();
+        crate::ai::populate_relative_cvd(&mut bars);
+
+        let oldest_time = bars.first().map_or(0, |bar| bar.time_ms);
+        let recent_liquidations = self
+            .liquidations
+            .iter()
+            .filter(|liquidation| liquidation.time.as_u64() >= oldest_time)
+            .collect::<Vec<_>>();
+        let liquidations = crate::ai::LiquidationSummary {
+            long_quantity: recent_liquidations
+                .iter()
+                .filter(|liquidation| liquidation.is_sell)
+                .map(|liquidation| liquidation.qty.to_f64())
+                .sum(),
+            short_quantity: recent_liquidations
+                .iter()
+                .filter(|liquidation| !liquidation.is_sell)
+                .map(|liquidation| liquidation.qty.to_f64())
+                .sum(),
+            event_count: recent_liquidations.len(),
+        };
+
+        let depth = self.orderbook[Side::Bid.idx()]
+            .orders
+            .iter()
+            .rev()
+            .take(10)
+            .map(|(price, quantity)| crate::ai::DepthLevel {
+                side: "bid",
+                price: price.to_f64(),
+                quantity: quantity.to_f64(),
+            })
+            .chain(self.orderbook[Side::Ask.idx()].orders.iter().take(10).map(
+                |(price, quantity)| crate::ai::DepthLevel {
+                    side: "ask",
+                    price: price.to_f64(),
+                    quantity: quantity.to_f64(),
+                },
+            ))
+            .collect::<Vec<_>>();
+
+        let mut missing_data = Vec::new();
+        if directional_count == 0 {
+            missing_data.push("order_flow");
+        }
+        if self.open_interest.is_empty() {
+            missing_data.push("open_interest");
+        }
+        if depth.is_empty() {
+            missing_data.push("order_book");
+        }
+        let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+        let timeframe_ms = timeseries.interval.to_milliseconds();
+        let latest_market_time_ms = bars.last().map_or(0, |bar| bar.time_ms);
+        let expected_close = latest_market_time_ms.saturating_add(timeframe_ms);
+        let data_age_ms = now_ms.saturating_sub(expected_close);
+        let freshness_quality = if data_age_ms <= timeframe_ms {
+            1.0
+        } else {
+            (timeframe_ms as f32 / data_age_ms as f32).clamp(0.0, 1.0)
+        };
+        let history_quality = (bars.len() as f32 / limit as f32).min(1.0);
+        let directional_quality = directional_count as f32 / bars.len() as f32;
+        let data_quality = (history_quality * 0.4
+            + directional_quality * 0.2
+            + if depth.is_empty() { 0.0 } else { 0.15 }
+            + if self.open_interest.is_empty() {
+                0.0
+            } else {
+                0.1
+            })
+            + freshness_quality * 0.15;
+        let data_quality = data_quality.clamp(0.0, 1.0);
+        let volume_profile_poc = datapoints
+            .iter()
+            .rev()
+            .take(short_bar_count)
+            .flat_map(|datapoint| datapoint.footprint.trades.iter())
+            .fold(
+                BTreeMap::<Price, f64>::new(),
+                |mut profile, (price, group)| {
+                    *profile.entry(*price).or_default() += group.total_qty().to_f64();
+                    profile
+                },
+            )
+            .into_iter()
+            .max_by(|(_, left), (_, right)| left.total_cmp(right))
+            .map(|(price, _)| price.to_f64());
+        let mut features = crate::ai::MarketFeatures::calculate(&bars, &depth, short_bar_count);
+        features.set_volume_profile_poc(volume_profile_poc, bars.last().map(|bar| bar.close));
+
+        Ok(crate::ai::MarketSnapshot {
+            generated_at_ms: now_ms as i64,
+            symbol: self.chart.ticker_info.ticker.to_string(),
+            venue: format!("{:?}", self.chart.ticker_info.exchange()),
+            market: format!("{:?}", self.chart.ticker_info.market_type()),
+            basis: self.basis().to_string(),
+            timeframe_ms,
+            latest_market_time_ms,
+            data_age_ms,
+            bars,
+            depth,
+            liquidations,
+            features,
+            data_quality,
+            missing_data,
+        })
+    }
+
     pub fn new(
         layout: ViewConfig,
         basis: Basis,
@@ -314,6 +532,11 @@ impl KlineChart {
                     visual_config,
                     interval_selection: None,
                     timezone: Cell::new(data::UserTimezone::Utc),
+                    ai_annotation: None,
+                    drawing_tool: None,
+                    drawings: Vec::new(),
+                    selected_drawing: None,
+                    drawing_context_menu: None,
                     data_source,
                     raw_trades,
                     open_interest: BTreeMap::new(),
@@ -384,6 +607,11 @@ impl KlineChart {
                     visual_config,
                     interval_selection: None,
                     timezone: Cell::new(data::UserTimezone::Utc),
+                    ai_annotation: None,
+                    drawing_tool: None,
+                    drawings: Vec::new(),
+                    selected_drawing: None,
+                    drawing_context_menu: None,
                     data_source,
                     raw_trades,
                     open_interest: BTreeMap::new(),
@@ -433,6 +661,73 @@ impl KlineChart {
 
     pub fn kind(&self) -> &KlineChartKind {
         &self.kind
+    }
+
+    pub fn ticker_info(&self) -> TickerInfo {
+        self.chart.ticker_info
+    }
+
+    pub(crate) fn set_ai_annotation(&mut self, annotation: crate::ai::ChartAnnotation) {
+        self.ai_annotation = Some(annotation);
+    }
+
+    pub(crate) fn clear_ai_annotation(&mut self) {
+        self.ai_annotation = None;
+    }
+
+    pub fn drawing_tool(&self) -> Option<DrawingTool> {
+        self.drawing_tool
+    }
+
+    pub fn select_drawing_tool(&mut self, tool: Option<DrawingTool>) {
+        self.drawing_tool = tool;
+        self.selected_drawing = None;
+        self.drawing_context_menu = None;
+    }
+
+    pub fn clear_drawings(&mut self) {
+        self.drawings.clear();
+        self.selected_drawing = None;
+        self.ai_annotation = None;
+        self.drawing_context_menu = None;
+    }
+
+    pub fn handle_drawing_message(&mut self, message: &Message) -> bool {
+        match *message {
+            Message::DrawingCreated(drawing) => {
+                self.drawings.push(drawing);
+                self.selected_drawing = Some(self.drawings.len() - 1);
+            }
+            Message::DrawingSelected(index) => {
+                self.selected_drawing = (index < self.drawings.len()).then_some(index);
+            }
+            Message::DrawingChanged(index, drawing) => {
+                if let Some(current) = self.drawings.get_mut(index) {
+                    *current = drawing;
+                }
+            }
+            Message::DrawingFinished => {
+                self.drawing_tool = None;
+            }
+            Message::DrawingDeleted(index) => {
+                if index < self.drawings.len() {
+                    self.drawings.remove(index);
+                }
+                self.selected_drawing = None;
+                self.drawing_context_menu = None;
+            }
+            Message::DrawingContextMenu(index, position) => {
+                if index < self.drawings.len() {
+                    self.selected_drawing = Some(index);
+                    self.drawing_context_menu = Some(DrawingContextMenu { index, position });
+                }
+            }
+            Message::DrawingContextMenuClosed => {
+                self.drawing_context_menu = None;
+            }
+            _ => return false,
+        }
+        true
     }
 
     fn fetch_missing_data(&mut self) -> Option<Action> {
@@ -1100,6 +1395,273 @@ impl KlineChart {
     }
 }
 
+impl KlineChart {
+    fn drawing_anchor(&self, position: Point, bounds: Rectangle) -> DrawingAnchor {
+        let center = canvas_local_center(bounds);
+        let world = (position - center) * (1.0 / self.chart.scaling) - self.chart.translation;
+        let interval = match self.chart.basis {
+            Basis::Time(_) => self.chart.x_to_interval(world.x),
+            Basis::Tick(_) => {
+                if world.x >= 0.0 {
+                    0
+                } else {
+                    self.chart.x_to_interval(world.x)
+                }
+            }
+        };
+        DrawingAnchor {
+            interval,
+            price: self.chart.y_to_price(world.y).to_f64(),
+        }
+    }
+
+    fn drawing_screen_point(&self, anchor: DrawingAnchor, bounds: Rectangle) -> Point {
+        let world = Point::new(
+            self.chart.interval_to_x(anchor.interval),
+            self.chart.price_to_y(Price::from_f64(anchor.price)),
+        );
+        Point::new(
+            canvas_local_center(bounds).x
+                + (world.x + self.chart.translation.x) * self.chart.scaling,
+            canvas_local_center(bounds).y
+                + (world.y + self.chart.translation.y) * self.chart.scaling,
+        )
+    }
+
+    fn drawing_hit(&self, position: Point, bounds: Rectangle) -> Option<(usize, DrawingPart)> {
+        const HANDLE_RADIUS: f32 = 7.0;
+        self.drawings
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, drawing)| {
+                let start = self.drawing_screen_point(drawing.start, bounds);
+                let end = self.drawing_screen_point(drawing.end, bounds);
+                if drawing.tool == DrawingTool::VolumeProfile {
+                    let (top, bottom) = self
+                        .data_source
+                        .visible_price_range(
+                            drawing.start.interval.min(drawing.end.interval),
+                            drawing.start.interval.max(drawing.end.interval),
+                        )
+                        .map_or((0.0, bounds.height), |(first, second)| {
+                            let first = self
+                                .drawing_screen_point(
+                                    DrawingAnchor {
+                                        interval: drawing.start.interval,
+                                        price: f64::from(first),
+                                    },
+                                    bounds,
+                                )
+                                .y;
+                            let second = self
+                                .drawing_screen_point(
+                                    DrawingAnchor {
+                                        interval: drawing.start.interval,
+                                        price: f64::from(second),
+                                    },
+                                    bounds,
+                                )
+                                .y;
+                            (first.min(second), first.max(second))
+                        });
+                    if (top - HANDLE_RADIUS..=bottom + HANDLE_RADIUS).contains(&position.y)
+                        && (position.x - start.x).abs() <= HANDLE_RADIUS
+                    {
+                        return Some((index, DrawingPart::Start));
+                    }
+                    if (top - HANDLE_RADIUS..=bottom + HANDLE_RADIUS).contains(&position.y)
+                        && (position.x - end.x).abs() <= HANDLE_RADIUS
+                    {
+                        return Some((index, DrawingPart::End));
+                    }
+                    let left = start.x.min(end.x);
+                    let right = start.x.max(end.x);
+                    return Rectangle {
+                        x: left,
+                        y: top,
+                        width: right - left,
+                        height: bottom - top,
+                    }
+                    .contains(position)
+                    .then_some((index, DrawingPart::Body));
+                }
+                if position.distance(start) <= HANDLE_RADIUS {
+                    return Some((index, DrawingPart::Start));
+                }
+                if drawing.tool != DrawingTool::HorizontalLine
+                    && position.distance(end) <= HANDLE_RADIUS
+                {
+                    return Some((index, DrawingPart::End));
+                }
+                let hit_body = match drawing.tool {
+                    DrawingTool::HorizontalLine => (position.y - start.y).abs() <= HANDLE_RADIUS,
+                    DrawingTool::TrendLine => {
+                        distance_to_segment(position, start, end) <= HANDLE_RADIUS
+                    }
+                    DrawingTool::VolumeProfile => unreachable!(),
+                };
+                hit_body.then_some((index, DrawingPart::Body))
+            })
+    }
+
+    fn drawing_interaction(
+        &self,
+        interaction: &mut Interaction,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        if matches!(
+            event,
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+        ) && matches!(interaction, Interaction::Drawing { .. })
+        {
+            *interaction = Interaction::None;
+            return Some(canvas::Action::publish(Message::DrawingFinished).and_capture());
+        }
+        let position = cursor.position_in(bounds)?;
+        if let Some(menu) = self.drawing_context_menu {
+            match event {
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                    let message =
+                        if drawing_context_menu_delete_hit(menu.position, bounds, position) {
+                            Message::DrawingDeleted(menu.index)
+                        } else {
+                            Message::DrawingContextMenuClosed
+                        };
+                    return Some(canvas::Action::publish(message).and_capture());
+                }
+                Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                    key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+                    ..
+                }) => {
+                    return Some(
+                        canvas::Action::publish(Message::DrawingContextMenuClosed).and_capture(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                if let Some((index, _)) = self.drawing_hit(position, bounds) {
+                    Some(
+                        canvas::Action::publish(Message::DrawingContextMenu(index, position))
+                            .and_capture(),
+                    )
+                } else {
+                    self.drawing_context_menu.map(|_| {
+                        canvas::Action::publish(Message::DrawingContextMenuClosed).and_capture()
+                    })
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                let anchor = self.drawing_anchor(position, bounds);
+                if let Some(tool) = self.drawing_tool {
+                    let drawing = Drawing {
+                        tool,
+                        start: anchor,
+                        end: anchor,
+                    };
+                    *interaction = Interaction::Drawing {
+                        index: self.drawings.len(),
+                        part: if tool == DrawingTool::HorizontalLine {
+                            DrawingPart::Body
+                        } else {
+                            DrawingPart::End
+                        },
+                        cursor_start: anchor,
+                        original: drawing,
+                    };
+                    return Some(
+                        canvas::Action::publish(Message::DrawingCreated(drawing)).and_capture(),
+                    );
+                }
+                self.drawing_hit(position, bounds).map(|(index, part)| {
+                    *interaction = Interaction::Drawing {
+                        index,
+                        part,
+                        cursor_start: anchor,
+                        original: self.drawings[index],
+                    };
+                    canvas::Action::publish(Message::DrawingSelected(index)).and_capture()
+                })
+            }
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                let Interaction::Drawing {
+                    index,
+                    part,
+                    cursor_start,
+                    original,
+                } = *interaction
+                else {
+                    return None;
+                };
+                let current = self.drawing_anchor(position, bounds);
+                let drawing = moved_drawing(original, part, cursor_start, current);
+                Some(canvas::Action::publish(Message::DrawingChanged(index, drawing)).and_capture())
+            }
+            _ => None,
+        }
+    }
+}
+
+fn moved_drawing(
+    original: Drawing,
+    part: DrawingPart,
+    cursor_start: DrawingAnchor,
+    current: DrawingAnchor,
+) -> Drawing {
+    let mut drawing = original;
+    match part {
+        DrawingPart::Start => drawing.start = current,
+        DrawingPart::End => drawing.end = current,
+        DrawingPart::Body => {
+            let interval_delta = current.interval as i128 - cursor_start.interval as i128;
+            let shift_interval =
+                |value: u64| (value as i128 + interval_delta).clamp(0, u64::MAX as i128) as u64;
+            let price_delta = current.price - cursor_start.price;
+            drawing.start.interval = shift_interval(original.start.interval);
+            drawing.end.interval = shift_interval(original.end.interval);
+            drawing.start.price = original.start.price + price_delta;
+            drawing.end.price = original.end.price + price_delta;
+        }
+    }
+    drawing
+}
+
+fn drawing_context_menu_bounds(position: Point, bounds: Rectangle) -> Rectangle {
+    const WIDTH: f32 = 116.0;
+    const HEIGHT: f32 = 34.0;
+    Rectangle {
+        x: position.x.min((bounds.width - WIDTH).max(0.0)),
+        y: position.y.min((bounds.height - HEIGHT).max(0.0)),
+        width: WIDTH,
+        height: HEIGHT,
+    }
+}
+
+fn drawing_context_menu_delete_hit(menu_position: Point, bounds: Rectangle, click: Point) -> bool {
+    drawing_context_menu_bounds(menu_position, bounds).contains(click)
+}
+
+fn distance_to_segment(point: Point, start: Point, end: Point) -> f32 {
+    let segment = end - start;
+    let length_squared = segment.x * segment.x + segment.y * segment.y;
+    if length_squared <= f32::EPSILON {
+        return point.distance(start);
+    }
+    let from_start = point - start;
+    let t =
+        ((from_start.x * segment.x + from_start.y * segment.y) / length_squared).clamp(0.0, 1.0);
+    point.distance(start + segment * t)
+}
+
+fn canvas_local_center(bounds: Rectangle) -> Point {
+    Point::new(bounds.width / 2.0, bounds.height / 2.0)
+}
+
 impl canvas::Program<Message> for KlineChart {
     type State = Interaction;
 
@@ -1110,6 +1672,24 @@ impl canvas::Program<Message> for KlineChart {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
+        if self.drawing_tool.is_some()
+            || self.drawing_context_menu.is_some()
+            || matches!(interaction, Interaction::Drawing { .. })
+            || matches!(
+                event,
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
+            )
+            || matches!(
+                event,
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+            ) && cursor
+                .position_in(bounds)
+                .is_some_and(|position| self.drawing_hit(position, bounds).is_some())
+        {
+            if let Some(action) = self.drawing_interaction(interaction, event, bounds, cursor) {
+                return Some(action);
+            }
+        }
         super::canvas_interaction(self, interaction, event, bounds, cursor)
     }
 
@@ -1339,7 +1919,79 @@ impl canvas::Program<Message> for KlineChart {
         }
         let orderbook = orderbook_frame.into_geometry();
 
-        vec![klines, profiles, orderbook, crosshair]
+        let mut drawings_frame = canvas::Frame::new(renderer, bounds_size);
+        drawings_frame.translate(Vector::new(bounds.width / 2.0, bounds.height / 2.0));
+        drawings_frame.scale(chart.scaling);
+        drawings_frame.translate(chart.translation);
+        for (index, drawing) in self.drawings.iter().enumerate() {
+            draw_manual_drawing(
+                &mut drawings_frame,
+                chart,
+                theme,
+                &self.data_source,
+                self.visual_config.quantity_format,
+                *drawing,
+                self.selected_drawing == Some(index),
+                matches!(self.kind, KlineChartKind::Footprint { .. }),
+            );
+        }
+        let drawings = drawings_frame.into_geometry();
+
+        let mut ai_frame = canvas::Frame::new(renderer, bounds_size);
+        if let Some(annotation) = self.ai_annotation.as_ref().filter(|value| value.is_valid()) {
+            ai_frame.translate(Vector::new(bounds.width / 2.0, bounds.height / 2.0));
+            ai_frame.scale(chart.scaling);
+            ai_frame.translate(chart.translation);
+            draw_ai_annotation(&mut ai_frame, chart, palette, &self.data_source, annotation);
+        }
+        let ai_annotation = ai_frame.into_geometry();
+
+        let mut context_menu_frame = canvas::Frame::new(renderer, bounds_size);
+        if let Some(menu) = self.drawing_context_menu {
+            let menu_bounds = drawing_context_menu_bounds(menu.position, bounds);
+            context_menu_frame.fill_rectangle(
+                menu_bounds.position(),
+                menu_bounds.size(),
+                palette.background.strong.color,
+            );
+            context_menu_frame.stroke(
+                &Path::rectangle(menu_bounds.position(), menu_bounds.size()),
+                Stroke::default()
+                    .with_width(1.0)
+                    .with_color(palette.background.strong.text.scale_alpha(0.25)),
+            );
+            context_menu_frame.fill_text(canvas::Text {
+                content: char::from_u32(style::LucideIcon::Trash2 as u32)
+                    .expect("Lucide icon codepoints must be valid")
+                    .to_string(),
+                position: Point::new(menu_bounds.x + 10.0, menu_bounds.center_y()),
+                size: iced::Pixels(13.0),
+                color: palette.background.strong.text,
+                align_y: Alignment::Center.into(),
+                font: style::LUCIDE_FONT,
+                ..canvas::Text::default()
+            });
+            context_menu_frame.fill_text(canvas::Text {
+                content: "Delete".to_string(),
+                position: Point::new(menu_bounds.x + 34.0, menu_bounds.center_y()),
+                size: iced::Pixels(style::text_size::BODY),
+                color: palette.background.strong.text,
+                align_y: Alignment::Center.into(),
+                font: style::AZERET_MONO,
+                ..canvas::Text::default()
+            });
+        }
+        let context_menu = context_menu_frame.into_geometry();
+
+        vec![
+            klines,
+            profiles,
+            orderbook,
+            drawings,
+            ai_annotation,
+            crosshair,
+            context_menu,
+        ]
     }
 
     fn mouse_interaction(
@@ -1351,13 +2003,257 @@ impl canvas::Program<Message> for KlineChart {
         match interaction {
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
             Interaction::Zoomin { .. } => mouse::Interaction::ZoomIn,
+            Interaction::Drawing { .. } => mouse::Interaction::Grabbing,
             Interaction::None | Interaction::Ruler { .. } => {
                 if cursor.is_over(bounds) {
-                    mouse::Interaction::Crosshair
+                    if self.drawing_tool.is_some()
+                        || cursor
+                            .position_in(bounds)
+                            .is_some_and(|position| self.drawing_hit(position, bounds).is_some())
+                    {
+                        mouse::Interaction::Pointer
+                    } else {
+                        mouse::Interaction::Crosshair
+                    }
                 } else {
                     mouse::Interaction::default()
                 }
             }
+        }
+    }
+}
+
+fn draw_manual_drawing(
+    frame: &mut canvas::Frame,
+    chart: &ViewState,
+    theme: &Theme,
+    data_source: &PlotData<KlineDataPoint>,
+    quantity_format: QuantityFormat,
+    drawing: Drawing,
+    selected: bool,
+    is_footprint: bool,
+) {
+    let palette = theme.extended_palette();
+    let region = chart.visible_region(frame.size());
+    let start = Point::new(
+        chart.interval_to_x(drawing.start.interval),
+        chart.price_to_y(Price::from_f64(drawing.start.price)),
+    );
+    let end = Point::new(
+        chart.interval_to_x(drawing.end.interval),
+        chart.price_to_y(Price::from_f64(drawing.end.price)),
+    );
+    let color = palette.primary.base.color;
+    let width = if selected { 2.0 } else { 1.25 } / chart.scaling;
+    match drawing.tool {
+        DrawingTool::TrendLine => frame.stroke(
+            &Path::line(start, end),
+            Stroke::default().with_width(width).with_color(color),
+        ),
+        DrawingTool::HorizontalLine => frame.stroke(
+            &Path::line(
+                Point::new(region.x, start.y),
+                Point::new(region.x + region.width, start.y),
+            ),
+            Stroke::default().with_width(width).with_color(color),
+        ),
+        DrawingTool::VolumeProfile => {
+            crate::chart::indicator::kline::volume_profile::draw_selected_range_profile(
+                frame,
+                chart,
+                theme,
+                data_source,
+                quantity_format,
+                drawing.start.interval,
+                drawing.end.interval,
+                is_footprint,
+            );
+            let left = start.x.min(end.x);
+            let right = start.x.max(end.x);
+            let (top, bottom) = data_source
+                .visible_price_range(
+                    drawing.start.interval.min(drawing.end.interval),
+                    drawing.start.interval.max(drawing.end.interval),
+                )
+                .map_or((region.y, region.y + region.height), |(first, second)| {
+                    let first = chart.price_to_y(Price::from_f32(first));
+                    let second = chart.price_to_y(Price::from_f32(second));
+                    (first.min(second), first.max(second))
+                });
+            frame.stroke(
+                &Path::rectangle(
+                    Point::new(left, top),
+                    Size::new((right - left).max(1.0 / chart.scaling), bottom - top),
+                ),
+                Stroke::default()
+                    .with_width(width)
+                    .with_color(color.scale_alpha(0.7)),
+            );
+        }
+    }
+    if selected {
+        let radius = 3.5 / chart.scaling;
+        if drawing.tool == DrawingTool::VolumeProfile {
+            let center_y = data_source
+                .visible_price_range(
+                    drawing.start.interval.min(drawing.end.interval),
+                    drawing.start.interval.max(drawing.end.interval),
+                )
+                .map_or((region.y + region.height) / 2.0, |(first, second)| {
+                    (chart.price_to_y(Price::from_f32(first))
+                        + chart.price_to_y(Price::from_f32(second)))
+                        / 2.0
+                });
+            frame.fill(&Path::circle(Point::new(start.x, center_y), radius), color);
+            frame.fill(&Path::circle(Point::new(end.x, center_y), radius), color);
+        } else {
+            frame.fill(&Path::circle(start, radius), color);
+            if drawing.tool != DrawingTool::HorizontalLine {
+                frame.fill(&Path::circle(end, radius), color);
+            }
+        }
+    }
+}
+
+fn draw_ai_annotation(
+    frame: &mut canvas::Frame,
+    chart: &ViewState,
+    palette: &Extended,
+    data_source: &PlotData<KlineDataPoint>,
+    annotation: &crate::ai::ChartAnnotation,
+) {
+    let region = chart.visible_region(frame.size());
+    let line_width = 1.0 / chart.scaling;
+    let draw_level =
+        |frame: &mut canvas::Frame, label: &str, price: f64, strength: f32, color: Color| {
+            let y = chart.price_to_y(Price::from_f64(price));
+            let strength = strength.clamp(0.0, 100.0);
+            let color = color.scale_alpha(0.45 + strength / 100.0 * 0.55);
+            frame.stroke(
+                &Path::line(
+                    Point::new(region.x, y),
+                    Point::new(region.x + region.width, y),
+                ),
+                Stroke::default()
+                    .with_width(line_width * (1.0 + strength / 100.0))
+                    .with_color(color),
+            );
+            draw_cluster_text(
+                frame,
+                &format!("{label} {:.0} {price}", strength),
+                Point::new(region.x + region.width - 4.0 / chart.scaling, y),
+                11.0 / chart.scaling,
+                color,
+                Alignment::End,
+                Alignment::End,
+            );
+        };
+
+    for level in &annotation.levels {
+        if level.is_support {
+            draw_level(
+                frame,
+                "S",
+                level.price,
+                level.strength,
+                palette.success.weak.color,
+            );
+        } else {
+            draw_level(
+                frame,
+                "R",
+                level.price,
+                level.strength,
+                palette.danger.weak.color,
+            );
+        }
+    }
+    for &price in &annotation.targets {
+        draw_level(frame, "TP", price, 100.0, palette.success.base.color);
+    }
+    if let Some(price) = annotation.stop_loss {
+        draw_level(frame, "SL", price, 100.0, palette.danger.base.color);
+    }
+    if let Some(price) = annotation.entry_low {
+        draw_level(frame, "ENTRY", price, 100.0, palette.primary.base.color);
+    }
+    if let Some(price) = annotation.entry_high
+        && annotation.entry_low != Some(price)
+    {
+        draw_level(frame, "ENTRY", price, 100.0, palette.primary.base.color);
+    }
+
+    if let (Some(low), Some(high)) = (annotation.entry_low, annotation.entry_high) {
+        let top = chart.price_to_y(Price::from_f64(high.max(low)));
+        let bottom = chart.price_to_y(Price::from_f64(high.min(low)));
+        frame.fill_rectangle(
+            Point::new(region.x, top.min(bottom)),
+            Size::new(region.width, (bottom - top).abs().max(line_width)),
+            palette.primary.weak.color.scale_alpha(0.18),
+        );
+    }
+
+    let signal_kline = match (data_source, annotation.time_ms) {
+        (PlotData::TimeBased(series), Some(time_ms)) => series
+            .datapoints
+            .range(..=UnixMs(time_ms))
+            .next_back()
+            .or_else(|| series.datapoints.first_key_value())
+            .map(|(_, dp)| &dp.kline),
+        (PlotData::TickBased(series), Some(time_ms)) => series
+            .datapoints
+            .iter()
+            .min_by_key(|dp| dp.kline.time.as_u64().abs_diff(time_ms))
+            .map(|dp| &dp.kline),
+        (PlotData::TimeBased(series), None) => {
+            series.datapoints.last_key_value().map(|(_, dp)| &dp.kline)
+        }
+        (PlotData::TickBased(series), None) => series.datapoints.last().map(|dp| &dp.kline),
+    };
+    if let Some(kline) = signal_kline {
+        let signal_color = match annotation.signal {
+            crate::ai::ChartSignal::Long => palette.success.base.color,
+            crate::ai::ChartSignal::Short => palette.danger.base.color,
+            crate::ai::ChartSignal::Neutral => palette.primary.base.color,
+        };
+        if annotation.mark_time {
+            frame.stroke(
+                &Path::circle(
+                    Point::new(
+                        chart.interval_to_x(kline.time.as_u64()),
+                        chart.price_to_y(kline.close),
+                    ),
+                    4.0 / chart.scaling,
+                ),
+                Stroke::default()
+                    .with_width(1.5 / chart.scaling)
+                    .with_color(signal_color),
+            );
+        }
+        match annotation.signal {
+            crate::ai::ChartSignal::Long => {
+                crate::chart::indicator::kline::flow_metrics::draw_direction_arrow(
+                    frame,
+                    chart.interval_to_x(kline.time.as_u64()),
+                    chart.price_to_y(kline.low),
+                    true,
+                    5.0,
+                    chart.scaling,
+                    signal_color,
+                );
+            }
+            crate::ai::ChartSignal::Short => {
+                crate::chart::indicator::kline::flow_metrics::draw_direction_arrow(
+                    frame,
+                    chart.interval_to_x(kline.time.as_u64()),
+                    chart.price_to_y(kline.high),
+                    false,
+                    5.0,
+                    chart.scaling,
+                    signal_color,
+                );
+            }
+            crate::ai::ChartSignal::Neutral => {}
         }
     }
 }
@@ -2855,5 +3751,61 @@ mod tests {
         assert_eq!(footprint_cluster_text_size(12.0), 9.0);
         assert!(footprint_text_fits("123.45", 9.0, 34.0));
         assert!(!footprint_text_fits("123.45", 9.0, 33.0));
+    }
+
+    #[test]
+    fn moving_a_drawing_preserves_its_shape() {
+        let drawing = Drawing {
+            tool: DrawingTool::TrendLine,
+            start: DrawingAnchor {
+                interval: 100,
+                price: 10.0,
+            },
+            end: DrawingAnchor {
+                interval: 200,
+                price: 20.0,
+            },
+        };
+        let moved = moved_drawing(
+            drawing,
+            DrawingPart::Body,
+            DrawingAnchor {
+                interval: 50,
+                price: 5.0,
+            },
+            DrawingAnchor {
+                interval: 75,
+                price: 8.0,
+            },
+        );
+
+        assert_eq!(moved.start.interval, 125);
+        assert_eq!(moved.end.interval, 225);
+        assert_eq!(moved.start.price, 13.0);
+        assert_eq!(moved.end.price, 23.0);
+    }
+
+    #[test]
+    fn drawing_context_menu_only_deletes_from_its_menu_item() {
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(300.0, 200.0));
+        let menu = Point::new(250.0, 190.0);
+
+        assert!(drawing_context_menu_delete_hit(
+            menu,
+            bounds,
+            Point::new(250.0, 180.0)
+        ));
+        assert!(!drawing_context_menu_delete_hit(
+            menu,
+            bounds,
+            Point::new(100.0, 100.0)
+        ));
+    }
+
+    #[test]
+    fn drawing_coordinates_use_the_canvas_local_center() {
+        let bounds = Rectangle::new(Point::new(80.0, 40.0), Size::new(300.0, 200.0));
+
+        assert_eq!(canvas_local_center(bounds), Point::new(150.0, 100.0));
     }
 }

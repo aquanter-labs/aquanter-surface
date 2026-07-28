@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub mod ai;
+pub mod alerts;
 pub mod proxy;
 pub mod sidebar;
 pub mod state;

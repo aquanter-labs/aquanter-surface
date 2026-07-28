@@ -9,6 +9,8 @@ use iced::{Border, Color, Font, Renderer, Shadow, Theme, widget};
 
 pub const ICONS_BYTES: &[u8] = include_bytes!(".././assets/fonts/icons.ttf");
 pub const ICONS_FONT: Font = Font::with_name("icons");
+pub const LUCIDE_BYTES: &[u8] = iced_lucide::FONT_BYTES;
+pub const LUCIDE_FONT: Font = Font::with_name("lucide");
 
 pub const AZERET_MONO_BYTES: &[u8] = include_bytes!("../assets/fonts/AzeretMono-Regular.ttf");
 pub const AZERET_MONO: Font = Font {
@@ -79,6 +81,38 @@ pub fn icon_text<'a>(icon: Icon, size: u16) -> Text<'a, Theme, Renderer> {
     iced::widget::text(char::from(icon).to_string())
         .font(ICONS_FONT)
         .size(iced::Pixels(size.into()))
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy)]
+pub enum LucideIcon {
+    ChartNoAxesColumnIncreasing = 57450,
+    Bell = 57433,
+    ChevronDown = 57453,
+    ChevronUp = 57456,
+    FileText = 57548,
+    Plus = 57661,
+    Minus = 57628,
+    RefreshCw = 57669,
+    Trash2 = 57742,
+    TrendingUp = 57745,
+    X = 57778,
+    MousePointer2 = 57795,
+    History = 57845,
+    Braces = 58218,
+    Sparkles = 58386,
+    KeyRound = 58531,
+    PencilRuler = 58609,
+}
+
+pub fn lucide_icon_text<'a>(icon: LucideIcon, size: u16) -> Text<'a, Theme, Renderer> {
+    iced::widget::text(
+        char::from_u32(icon as u32)
+            .expect("Lucide icon codepoints must be valid Unicode scalar values")
+            .to_string(),
+    )
+    .font(LUCIDE_FONT)
+    .size(iced::Pixels(size.into()))
 }
 
 pub fn venue_icon(venue: exchange::adapter::Venue) -> Icon {

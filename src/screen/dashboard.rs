@@ -70,6 +70,18 @@ pub struct Dashboard {
     layout_id: uuid::Uuid,
 }
 
+fn set_fetch_status(current: &mut pane::Status, next: pane::Status) {
+    let trades_are_loading = matches!(
+        &*current,
+        pane::Status::Loading(InfoKind::FetchingTrades(_))
+    );
+    let next_is_trade_status = matches!(&next, pane::Status::Loading(InfoKind::FetchingTrades(_)));
+
+    if !trades_are_loading || next_is_trade_status {
+        *current = next;
+    }
+}
+
 impl Default for Dashboard {
     fn default() -> Self {
         Self {
@@ -84,6 +96,7 @@ impl Default for Dashboard {
 
 #[derive(Debug, Clone)]
 pub enum Event {
+    Ai(crate::ai::Message),
     Notification(Toast),
     DistributeFetchedData {
         layout_id: uuid::Uuid,
@@ -414,6 +427,9 @@ impl Dashboard {
                             pane::Effect::FocusWidget(id) => {
                                 return (iced::widget::operation::focus(id), None);
                             }
+                            pane::Effect::Ai(message) => {
+                                return (Task::none(), Some(Event::Ai(message)));
+                            }
                         };
                         return (task, None);
                     }
@@ -424,7 +440,7 @@ impl Dashboard {
             }
             Message::ChangePaneStatus(pane_id, status) => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window.id, pane_id) {
-                    pane_state.status = status;
+                    set_fetch_status(&mut pane_state.status, status);
                 }
             }
             Message::DistributeFetchedData {
@@ -468,8 +484,13 @@ impl Dashboard {
             .filter(|(window, _)| *window == main_window.id)
             .is_some()
         {
-            // If there is any focused pane on main window, split it
-            return self.split_pane(axis, main_window);
+            if let Some((_, focused)) = self.focus
+                && let Some((pane, _)) =
+                    self.panes
+                        .split(axis, focused, pane_state.unwrap_or_default())
+            {
+                return self.focus_pane(main_window.id, pane);
+            }
         } else {
             // If there is no focused pane, split the last pane or create a new empty grid
             let pane = self.panes.iter().last().map(|(pane, _)| pane).copied();
@@ -494,20 +515,6 @@ impl Dashboard {
     fn focus_pane(&mut self, window: window::Id, pane: pane_grid::Pane) -> Task<Message> {
         if self.focus != Some((window, pane)) {
             self.focus = Some((window, pane));
-        }
-
-        Task::none()
-    }
-
-    fn split_pane(&mut self, axis: pane_grid::Axis, main_window: &Window) -> Task<Message> {
-        if let Some((window, pane)) = self.focus
-            && window == main_window.id
-        {
-            let result = self.panes.split(axis, pane, pane::State::new());
-
-            if let Some((pane, _)) = result {
-                return self.focus_pane(main_window.id, pane);
-            }
         }
 
         Task::none()
@@ -568,6 +575,208 @@ impl Dashboard {
         }
     }
 
+    pub fn analysis_sources(&self, main_window: window::Id) -> Vec<crate::ai::ChartSource> {
+        self.iter_all_panes(main_window)
+            .filter_map(|(_, _, state)| match &state.content {
+                pane::Content::Kline {
+                    chart: Some(chart),
+                    kind,
+                    ..
+                } => {
+                    let ticker_info = chart.ticker_info();
+                    let chart_kind =
+                        if matches!(kind, data::chart::KlineChartKind::Footprint { .. }) {
+                            "Footprint"
+                        } else {
+                            "Kline"
+                        };
+                    let symbol = ticker_info.ticker.display_symbol_and_type().0;
+                    Some(crate::ai::ChartSource {
+                        pane_id: state.unique_id(),
+                        label: format!("{symbol} | {} | {chart_kind}", chart.basis()),
+                    })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn alert_sources(
+        &self,
+        main_window: window::Id,
+        layout_id: uuid::Uuid,
+    ) -> Vec<crate::alerts::Source> {
+        let charts = self
+            .iter_all_panes(main_window)
+            .filter_map(|(_, _, state)| match &state.content {
+                pane::Content::Kline {
+                    chart: Some(chart),
+                    kind,
+                    ..
+                } => {
+                    let ticker = chart.ticker_info().ticker.to_string();
+                    let kind = if matches!(kind, data::chart::KlineChartKind::Footprint { .. }) {
+                        "Footprint"
+                    } else {
+                        "Kline"
+                    };
+                    let basis = chart.basis().to_string();
+                    Some((
+                        chart.ticker_info(),
+                        crate::alerts::Source {
+                            key: format!("{ticker}|{basis}|{kind}"),
+                            label: format!("{ticker} | {basis} | {kind}"),
+                            layout_id,
+                            pane_id: state.unique_id(),
+                            ai_source_pane: Some(state.unique_id()),
+                        },
+                    ))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut sources = charts
+            .iter()
+            .map(|(_, source)| source.clone())
+            .collect::<Vec<_>>();
+        sources.extend(
+            self.iter_all_panes(main_window)
+                .filter_map(|(_, _, state)| {
+                    let pane::Content::Ladder(Some(ladder)) = &state.content else {
+                        return None;
+                    };
+                    let ticker_info = ladder.ticker_info();
+                    let ticker = ticker_info.ticker.to_string();
+                    let ai_source_pane = charts
+                        .iter()
+                        .find(|(chart_ticker, _)| *chart_ticker == ticker_info)
+                        .map(|(_, source)| source.pane_id);
+                    Some(crate::alerts::Source {
+                        key: format!("{ticker}|DOM"),
+                        label: format!("{ticker} | DOM"),
+                        layout_id,
+                        pane_id: state.unique_id(),
+                        ai_source_pane,
+                    })
+                }),
+        );
+        sources
+    }
+
+    pub fn alert_observations(&self, main_window: window::Id) -> Vec<crate::alerts::Observation> {
+        self.iter_all_panes(main_window)
+            .filter_map(|(_, _, state)| match &state.content {
+                pane::Content::Kline {
+                    chart: Some(chart), ..
+                } => chart.alert_observation(state.unique_id()),
+                pane::Content::Ladder(Some(ladder)) => ladder.alert_observation(state.unique_id()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn set_ai_annotation(
+        &mut self,
+        main_window: window::Id,
+        source_pane: uuid::Uuid,
+        annotation: crate::ai::ChartAnnotation,
+    ) {
+        if let Some(state) = self.get_mut_pane_state_by_uuid(main_window, source_pane)
+            && let pane::Content::Kline {
+                chart: Some(chart), ..
+            } = &mut state.content
+        {
+            chart.set_ai_annotation(annotation);
+        }
+    }
+
+    pub(crate) fn clear_ai_annotations(&mut self, main_window: window::Id) {
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, state)| {
+                if let pane::Content::Kline {
+                    chart: Some(chart), ..
+                } = &mut state.content
+                {
+                    chart.clear_ai_annotation();
+                }
+            });
+    }
+
+    pub fn analysis_snapshot(
+        &self,
+        main_window: window::Id,
+        source_pane: Option<uuid::Uuid>,
+        short_bars: usize,
+        long_bars: usize,
+        exclude_current_bar: bool,
+    ) -> Option<Result<crate::ai::AnalysisBundle, String>> {
+        let selected = source_pane.and_then(|source_pane| {
+            self.iter_all_panes(main_window).find_map(|(_, _, state)| {
+                (state.unique_id() == source_pane)
+                    .then(|| match &state.content {
+                        pane::Content::Kline {
+                            chart: Some(chart), ..
+                        } => Some(chart),
+                        _ => None,
+                    })
+                    .flatten()
+            })
+        });
+        if source_pane.is_some() && selected.is_none() {
+            return Some(Err(
+                "The selected source pane is no longer in the active layout. Refresh sources."
+                    .to_string(),
+            ));
+        }
+        let focused = self.focus.and_then(|(window, pane)| {
+            self.get_pane(main_window, window, pane)
+                .and_then(|state| match &state.content {
+                    pane::Content::Kline {
+                        chart: Some(chart), ..
+                    } => Some(chart),
+                    _ => None,
+                })
+        });
+
+        let primary_chart = selected.or(focused).or_else(|| {
+            self.iter_all_panes(main_window)
+                .find_map(|(_, _, state)| match &state.content {
+                    pane::Content::Kline {
+                        chart: Some(chart), ..
+                    } => Some(chart),
+                    _ => None,
+                })
+        })?;
+        let primary =
+            match primary_chart.market_snapshot(short_bars, long_bars, exclude_current_bar) {
+                Ok(snapshot) => snapshot,
+                Err(error) => return Some(Err(error)),
+            };
+        let mut higher_timeframe_contexts = self
+            .iter_all_panes(main_window)
+            .filter_map(|(_, _, state)| match &state.content {
+                pane::Content::Kline {
+                    chart: Some(chart), ..
+                } if !std::ptr::eq(chart, primary_chart) => Some(chart),
+                _ => None,
+            })
+            .filter_map(|chart| chart.market_snapshot(20, long_bars.min(60), false).ok())
+            .filter(|snapshot| {
+                snapshot.symbol == primary.symbol
+                    && snapshot.venue == primary.venue
+                    && snapshot.basis != primary.basis
+                    && snapshot.timeframe_ms > primary.timeframe_ms
+            })
+            .collect::<Vec<_>>();
+        higher_timeframe_contexts.sort_by_key(|snapshot| snapshot.timeframe_ms);
+        higher_timeframe_contexts.truncate(3);
+
+        Some(Ok(crate::ai::AnalysisBundle {
+            primary,
+            higher_timeframe_contexts,
+        }))
+    }
+
     fn get_mut_pane(
         &mut self,
         main_window: window::Id,
@@ -624,6 +833,7 @@ impl Dashboard {
         main_window: &'a Window,
         tickers_table: &'a TickersTable,
         timezone: UserTimezone,
+        ai_agent: &'a crate::ai::Agent,
     ) -> Element<'a, Message> {
         let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
             let is_focused = self.focus == Some((main_window.id, id));
@@ -636,6 +846,7 @@ impl Dashboard {
                 main_window,
                 timezone,
                 tickers_table,
+                ai_agent,
             )
         })
         .min_size(240)
@@ -655,6 +866,7 @@ impl Dashboard {
         main_window: &'a Window,
         tickers_table: &'a TickersTable,
         timezone: UserTimezone,
+        ai_agent: &'a crate::ai::Agent,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
             let content = container(
@@ -669,6 +881,7 @@ impl Dashboard {
                         main_window,
                         timezone,
                         tickers_table,
+                        ai_agent,
                     )
                 })
                 .on_click(pane::Message::PaneClicked),
@@ -990,7 +1203,7 @@ impl Dashboard {
                 {
                     if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id)
                     {
-                        pane_state.status = pane::Status::Ready;
+                        set_fetch_status(&mut pane_state.status, pane::Status::Ready);
                         pane_state.insert_hist_klines(req_id, timeframe, ticker_info, &data);
                     }
 
@@ -1006,7 +1219,7 @@ impl Dashboard {
             }
             FetchedData::OI { data, req_id } => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
-                    pane_state.status = pane::Status::Ready;
+                    set_fetch_status(&mut pane_state.status, pane::Status::Ready);
 
                     if let StreamKind::Kline { .. } = stream_type {
                         pane_state.insert_hist_oi(req_id, &data);
@@ -1508,5 +1721,24 @@ impl From<fetcher::FetchUpdate> for Message {
                 error,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trade_fetch_progress_is_not_hidden_by_other_fetches() {
+        let mut status = pane::Status::Loading(InfoKind::FetchingTrades(42));
+
+        set_fetch_status(&mut status, pane::Status::Loading(InfoKind::FetchingOI));
+        assert_eq!(status, pane::Status::Loading(InfoKind::FetchingTrades(42)));
+
+        set_fetch_status(
+            &mut status,
+            pane::Status::Loading(InfoKind::FetchingTrades(84)),
+        );
+        assert_eq!(status, pane::Status::Loading(InfoKind::FetchingTrades(84)));
     }
 }

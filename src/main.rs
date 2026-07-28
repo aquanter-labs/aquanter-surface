@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ai;
+mod alerts;
 mod audio;
 mod chart;
 mod connector;
@@ -54,6 +56,7 @@ fn main() {
             fonts: vec![
                 Cow::Borrowed(style::AZERET_MONO_BYTES),
                 Cow::Borrowed(style::ICONS_BYTES),
+                Cow::Borrowed(style::LUCIDE_BYTES),
             ],
             default_text_size: style::text_size::BODY.into(),
             ..Default::default()
@@ -72,6 +75,9 @@ fn main() {
 
 struct Flowsurface {
     main_window: window::Window,
+    ai_agent: ai::Agent,
+    alerts: alerts::Alerts,
+    pending_ai_alert: Option<PendingAiAlert>,
     sidebar: dashboard::Sidebar,
     handles: exchange::adapter::AdapterHandles,
     layout_manager: LayoutManager,
@@ -86,8 +92,15 @@ struct Flowsurface {
     notifications: Notifications,
 }
 
+struct PendingAiAlert {
+    layout_id: uuid::Uuid,
+    actions: data::config::alerts::AlertActions,
+}
+
 #[derive(Debug, Clone)]
 enum Message {
+    Ai(ai::Message),
+    Alerts(alerts::Message),
     Sidebar(dashboard::sidebar::Message),
     MarketWsEvent(exchange::Event),
     Dashboard {
@@ -142,6 +155,9 @@ impl Flowsurface {
 
         let mut state = Self {
             main_window: window::Window::new(main_window_id),
+            ai_agent: ai::Agent::new(saved_state.ai_cfg),
+            alerts: alerts::Alerts::new(saved_state.alert_cfg),
+            pending_ai_alert: None,
             layout_manager: saved_state.layout_manager,
             theme_editor: ThemeEditor::new(saved_state.custom_theme),
             audio_stream,
@@ -197,6 +213,118 @@ impl Flowsurface {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Alerts(message) => {
+                self.alerts.update(message);
+            }
+            Message::Ai(message) => {
+                let annotation_selection_changed = matches!(
+                    &message,
+                    ai::Message::SelectHistory(_)
+                        | ai::Message::CloseHistoryDetail
+                        | ai::Message::ToggleHistory
+                );
+                let annotation_cleared = matches!(
+                    &message,
+                    ai::Message::ClearHistory | ai::Message::SourceChanged(_)
+                );
+                if matches!(message, ai::Message::RefreshSnapshot) {
+                    let sources = self
+                        .active_dashboard()
+                        .analysis_sources(self.main_window.id);
+                    self.ai_agent.set_sources(sources);
+                }
+                let automatic = matches!(message, ai::Message::AutoAnalyze);
+                let snapshot = if matches!(
+                    message,
+                    ai::Message::RefreshSnapshot | ai::Message::Analyze | ai::Message::AutoAnalyze
+                ) {
+                    let (short_bars, long_bars) = self.ai_agent.bar_limits();
+                    let layout_id = if automatic {
+                        self.pending_ai_alert
+                            .as_ref()
+                            .map(|pending| pending.layout_id)
+                    } else {
+                        self.layout_manager
+                            .active_layout_id()
+                            .map(|layout| layout.unique)
+                    };
+                    layout_id.and_then(|layout_id| {
+                        self.layout_manager.get(layout_id).and_then(|layout| {
+                            layout.dashboard.analysis_snapshot(
+                                self.main_window.id,
+                                self.ai_agent.selected_source(),
+                                short_bars,
+                                long_bars,
+                                automatic,
+                            )
+                        })
+                    })
+                } else {
+                    None
+                };
+                let analysis_finished = matches!(&message, ai::Message::AnalysisCompleted(_));
+                let analysis_completed = matches!(&message, ai::Message::AnalysisCompleted(Ok(_)));
+                let task = self.ai_agent.update(message, snapshot).map(Message::Ai);
+                if annotation_selection_changed || annotation_cleared || analysis_completed {
+                    for layout in &mut self.layout_manager.layouts {
+                        layout.dashboard.clear_ai_annotations(self.main_window.id);
+                    }
+                }
+                if annotation_selection_changed
+                    && let Some((source, annotation)) = self.ai_agent.displayed_chart_annotation()
+                {
+                    for layout in &mut self.layout_manager.layouts {
+                        layout.dashboard.set_ai_annotation(
+                            self.main_window.id,
+                            source,
+                            annotation.clone(),
+                        );
+                    }
+                }
+                if analysis_completed
+                    && let (Some(source), Some(annotation)) = (
+                        self.ai_agent.analysis_source(),
+                        self.ai_agent.chart_annotation(),
+                    )
+                {
+                    let main_window = self.main_window.id;
+                    let layout_id = self
+                        .pending_ai_alert
+                        .as_ref()
+                        .map(|pending| pending.layout_id)
+                        .or_else(|| {
+                            self.layout_manager
+                                .active_layout_id()
+                                .map(|layout| layout.unique)
+                        });
+                    if let Some(layout_id) = layout_id
+                        && let Some(layout) = self.layout_manager.get_mut(layout_id)
+                    {
+                        layout
+                            .dashboard
+                            .set_ai_annotation(main_window, source, annotation);
+                    }
+                }
+                if analysis_finished {
+                    let pending = self.pending_ai_alert.take();
+                    if let Some(pending) = pending {
+                        let alert = if analysis_completed {
+                            self.ai_agent
+                                .take_auto_alert()
+                                .map(|alert| notify::Alert::ai(alert.title, alert.body))
+                        } else {
+                            None
+                        }
+                        .unwrap_or_else(|| {
+                            notify::Alert::ai("Analysis failed", self.ai_agent.status())
+                        });
+                        if pending.actions.system_notification {
+                            self.notifications.publish_system(alert);
+                        }
+                    }
+                }
+                return task;
+            }
             Message::MarketWsEvent(event) => {
                 let main_window_id = self.main_window.id;
 
@@ -262,14 +390,71 @@ impl Flowsurface {
             Message::Tick(now) => {
                 let main_window_id = self.main_window.id;
                 let handles = self.handles.clone();
+                let mut tasks = vec![
+                    self.active_dashboard_mut()
+                        .tick(&handles, now, main_window_id)
+                        .map(move |msg| Message::Dashboard {
+                            layout_id: None,
+                            event: msg,
+                        }),
+                ];
 
-                return self
-                    .active_dashboard_mut()
-                    .tick(&handles, now, main_window_id)
-                    .map(move |msg| Message::Dashboard {
-                        layout_id: None,
-                        event: msg,
-                    });
+                let alert_sources = self
+                    .layout_manager
+                    .layouts
+                    .iter()
+                    .flat_map(|layout| {
+                        layout
+                            .dashboard
+                            .alert_sources(main_window_id, layout.id.unique)
+                    })
+                    .collect::<Vec<_>>();
+                let observations = self
+                    .layout_manager
+                    .layouts
+                    .iter()
+                    .flat_map(|layout| layout.dashboard.alert_observations(main_window_id))
+                    .collect::<Vec<_>>();
+                self.alerts.set_sources(alert_sources);
+                for triggered in self.alerts.poll(&observations) {
+                    if triggered.actions.system_notification {
+                        self.notifications.publish_system(notify::Alert::market(
+                            &triggered.title,
+                            &triggered.body,
+                        ));
+                    }
+                    if triggered.actions.ai_analysis
+                        && self.pending_ai_alert.is_none()
+                        && !self.ai_agent.is_loading()
+                        && let Some(ai_source) = triggered.ai_source_pane
+                    {
+                        if let Some(layout) = self.layout_manager.get(triggered.layout_id) {
+                            let sources = layout.dashboard.analysis_sources(main_window_id);
+                            self.ai_agent.set_sources(sources);
+                            if self.ai_agent.select_source(ai_source) {
+                                self.pending_ai_alert = Some(PendingAiAlert {
+                                    layout_id: triggered.layout_id,
+                                    actions: triggered.actions,
+                                });
+                                tasks.push(Task::done(Message::Ai(ai::Message::AutoAnalyze)));
+                            }
+                        }
+                    } else if triggered.actions.ai_analysis && triggered.ai_source_pane.is_none() {
+                        self.notifications.push(Toast::error(format!(
+                            "{} has no matching Kline or Footprint source for AI analysis.",
+                            triggered.title
+                        )));
+                    } else if triggered.actions.ai_analysis
+                        && (self.pending_ai_alert.is_some() || self.ai_agent.is_loading())
+                    {
+                        self.notifications.push(Toast::error(
+                            "AI analysis skipped because another alert analysis is running."
+                                .to_string(),
+                        ));
+                    }
+                }
+
+                return Task::batch(tasks);
             }
             Message::WindowEvent(event) => match event {
                 window::Event::CloseRequested(window) => {
@@ -434,6 +619,7 @@ impl Flowsurface {
 
                             Task::none()
                         }
+                        Some(dashboard::Event::Ai(message)) => Task::done(Message::Ai(message)),
                         None => Task::none(),
                     };
 
@@ -685,13 +871,15 @@ impl Flowsurface {
         let tickers_table = &self.sidebar.tickers_table;
 
         let content = if id == self.main_window.id {
-            let sidebar_view = self
-                .sidebar
-                .view(self.audio_stream.volume())
-                .map(Message::Sidebar);
+            let sidebar_view = self.sidebar.view().map(Message::Sidebar);
 
             let dashboard_view = dashboard
-                .view(&self.main_window, tickers_table, self.timezone)
+                .view(
+                    &self.main_window,
+                    tickers_table,
+                    self.timezone,
+                    &self.ai_agent,
+                )
                 .map(move |msg| Message::Dashboard {
                     layout_id: None,
                     event: msg,
@@ -737,7 +925,13 @@ impl Flowsurface {
         } else {
             container(
                 dashboard
-                    .view_window(id, &self.main_window, tickers_table, self.timezone)
+                    .view_window(
+                        id,
+                        &self.main_window,
+                        tickers_table,
+                        self.timezone,
+                        &self.ai_agent,
+                    )
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
                         event: msg,
@@ -747,16 +941,20 @@ impl Flowsurface {
             .into()
         };
 
-        toast::Manager::new(
-            content,
-            self.notifications.toasts(),
-            match sidebar_pos {
-                sidebar::Position::Left => Alignment::Start,
-                sidebar::Position::Right => Alignment::End,
-            },
-            Message::RemoveNotification,
-        )
-        .into()
+        if id == self.main_window.id {
+            toast::Manager::new(
+                content,
+                self.notifications.toasts(),
+                match sidebar_pos {
+                    sidebar::Position::Left => Alignment::Start,
+                    sidebar::Position::Right => Alignment::End,
+                },
+                Message::RemoveNotification,
+            )
+            .into()
+        } else {
+            content
+        }
     }
 
     fn theme(&self, _window: window::Id) -> iced_core::Theme {
@@ -861,6 +1059,32 @@ impl Flowsurface {
         let sidebar_pos = self.sidebar.position();
 
         match menu {
+            sidebar::Menu::Alerts => {
+                let (align_x, padding) = match sidebar_pos {
+                    sidebar::Position::Left => (Alignment::Start, padding::left(44).top(76)),
+                    sidebar::Position::Right => (Alignment::End, padding::right(44).top(76)),
+                };
+                let sound = self
+                    .audio_stream
+                    .view(dashboard.streams.trade_streams(None))
+                    .map(Message::AudioStream);
+                let alerts = self.alerts.view(self.timezone).map(Message::Alerts);
+                let content = container(scrollable(
+                    column![sound, rule::horizontal(1), alerts].spacing(20),
+                ))
+                .max_width(320)
+                .padding(24)
+                .style(style::dashboard_modal);
+
+                dashboard_modal(
+                    base,
+                    content,
+                    Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(None)),
+                    padding,
+                    Alignment::Start,
+                    align_x,
+                )
+            }
             sidebar::Menu::Settings => {
                 let settings_modal = {
                     let theme_picklist = {
@@ -1238,25 +1462,6 @@ impl Flowsurface {
                     align_x,
                 )
             }
-            sidebar::Menu::Audio => {
-                let (align_x, padding) = match sidebar_pos {
-                    sidebar::Position::Left => (Alignment::Start, padding::left(44).top(76)),
-                    sidebar::Position::Right => (Alignment::End, padding::right(44).top(76)),
-                };
-
-                let trade_streams_list = dashboard.streams.trade_streams(None);
-
-                dashboard_modal(
-                    base,
-                    self.audio_stream
-                        .view(trade_streams_list)
-                        .map(Message::AudioStream),
-                    Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(None)),
-                    padding,
-                    Alignment::Start,
-                    align_x,
-                )
-            }
             sidebar::Menu::ThemeEditor => {
                 let (align_x, padding) = match sidebar_pos {
                     sidebar::Position::Left => (Alignment::Start, padding::left(44).bottom(4)),
@@ -1358,6 +1563,8 @@ impl Flowsurface {
             connector::fetcher::is_trade_fetch_enabled(),
             self.volume_size_unit,
             proxy_cfg_persisted,
+            self.ai_agent.config().clone(),
+            self.alerts.config().clone(),
         );
 
         match serde_json::to_string(&state) {

@@ -327,7 +327,12 @@ pub fn request_fetch(
 
                     on_trade_handle(handle.abort_on_drop());
 
-                    return task;
+                    let update_status = Task::done(FetchUpdate::Status {
+                        pane_id,
+                        status: FetchTaskStatus::Loading(InfoKind::FetchingTrades(0)),
+                    });
+
+                    return update_status.chain(task);
                 }
             }
         }

@@ -132,6 +132,31 @@ impl Ladder {
         self.last_tick
     }
 
+    pub(crate) fn alert_observation(
+        &self,
+        pane_id: uuid::Uuid,
+    ) -> Option<crate::alerts::Observation> {
+        let bid = self.best_price(Side::Bid)?.to_f64();
+        let ask = self.best_price(Side::Ask)?.to_f64();
+        let volume = self
+            .orderbook
+            .iter()
+            .flat_map(|book| book.orders.values())
+            .map(|quantity| quantity.to_f64())
+            .sum();
+        Some(crate::alerts::Observation {
+            pane_id,
+            price: (bid + ask) / 2.0,
+            volume,
+            reference_volume: None,
+            market_time_ms: self.last_exchange_ts_ms?.as_u64(),
+        })
+    }
+
+    pub(crate) fn ticker_info(&self) -> TickerInfo {
+        self.ticker_info
+    }
+
     fn grouped_asks(&self) -> &BTreeMap<Price, Qty> {
         &self.orderbook[Side::Ask.idx()].orders
     }

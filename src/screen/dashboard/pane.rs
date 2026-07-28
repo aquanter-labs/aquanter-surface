@@ -54,6 +54,7 @@ pub enum Effect {
     RequestFetch(Vec<FetchSpec>),
     SwitchTickersInGroup(TickerInfo),
     FocusWidget(iced::widget::Id),
+    Ai(crate::ai::Message),
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -103,10 +104,13 @@ pub enum Event {
     StudyConfigurator(modal::pane::settings::study::StudyMessage),
     ToggleKlineColorPicker(KlineColorPicker),
     BeginKlineIntervalSelection(crate::chart::kline::IntervalSelection),
+    DrawingToolSelected(Option<crate::chart::DrawingTool>),
+    ClearDrawings,
     StreamModifierChanged(modal::stream::Message),
     ComparisonChartInteraction(super::chart::comparison::Message),
     HeatmapShaderInteraction(crate::widget::chart::heatmap::Message),
     MiniTickersListInteraction(modal::pane::mini_tickers_list::Message),
+    Ai(crate::ai::Message),
 }
 
 pub struct State {
@@ -424,6 +428,7 @@ impl State {
 
                     (content, streams)
                 }
+                ContentKind::AiAnalysis => (Content::AiAnalysis, vec![]),
                 ContentKind::Starter => unreachable!(),
             }
         };
@@ -548,13 +553,19 @@ impl State {
         main_window: &'a Window,
         timezone: UserTimezone,
         tickers_table: &'a TickersTable,
+        ai_agent: &'a crate::ai::Agent,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
-        let mut top_left_buttons = if Content::Starter == self.content {
-            row![]
-        } else {
-            row![link_group_button(id, self.link_group, |id| {
+        let mut top_left_buttons = match &self.content {
+            Content::Starter => row![],
+            Content::AiAnalysis => row![
+                link_group_button(id, self.link_group, |id| {
+                    Message::PaneEvent(id, Event::ShowModal(Modal::LinkGroup))
+                }),
+                text("AI Analysis")
+            ],
+            _ => row![link_group_button(id, self.link_group, |id| {
                 Message::PaneEvent(id, Event::ShowModal(Modal::LinkGroup))
-            })]
+            })],
         };
 
         if let Some(kind) = self.stream_pair_kind() {
@@ -600,7 +611,9 @@ impl State {
                 .height(widget::PANE_CONTROL_BTN_HEIGHT);
 
             top_left_buttons = top_left_buttons.push(tickers_list_btn);
-        } else if !matches!(self.content, Content::Starter) && !self.has_stream() {
+        } else if !matches!(self.content, Content::Starter | Content::AiAnalysis)
+            && !self.has_stream()
+        {
             let content = row![
                 text("Choose a ticker")
                     .size(crate::style::text_size::EMPHASIS)
@@ -723,6 +736,24 @@ impl State {
                     None,
                     compact_controls,
                     || column![].into(),
+                    None,
+                    tickers_table,
+                )
+            }
+            Content::AiAnalysis => {
+                let base = ai_agent
+                    .view(timezone)
+                    .map(move |message| Message::PaneEvent(id, Event::Ai(message)));
+                self.compose_stack_view(
+                    base,
+                    id,
+                    None,
+                    compact_controls,
+                    || {
+                        ai_agent
+                            .settings_view()
+                            .map(move |message| Message::PaneEvent(id, Event::Ai(message)))
+                    },
                     None,
                     tickers_table,
                 )
@@ -1019,15 +1050,17 @@ impl State {
                         }
                     };
 
-                    let indicator_modal = if self.modal == Some(Modal::Indicators) {
-                        Some(modal::indicators::view(
+                    let indicator_modal = match self.modal {
+                        Some(Modal::Indicators) => Some(modal::indicators::view(
                             id,
                             self,
                             indicators,
                             self.stream_pair().map(|i| i.ticker.market_type()),
-                        ))
-                    } else {
-                        None
+                        )),
+                        Some(Modal::DrawingTools) => {
+                            Some(modal::drawings::view(id, chart.drawing_tool()))
+                        }
+                        _ => None,
                     };
 
                     self.compose_stack_view(
@@ -1224,7 +1257,10 @@ impl State {
             Event::ContentSelected(kind) => {
                 self.content = Content::placeholder(kind);
 
-                if !matches!(kind, ContentKind::Starter) {
+                if kind == ContentKind::AiAnalysis {
+                    self.streams = ResolvedStream::Ready(vec![]);
+                    return Some(Effect::Ai(crate::ai::Message::RefreshSnapshot));
+                } else if kind != ContentKind::Starter {
                     self.streams = ResolvedStream::waiting(vec![]);
                     let modal = Modal::MiniTickersList(MiniPanel::new());
 
@@ -1240,7 +1276,7 @@ impl State {
                 Content::Kline { chart: Some(c), .. } => {
                     if let super::chart::Message::IntervalSelected(interval) = msg {
                         c.apply_interval_selection(interval);
-                    } else {
+                    } else if !c.handle_drawing_message(&msg) {
                         super::chart::update(c, &msg);
                     }
                 }
@@ -1618,6 +1654,25 @@ impl State {
                     }
                 }
             }
+            Event::DrawingToolSelected(tool) => {
+                if let Content::Kline {
+                    chart: Some(chart), ..
+                } = &mut self.content
+                {
+                    chart.select_drawing_tool(tool);
+                }
+                self.modal = None;
+            }
+            Event::ClearDrawings => {
+                if let Content::Kline {
+                    chart: Some(chart), ..
+                } = &mut self.content
+                {
+                    chart.clear_drawings();
+                }
+                self.modal = None;
+            }
+            Event::Ai(message) => return Some(Effect::Ai(message)),
         }
         None
     }
@@ -1671,6 +1726,36 @@ impl State {
                 Some("Indicators"),
                 tooltip_pos,
                 modal_btn_style(Modal::Indicators),
+            ));
+        }
+
+        if let Content::Kline {
+            chart: Some(chart), ..
+        } = &self.content
+        {
+            let active = chart.drawing_tool();
+            let drawing_message =
+                move |tool| Message::PaneEvent(pane, Event::DrawingToolSelected(tool));
+            buttons = buttons.push(button_with_tooltip(
+                style::lucide_icon_text(style::LucideIcon::MousePointer2, 13),
+                drawing_message(None),
+                Some("Select drawings"),
+                tooltip_pos,
+                control_btn_style(active.is_none()),
+            ));
+            buttons = buttons.push(button_with_tooltip(
+                style::lucide_icon_text(style::LucideIcon::PencilRuler, 13),
+                Message::PaneEvent(pane, Event::ShowModal(Modal::DrawingTools)),
+                Some("Drawing tools"),
+                tooltip_pos,
+                modal_btn_style(Modal::DrawingTools),
+            ));
+            buttons = buttons.push(button_with_tooltip(
+                style::lucide_icon_text(style::LucideIcon::Trash2, 13),
+                Message::PaneEvent(pane, Event::ClearDrawings),
+                Some("Clear drawings and AI levels"),
+                tooltip_pos,
+                control_btn_style(false),
             ));
         }
 
@@ -1800,7 +1885,7 @@ impl State {
                 padding::right(12).left(12),
                 Alignment::End,
             ),
-            Some(Modal::Indicators) => stack_modal(
+            Some(Modal::Indicators) | Some(Modal::DrawingTools) => stack_modal(
                 base,
                 indicator_modal.unwrap_or_else(|| column![].into()),
                 on_blur,
@@ -1863,7 +1948,7 @@ impl State {
             Content::Ladder(panel) => panel
                 .as_mut()
                 .and_then(|p| p.invalidate(Some(now)).map(Action::Panel)),
-            Content::Starter => None,
+            Content::Starter | Content::AiAnalysis => None,
             Content::Comparison(chart) => chart
                 .as_mut()
                 .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
@@ -1892,7 +1977,7 @@ impl State {
             }
             Content::Ladder(_) | Content::TimeAndSales(_) => Some(100),
             Content::ShaderHeatmap { .. } => None,
-            Content::Starter => None,
+            Content::Starter | Content::AiAnalysis => None,
         }
     }
 
@@ -1976,6 +2061,7 @@ impl Default for State {
 pub enum Content {
     #[default]
     Starter,
+    AiAnalysis,
     Heatmap {
         chart: Option<HeatmapChart>,
         indicators: Vec<HeatmapIndicator>,
@@ -2164,6 +2250,7 @@ impl Content {
     fn placeholder(kind: ContentKind) -> Self {
         match kind {
             ContentKind::Starter => Content::Starter,
+            ContentKind::AiAnalysis => Content::AiAnalysis,
             ContentKind::CandlestickChart => Content::Kline {
                 chart: None,
                 indicators: vec![KlineIndicator::Volume],
@@ -2215,7 +2302,7 @@ impl Content {
             Content::TimeAndSales(panel) => Some(panel.as_ref()?.last_update()),
             Content::Ladder(panel) => Some(panel.as_ref()?.last_update()),
             Content::Comparison(chart) => Some(chart.as_ref()?.last_update()),
-            Content::Starter => None,
+            Content::Starter | Content::AiAnalysis => None,
             Content::ShaderHeatmap { chart, .. } => Some(chart.as_ref()?.last_tick?),
         }
     }
@@ -2297,6 +2384,7 @@ impl Content {
             Content::TimeAndSales(_)
             | Content::Ladder(_)
             | Content::Starter
+            | Content::AiAnalysis
             | Content::Comparison(_)
             | Content::ShaderHeatmap { .. } => {
                 panic!("indicator reorder on {} pane", self)
@@ -2344,6 +2432,7 @@ impl Content {
             Content::TimeAndSales(_)
             | Content::Ladder(_)
             | Content::Starter
+            | Content::AiAnalysis
             | Content::Comparison(_) => None,
         }
     }
@@ -2413,6 +2502,7 @@ impl Content {
             Content::Ladder(_) => ContentKind::Ladder,
             Content::Comparison(_) => ContentKind::ComparisonChart,
             Content::Starter => ContentKind::Starter,
+            Content::AiAnalysis => ContentKind::AiAnalysis,
             Content::ShaderHeatmap { .. } => ContentKind::ShaderHeatmap,
         }
     }
@@ -2432,6 +2522,7 @@ impl Content {
             Content::Ladder(panel) => panel.is_some(),
             Content::Comparison(chart) => chart.is_some(),
             Content::Starter => true,
+            Content::AiAnalysis => true,
         }
     }
 
@@ -2459,6 +2550,7 @@ impl PartialEq for Content {
         matches!(
             (self, other),
             (Content::Starter, Content::Starter)
+                | (Content::AiAnalysis, Content::AiAnalysis)
                 | (Content::Heatmap { .. }, Content::Heatmap { .. })
                 | (Content::Kline { .. }, Content::Kline { .. })
                 | (Content::TimeAndSales(_), Content::TimeAndSales(_))

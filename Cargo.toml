@@ -62,7 +62,9 @@ enum-map.workspace = true
 url.workspace = true
 fern = "0.7.1"
 rodio = { version = "0.22.2", default-features = false, features = [ "playback", "wav" ]}
-
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
+iced_lucide = "0.1.0"
+notify-rust = "4.18.0"
 bytemuck = "1.25.0"
 iced_wgpu = "0.14.0"
 exchange.workspace = true

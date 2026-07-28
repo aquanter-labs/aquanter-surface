@@ -66,8 +66,8 @@ impl std::fmt::Display for Position {
 #[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
 pub enum Menu {
     Layout,
+    Alerts,
     Settings,
-    Audio,
     ThemeEditor,
     Network,
 }

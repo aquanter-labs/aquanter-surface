@@ -31,6 +31,7 @@ pub enum Pane {
         #[serde(deserialize_with = "ok_or_default", default)]
         link_group: Option<LinkGroup>,
     },
+    AiAnalysis,
     HeatmapChart {
         layout: ViewConfig,
         #[serde(deserialize_with = "ok_or_default", default)]
@@ -197,6 +198,7 @@ impl VisualConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContentKind {
     Starter,
+    AiAnalysis,
     HeatmapChart,
     ShaderHeatmap,
     FootprintChart,
@@ -207,8 +209,9 @@ pub enum ContentKind {
 }
 
 impl ContentKind {
-    pub const ALL: [ContentKind; 8] = [
+    pub const ALL: [ContentKind; 9] = [
         ContentKind::Starter,
+        ContentKind::AiAnalysis,
         ContentKind::HeatmapChart,
         ContentKind::ShaderHeatmap,
         ContentKind::FootprintChart,
@@ -223,6 +226,7 @@ impl std::fmt::Display for ContentKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             ContentKind::Starter => "Starter Pane",
+            ContentKind::AiAnalysis => "AI Analysis",
             ContentKind::HeatmapChart => "Heatmap Chart (Legacy)",
             ContentKind::ShaderHeatmap => "Heatmap Chart",
             ContentKind::FootprintChart => "Footprint Chart",
@@ -294,7 +298,7 @@ impl PaneSetup {
                         Basis::default_kline_time(Some(base_ticker), Timeframe::M15)
                     }))
                 }
-                ContentKind::Starter | ContentKind::TimeAndSales => None,
+                ContentKind::Starter | ContentKind::AiAnalysis | ContentKind::TimeAndSales => None,
             };
 
         let tick_multiplier = match content_kind {
@@ -316,6 +320,7 @@ impl PaneSetup {
             ContentKind::CandlestickChart
             | ContentKind::ComparisonChart
             | ContentKind::TimeAndSales
+            | ContentKind::AiAnalysis
             | ContentKind::Starter => current_tick_multiplier,
         };
 

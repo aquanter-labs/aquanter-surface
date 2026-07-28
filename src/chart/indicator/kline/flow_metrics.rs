@@ -189,7 +189,7 @@ struct DivergenceMarker {
     strength: f32,
 }
 
-fn draw_direction_arrow(
+pub(crate) fn draw_direction_arrow(
     frame: &mut canvas::Frame,
     x: f32,
     candle_y: f32,

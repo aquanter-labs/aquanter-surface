@@ -38,6 +38,53 @@ pub enum Interaction {
     Ruler {
         start: Option<Point>,
     },
+    Drawing {
+        index: usize,
+        part: DrawingPart,
+        cursor_start: DrawingAnchor,
+        original: Drawing,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrawingTool {
+    TrendLine,
+    HorizontalLine,
+    VolumeProfile,
+}
+
+impl DrawingTool {
+    pub const LINES: [Self; 2] = [Self::TrendLine, Self::HorizontalLine];
+}
+
+impl std::fmt::Display for DrawingTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TrendLine => write!(f, "Trend line"),
+            Self::HorizontalLine => write!(f, "Horizontal line"),
+            Self::VolumeProfile => write!(f, "Range volume profile"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrawingAnchor {
+    pub interval: u64,
+    pub price: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Drawing {
+    pub tool: DrawingTool,
+    pub start: DrawingAnchor,
+    pub end: DrawingAnchor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrawingPart {
+    Start,
+    End,
+    Body,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -58,6 +105,13 @@ pub enum Message {
     SplitDragged(usize, f32),
     DoubleClick(AxisScaleClicked),
     IntervalSelected(u64),
+    DrawingCreated(Drawing),
+    DrawingSelected(usize),
+    DrawingChanged(usize, Drawing),
+    DrawingFinished,
+    DrawingDeleted(usize),
+    DrawingContextMenu(usize, Point),
+    DrawingContextMenuClosed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,7 +165,9 @@ fn canvas_interaction<T: Chart>(
 
     if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
         match interaction {
-            Interaction::Panning { .. } | Interaction::Zoomin { .. } => {
+            Interaction::Panning { .. }
+            | Interaction::Zoomin { .. }
+            | Interaction::Drawing { .. } => {
                 *interaction = Interaction::None;
             }
             _ => {}
@@ -162,6 +218,7 @@ fn canvas_interaction<T: Chart>(
                             Interaction::Ruler { .. } => {
                                 *interaction = Interaction::None;
                             }
+                            Interaction::Drawing { .. } => {}
                         }
                     }
                     Some(canvas::Action::request_redraw().and_capture())
@@ -177,6 +234,7 @@ fn canvas_interaction<T: Chart>(
                     Interaction::None | Interaction::Ruler { .. } => {
                         Some(canvas::Action::publish(Message::CrosshairMoved))
                     }
+                    Interaction::Drawing { .. } => Some(canvas::Action::capture()),
                     _ => None,
                 },
                 mouse::Event::WheelScrolled { delta } => {
@@ -513,7 +571,14 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
             }
         }
         Message::CrosshairMoved => return chart.invalidate_crosshair(),
-        Message::IntervalSelected(_) => return,
+        Message::IntervalSelected(_)
+        | Message::DrawingCreated(_)
+        | Message::DrawingSelected(_)
+        | Message::DrawingChanged(_, _)
+        | Message::DrawingFinished
+        | Message::DrawingDeleted(_)
+        | Message::DrawingContextMenu(_, _)
+        | Message::DrawingContextMenuClosed => return,
     }
     chart.invalidate_all();
 }

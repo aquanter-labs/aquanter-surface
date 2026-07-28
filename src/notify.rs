@@ -2,6 +2,31 @@ use crate::widget::toast::{Status, Toast};
 use rustc_hash::FxHashMap;
 use std::time::{Duration, Instant};
 
+#[derive(Debug, Clone)]
+pub struct Alert {
+    pub source: &'static str,
+    pub title: String,
+    pub body: String,
+}
+
+impl Alert {
+    pub fn ai(title: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            source: "AI",
+            title: title.into(),
+            body: body.into(),
+        }
+    }
+
+    pub fn market(title: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            source: "Alert",
+            title: title.into(),
+            body: body.into(),
+        }
+    }
+}
+
 /// Base dedupe window for duplicate error toasts.
 ///
 /// When the same error keeps repeating, this window is increased with
@@ -95,6 +120,10 @@ impl Notifications {
         self.toasts.push(toast);
     }
 
+    pub fn publish_system(&self, alert: Alert) {
+        show_system_alert(&alert);
+    }
+
     /// Removes a toast by index if the index exists.
     pub fn remove(&mut self, index: usize) {
         if index < self.toasts.len() {
@@ -113,6 +142,21 @@ impl Notifications {
             now.duration_since(state.last_seen_at).as_secs() <= DEDUPE_CACHE_TTL_SECS
         });
     }
+}
+
+fn show_system_alert(alert: &Alert) {
+    let title = format!("{} - {}", alert.source, alert.title);
+    let body = alert.body.clone();
+    std::thread::spawn(move || {
+        if let Err(error) = notify_rust::Notification::new()
+            .appname("Flowsurface")
+            .summary(&title)
+            .body(&body)
+            .show()
+        {
+            log::warn!("Failed to show system notification: {error}");
+        }
+    });
 }
 
 fn dedupe_window_for(toast: &Toast, error_backoff_level: u8) -> Duration {

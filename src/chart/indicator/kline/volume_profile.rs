@@ -206,9 +206,97 @@ fn volume_bins_by_step(
     Some((low, step, bins))
 }
 
+fn sample_price_range(values: &[VolumeSample], step: f64) -> Option<(f64, f64)> {
+    let low = values
+        .iter()
+        .map(|sample| sample.bounds().0)
+        .min_by(f64::total_cmp)?;
+    let high = values
+        .iter()
+        .map(|sample| sample.bounds().1)
+        .max_by(f64::total_cmp)?;
+    Some((low - step / 2.0, high + step / 2.0))
+}
+
 fn profile_horizontal_bounds(region: Rectangle, max_width_percent: u8) -> (f32, f32) {
-    let max_width = region.width * f32::from(max_width_percent.clamp(5, 50)) / 100.0;
+    let max_width = region.width * f32::from(max_width_percent.clamp(5, 100)) / 100.0;
     (region.x, max_width)
+}
+
+pub(crate) fn draw_selected_range_profile(
+    frame: &mut canvas::Frame,
+    chart: &ViewState,
+    theme: &Theme,
+    source: &PlotData<KlineDataPoint>,
+    quantity_format: QuantityFormat,
+    start: u64,
+    end: u64,
+    is_footprint: bool,
+) {
+    let (start, end) = (start.min(end), start.max(end));
+    let samples_for = |kline: &Kline, footprint: &data::chart::kline::KlineTrades| {
+        if footprint.trades.is_empty() {
+            let (buy, sell, neutral) = kline.volume.buy_sell().map_or_else(
+                || (0.0, 0.0, kline.volume.total().to_f64()),
+                |(buy, sell)| (buy.to_f64(), sell.to_f64(), 0.0),
+            );
+            vec![VolumeSample::Range {
+                low: kline.low.to_f64(),
+                high: kline.high.to_f64(),
+                buy,
+                sell,
+                neutral,
+            }]
+        } else {
+            footprint
+                .trades
+                .iter()
+                .map(|(price, trades)| VolumeSample::Price {
+                    price: price.to_f64(),
+                    buy: trades.buy_qty.to_f64(),
+                    sell: trades.sell_qty.to_f64(),
+                })
+                .collect()
+        }
+    };
+    let values = match source {
+        PlotData::TimeBased(series) => series
+            .datapoints
+            .range(UnixMs(start)..=UnixMs(end))
+            .flat_map(|(_, dp)| samples_for(&dp.kline, &dp.footprint))
+            .collect::<Vec<_>>(),
+        PlotData::TickBased(series) => series
+            .datapoints
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| (*index as u64) >= start && (*index as u64) <= end)
+            .flat_map(|(_, dp)| samples_for(&dp.kline, &dp.footprint))
+            .collect::<Vec<_>>(),
+    };
+    if values.is_empty() {
+        return;
+    }
+    let mut config = VolumeProfileConfig::default();
+    config.max_width_percent = 100;
+    let indicator = VolumeProfileIndicator::new(config, quantity_format, true, is_footprint);
+    let visible_region = chart.visible_region(frame.size());
+    let left = chart.interval_to_x(start);
+    let right = chart.interval_to_x(end);
+    indicator.draw_profile(
+        frame,
+        chart,
+        theme,
+        &values,
+        Rectangle {
+            x: left.min(right),
+            y: visible_region.y,
+            width: (right - left).abs(),
+            height: visible_region.height,
+        },
+        visible_region,
+        true,
+        0.68,
+    );
 }
 
 fn horizontal_ranges_overlap(left_a: f32, right_a: f32, left_b: f32, right_b: f32) -> bool {
@@ -314,15 +402,21 @@ impl VolumeProfileIndicator {
         values: &[VolumeSample],
         horizontal_region: Rectangle,
         visible_region: Rectangle,
+        stable_price_range: bool,
+        background_alpha: f32,
     ) {
         let profile = if self.is_footprint {
-            let (highest, lowest) = chart.price_range(&visible_region);
-            volume_bins_by_step(
-                values,
-                lowest.to_f64(),
-                highest.to_f64(),
-                chart.tick_size.to_f64_lossy(),
-            )
+            let step = chart.tick_size.to_f64_lossy();
+            let (low, high) = if stable_price_range {
+                let Some(range) = sample_price_range(values, step) else {
+                    return;
+                };
+                range
+            } else {
+                let (highest, lowest) = chart.price_range(&visible_region);
+                (lowest.to_f64(), highest.to_f64())
+            };
+            volume_bins_by_step(values, low, high, step)
         } else {
             volume_bins(values, usize::from(self.config.rows.clamp(16, 400)))
         };
@@ -347,7 +441,11 @@ impl VolumeProfileIndicator {
         frame.fill_rectangle(
             Point::new(anchor, background_top.min(background_bottom)),
             iced::Size::new(max_width, (background_bottom - background_top).abs()),
-            palette.background.weakest.color,
+            palette
+                .background
+                .weakest
+                .color
+                .scale_alpha(background_alpha.clamp(0.0, 1.0)),
         );
         let divider_width = 1.0 / chart.scaling;
         frame.fill_rectangle(
@@ -496,6 +594,8 @@ impl KlineIndicatorImpl for VolumeProfileIndicator {
                         height: 0.0,
                     },
                     visible_region,
+                    true,
+                    1.0,
                 );
             }
         } else {
@@ -515,7 +615,18 @@ impl KlineIndicatorImpl for VolumeProfileIndicator {
                 .flat_map(|(_, values)| values.iter().copied())
                 .filter(|sample| sample.volume() > 0.0)
                 .collect();
-            self.draw_profile(frame, chart, theme, &values, visible_region, visible_region);
+            let stable_price_range = self.config.range == VolumeProfileRange::PastDuration
+                && self.config.past_duration_end == VolumeProfilePastEnd::LatestData;
+            self.draw_profile(
+                frame,
+                chart,
+                theme,
+                &values,
+                visible_region,
+                visible_region,
+                stable_price_range,
+                1.0,
+            );
         }
     }
 
@@ -699,6 +810,26 @@ mod tests {
         assert_eq!(bins[1].buy, 2.0);
         assert_eq!(bins[1].sell, 3.0);
         assert_eq!(bins.iter().map(|bin| bin.total()).sum::<f64>(), 5.0);
+    }
+
+    #[test]
+    fn fixed_profile_price_range_comes_from_its_samples() {
+        let samples = [
+            VolumeSample::Price {
+                price: 99.5,
+                buy: 10.0,
+                sell: 0.0,
+            },
+            VolumeSample::Price {
+                price: 102.5,
+                buy: 0.0,
+                sell: 10.0,
+            },
+        ];
+        let (low, high) = sample_price_range(&samples, 0.5).unwrap();
+        let (_, _, bins) = volume_bins_by_step(&samples, low, high, 0.5).unwrap();
+
+        assert_eq!(bins.iter().map(|bin| bin.total()).sum::<f64>(), 20.0);
     }
 
     #[test]

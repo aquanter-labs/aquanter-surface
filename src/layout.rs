@@ -31,6 +31,8 @@ pub struct SavedState {
     pub audio_cfg: data::AudioStream,
     pub volume_size_unit: exchange::SizeUnit,
     pub proxy_cfg: Option<exchange::proxy::Proxy>,
+    pub ai_cfg: data::config::ai::AiConfig,
+    pub alert_cfg: data::config::alerts::AlertConfig,
 }
 
 impl SavedState {
@@ -60,6 +62,8 @@ impl Default for SavedState {
             audio_cfg: data::AudioStream::default(),
             volume_size_unit: exchange::SizeUnit::Base,
             proxy_cfg: None,
+            ai_cfg: data::config::ai::AiConfig::default(),
+            alert_cfg: data::config::alerts::AlertConfig::default(),
         }
     }
 }
@@ -115,6 +119,7 @@ impl From<&pane::State> for data::Pane {
             pane::Content::Starter => data::Pane::Starter {
                 link_group: pane.link_group,
             },
+            pane::Content::AiAnalysis => data::Pane::AiAnalysis,
             pane::Content::Heatmap {
                 chart,
                 indicators,
@@ -200,6 +205,12 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
             vec![],
             data::layout::pane::Settings::default(),
             link_group,
+        )),
+        data::Pane::AiAnalysis => Configuration::Pane(pane::State::from_config(
+            pane::Content::AiAnalysis,
+            vec![],
+            data::layout::pane::Settings::default(),
+            None,
         )),
         data::Pane::ShaderHeatmap {
             stream_type,
@@ -390,6 +401,8 @@ pub fn load_saved_state() -> SavedState {
                 audio_cfg: state.audio_cfg,
                 volume_size_unit: state.size_in_quote_ccy,
                 proxy_cfg,
+                ai_cfg: state.ai_cfg,
+                alert_cfg: state.alert_cfg,
             }
         }
         Err(e) => {

@@ -915,6 +915,7 @@ impl canvas::Program<Message> for HeatmapChart {
         match interaction {
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
             Interaction::Zoomin { .. } => mouse::Interaction::ZoomIn,
+            Interaction::Drawing { .. } => mouse::Interaction::default(),
             Interaction::None | Interaction::Ruler { .. } => {
                 if cursor.is_over(bounds) {
                     return mouse::Interaction::Crosshair;

@@ -294,19 +294,12 @@ impl AudioStream {
             .spacing(8)
         };
 
-        container(if let Some(output_error) = audio_output_error {
+        if let Some(output_error) = audio_output_error {
             column![output_error]
         } else {
             column![volume_container, audio_contents,].spacing(20)
-        })
-        .max_width(320)
-        .padding(24)
-        .style(style::dashboard_modal)
+        }
         .into()
-    }
-
-    pub fn volume(&self) -> Option<f32> {
-        self.volume
     }
 
     pub fn play(&mut self, sound: SoundType) -> Result<(), AudioError> {

@@ -1,4 +1,6 @@
 use super::ScaleFactor;
+use super::ai::AiConfig;
+use super::alerts::AlertConfig;
 use super::sidebar::Sidebar;
 use super::timezone::UserTimezone;
 use crate::layout::WindowSpec;
@@ -26,6 +28,8 @@ pub struct State {
     pub trade_fetch_enabled: bool,
     pub size_in_quote_ccy: exchange::SizeUnit,
     pub proxy_cfg: Option<exchange::proxy::Proxy>,
+    pub ai_cfg: AiConfig,
+    pub alert_cfg: AlertConfig,
 }
 
 impl State {
@@ -41,6 +45,8 @@ impl State {
         trade_fetch_enabled: bool,
         volume_size_unit: exchange::SizeUnit,
         proxy_cfg: Option<exchange::proxy::Proxy>,
+        ai_cfg: AiConfig,
+        alert_cfg: AlertConfig,
     ) -> Self {
         State {
             layout_manager,
@@ -54,6 +60,19 @@ impl State {
             trade_fetch_enabled,
             size_in_quote_ccy: volume_size_unit,
             proxy_cfg,
+            ai_cfg,
+            alert_cfg,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_saved_state_defaults_to_no_alert_rules() {
+        let state: State = serde_json::from_str("{}").unwrap();
+        assert!(state.alert_cfg.rules.is_empty());
     }
 }
