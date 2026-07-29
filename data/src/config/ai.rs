@@ -55,6 +55,7 @@ pub struct AiConfig {
     pub model: String,
     pub short_bars: u16,
     pub long_bars: u16,
+    pub timeout_secs: u16,
 }
 
 impl Default for AiConfig {
@@ -85,6 +86,7 @@ impl AiConfig {
             model: model.to_string(),
             short_bars: 30,
             long_bars: 120,
+            timeout_secs: 180,
         }
     }
 }
@@ -120,6 +122,7 @@ mod tests {
     fn old_saved_state_uses_ai_defaults() {
         let config: AiConfig = serde_json::from_str("{}").unwrap();
         assert_eq!(config, AiConfig::default());
+        assert_eq!(config.timeout_secs, 180);
     }
 
     #[test]

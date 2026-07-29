@@ -67,6 +67,24 @@ impl std::fmt::Display for DrawingTool {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chart_wheel_zoom_uses_axis_cell_scaling() {
+        let cursor = Point::new(12.0, -8.0);
+        assert!(matches!(
+            wheel_zoom_message(None, 1.0, cursor),
+            Message::WheelScaling(1.0, value) if value == Vector::new(cursor.x, cursor.y)
+        ));
+        assert!(matches!(
+            wheel_zoom_message(Some(Autoscale::FitToVisible), 1.0, cursor),
+            Message::XScaling(1.0, 12.0, false)
+        ));
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DrawingAnchor {
     pub interval: u64,
@@ -96,7 +114,7 @@ pub enum AxisScaleClicked {
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
     Translated(Vector),
-    Scaled(f32, Vector),
+    WheelScaling(f32, Vector),
     AutoscaleToggled,
     CrosshairMoved,
     YScaling(f32, f32, bool),
@@ -146,6 +164,14 @@ pub trait Chart: PlotConstants + canvas::Program<Message> {
 
     fn interval_selection_mode(&self) -> Option<IntervalSelectionMode> {
         None
+    }
+}
+
+fn wheel_zoom_message(autoscale: Option<Autoscale>, delta: f32, cursor: Point) -> Message {
+    if autoscale == Some(Autoscale::FitToVisible) {
+        Message::XScaling(delta, cursor.x, false)
+    } else {
+        Message::WheelScaling(delta, Vector::new(cursor.x, cursor.y))
     }
 }
 
@@ -240,12 +266,6 @@ fn canvas_interaction<T: Chart>(
                 mouse::Event::WheelScrolled { delta } => {
                     cursor_position?;
 
-                    let default_cell_width = T::default_cell_width(chart);
-                    let min_cell_width = T::min_cell_width(chart);
-                    let max_cell_width = T::max_cell_width(chart);
-                    let max_scaling = T::max_scaling(chart);
-                    let min_scaling = T::min_scaling(chart);
-
                     if matches!(interaction, Interaction::Panning { .. }) {
                         return Some(canvas::Action::capture());
                     }
@@ -256,80 +276,14 @@ fn canvas_interaction<T: Chart>(
                         | mouse::ScrollDelta::Pixels { y, .. } => y,
                     };
 
-                    if let Some(Autoscale::FitToVisible) = state.layout.autoscale {
-                        return Some(
-                            canvas::Action::publish(Message::XScaling(
-                                y / 2.0,
-                                cursor_to_center.x,
-                                false,
-                            ))
-                            .and_capture(),
-                        );
-                    }
-
-                    let should_adjust_cell_width = match (y.signum(), state.scaling) {
-                        (-1.0, scaling)
-                            if scaling == max_scaling && state.cell_width > default_cell_width =>
-                        {
-                            true
-                        }
-                        (1.0, scaling)
-                            if scaling == min_scaling && state.cell_width < default_cell_width =>
-                        {
-                            true
-                        }
-                        (1.0, scaling)
-                            if scaling == max_scaling && state.cell_width < max_cell_width =>
-                        {
-                            true
-                        }
-                        (-1.0, scaling)
-                            if scaling == min_scaling && state.cell_width > min_cell_width =>
-                        {
-                            true
-                        }
-                        _ => false,
-                    };
-
-                    if should_adjust_cell_width {
-                        return Some(
-                            canvas::Action::publish(Message::XScaling(
-                                y / 2.0,
-                                cursor_to_center.x,
-                                true,
-                            ))
-                            .and_capture(),
-                        );
-                    }
-
-                    // normal scaling cases
-                    if (*y < 0.0 && state.scaling > min_scaling)
-                        || (*y > 0.0 && state.scaling < max_scaling)
-                    {
-                        let old_scaling = state.scaling;
-                        let scaling = (state.scaling * (1.0 + y / ZOOM_SENSITIVITY))
-                            .clamp(min_scaling, max_scaling);
-
-                        let denominator = old_scaling * scaling;
-                        let vector_diff = if denominator.abs() > 0.0001 {
-                            let factor = scaling - old_scaling;
-                            Vector::new(
-                                cursor_to_center.x * factor / denominator,
-                                cursor_to_center.y * factor / denominator,
-                            )
-                        } else {
-                            Vector::default()
-                        };
-
-                        let translation = state.translation - vector_diff;
-
-                        return Some(
-                            canvas::Action::publish(Message::Scaled(scaling, translation))
-                                .and_capture(),
-                        );
-                    }
-
-                    Some(canvas::Action::capture())
+                    Some(
+                        canvas::Action::publish(wheel_zoom_message(
+                            state.layout.autoscale,
+                            *y,
+                            cursor_to_center,
+                        ))
+                        .and_capture(),
+                    )
                 }
                 _ => None,
             }
@@ -397,12 +351,10 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
                 state.layout.autoscale = None;
             }
         }
-        Message::Scaled(scaling, translation) => {
-            let state = chart.mut_state();
-            state.scaling = *scaling;
-            state.translation = *translation;
-
-            state.layout.autoscale = None;
+        Message::WheelScaling(delta, cursor_to_center) => {
+            update(chart, &Message::XScaling(*delta, cursor_to_center.x, true));
+            update(chart, &Message::YScaling(*delta, cursor_to_center.y, true));
+            return;
         }
         Message::AutoscaleToggled => {
             let supports_fit_autoscaling = chart.supports_fit_autoscaling();
@@ -443,7 +395,7 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
                 !is_wheel_scroll && matches!(state.layout.autoscale, Some(Autoscale::FitToVisible));
 
             let zoom_factor = if is_fit_to_visible_zoom {
-                ZOOM_SENSITIVITY / 1.5
+                ZOOM_SENSITIVITY
             } else if *is_wheel_scroll {
                 ZOOM_SENSITIVITY
             } else {
@@ -706,8 +658,6 @@ pub fn view<'a, T: Chart>(
 }
 
 pub trait PlotConstants {
-    fn min_scaling(&self) -> f32;
-    fn max_scaling(&self) -> f32;
     fn max_cell_width(&self) -> f32;
     fn min_cell_width(&self) -> f32;
     fn max_cell_height(&self) -> f32;

@@ -33,9 +33,6 @@ use enum_map::EnumMap;
 use rustc_hash::FxHashMap;
 use std::time::Instant;
 
-const MIN_SCALING: f32 = 0.6;
-const MAX_SCALING: f32 = 1.2;
-
 const MAX_CELL_WIDTH: f32 = 12.0;
 const MIN_CELL_WIDTH: f32 = 1.0;
 
@@ -113,14 +110,6 @@ impl Chart for HeatmapChart {
 }
 
 impl PlotConstants for HeatmapChart {
-    fn min_scaling(&self) -> f32 {
-        MIN_SCALING
-    }
-
-    fn max_scaling(&self) -> f32 {
-        MAX_SCALING
-    }
-
     fn max_cell_width(&self) -> f32 {
         MAX_CELL_WIDTH
     }

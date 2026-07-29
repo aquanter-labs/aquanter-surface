@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{fmt, io::ErrorKind, time::Duration};
 
-const PROMPT_VERSION: &str = "microstructure-v2";
+const PROMPT_VERSION: &str = "microstructure-v3";
 const ANALYSIS_HISTORY_PATH: &str = "ai/analysis-history.jsonl";
 const MAX_HISTORY_RECORDS: usize = 500;
 
@@ -37,6 +37,7 @@ fn icon_button<'a>(
 pub enum AnalysisMode {
     #[default]
     Scalping,
+    NextCandle,
     Intraday,
     Swing,
 }
@@ -45,6 +46,9 @@ pub enum AnalysisMode {
 pub struct ChartSource {
     pub pane_id: uuid::Uuid,
     pub label: String,
+    pub symbol: String,
+    pub venue: String,
+    pub basis: String,
 }
 
 pub(crate) struct AiAlert {
@@ -59,13 +63,19 @@ impl fmt::Display for ChartSource {
 }
 
 impl AnalysisMode {
-    const ALL: [Self; 3] = [Self::Scalping, Self::Intraday, Self::Swing];
+    const ALL: [Self; 4] = [
+        Self::Scalping,
+        Self::NextCandle,
+        Self::Intraday,
+        Self::Swing,
+    ];
 }
 
 impl fmt::Display for AnalysisMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Scalping => write!(f, "Scalping"),
+            Self::NextCandle => write!(f, "Next K"),
             Self::Intraday => write!(f, "Intraday"),
             Self::Swing => write!(f, "Swing"),
         }
@@ -426,6 +436,18 @@ impl fmt::Display for TradeAction {
     }
 }
 
+fn analysis_title(mode: AnalysisMode, action: TradeAction) -> String {
+    if mode == AnalysisMode::NextCandle {
+        match action {
+            TradeAction::Long => "NEXT K: UP".to_string(),
+            TradeAction::Short => "NEXT K: DOWN".to_string(),
+            TradeAction::Wait | TradeAction::Avoid => "NEXT K: UNAVAILABLE".to_string(),
+        }
+    } else {
+        action.to_string()
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 struct PriceZone {
@@ -651,6 +673,7 @@ pub enum Message {
     SaveApiKey,
     ShortBarsChanged(String),
     LongBarsChanged(String),
+    TimeoutChanged(String),
     ModeChanged(AnalysisMode),
     RefreshSnapshot,
     Analyze,
@@ -669,6 +692,7 @@ pub struct Agent {
     api_key: String,
     short_bars_input: String,
     long_bars_input: String,
+    timeout_input: String,
     models: Vec<String>,
     sources: Vec<ChartSource>,
     selected_source: Option<uuid::Uuid>,
@@ -698,11 +722,13 @@ impl Default for Agent {
 }
 
 impl Agent {
-    pub fn new(config: AiConfig) -> Self {
+    pub fn new(mut config: AiConfig) -> Self {
+        config.timeout_secs = config.timeout_secs.clamp(15, 600);
         let api_key = data::config::ai::load_api_key(&config).unwrap_or_default();
         Self {
             short_bars_input: config.short_bars.to_string(),
             long_bars_input: config.long_bars.to_string(),
+            timeout_input: config.timeout_secs.to_string(),
             models: Vec::new(),
             sources: Vec::new(),
             selected_source: None,
@@ -792,7 +818,25 @@ impl Agent {
                 .selected_history
                 .and_then(|index| self.history.get(index))
         {
-            let source = record.source_pane_id.as_deref()?.parse().ok()?;
+            let saved_source = record
+                .source_pane_id
+                .as_deref()
+                .and_then(|source| source.parse().ok())
+                .filter(|source| {
+                    self.sources
+                        .iter()
+                        .any(|candidate| candidate.pane_id == *source)
+                });
+            let source = saved_source.or_else(|| {
+                self.sources
+                    .iter()
+                    .find(|source| {
+                        source.symbol == record.symbol
+                            && source.venue == record.venue
+                            && source.basis == record.basis
+                    })
+                    .map(|source| source.pane_id)
+            })?;
             let time_ms = record.snapshot_bar_time_ms.or_else(|| {
                 u64::try_from(record.snapshot_generated_at_ms)
                     .ok()
@@ -847,9 +891,11 @@ impl Agent {
             Message::ProviderChanged(provider) => {
                 let short_bars = self.config.short_bars;
                 let long_bars = self.config.long_bars;
+                let timeout_secs = self.config.timeout_secs;
                 self.config = AiConfig::for_provider(provider);
                 self.config.short_bars = short_bars;
                 self.config.long_bars = long_bars;
+                self.config.timeout_secs = timeout_secs;
                 self.api_key = data::config::ai::load_api_key(&self.config).unwrap_or_default();
                 self.models.clear();
                 self.status = format!("Using {provider}. Refresh the snapshot before analysis.");
@@ -871,6 +917,7 @@ impl Agent {
                         self.config.provider,
                         self.config.base_url.clone(),
                         self.api_key.clone(),
+                        self.config.timeout_secs,
                     ),
                     Message::ModelsFetched,
                 );
@@ -914,10 +961,19 @@ impl Agent {
                     self.config.long_bars = value.clamp(20, 500);
                 }
             }
+            Message::TimeoutChanged(value) => {
+                self.timeout_input = value.clone();
+                if let Ok(value) = value.parse::<u16>() {
+                    self.config.timeout_secs = value.clamp(15, 600);
+                }
+            }
             Message::ModeChanged(mode) => {
                 self.mode = mode;
                 self.snapshot = None;
                 self.prompt.clear();
+                self.result.clear();
+                self.analysis = None;
+                self.analyzed_at = None;
                 self.status = "Mode changed. Refresh the market snapshot.".to_string();
             }
             Message::RefreshSnapshot => self.apply_snapshot(snapshot),
@@ -950,10 +1006,12 @@ impl Agent {
                 self.status = "Analyzing current snapshot...".to_string();
                 let request = ProviderRequest {
                     provider: self.config.provider,
+                    mode: self.mode,
                     base_url: self.config.base_url.clone(),
                     model: self.config.model.clone(),
                     api_key: self.api_key.clone(),
-                    system_prompt: system_prompt().to_string(),
+                    timeout_secs: self.config.timeout_secs,
+                    system_prompt: system_prompt(self.mode),
                     user_prompt: self.prompt.clone(),
                 };
                 return Task::perform(call_provider(request), Message::AnalysisCompleted);
@@ -964,6 +1022,16 @@ impl Agent {
                     Ok(result) => match serde_json::from_str::<AnalysisResult>(&result) {
                         Ok(mut analysis) => {
                             analysis.normalize();
+                            if self.mode == AnalysisMode::NextCandle
+                                && !matches!(
+                                    analysis.action,
+                                    TradeAction::Long | TradeAction::Short
+                                )
+                            {
+                                self.status =
+                                    "Next K analysis returned no UP/DOWN direction.".to_string();
+                                return Task::none();
+                            }
                             self.analysis = Some(analysis);
                             self.analyzed_at = Some(std::time::Instant::now());
                             self.result = result;
@@ -1088,7 +1156,7 @@ impl Agent {
                 snapshot.data_quality * 100.0
             ));
         }
-        if self.mode == AnalysisMode::Scalping
+        if matches!(self.mode, AnalysisMode::Scalping | AnalysisMode::NextCandle)
             && snapshot.data_age_ms > snapshot.timeframe_ms.saturating_mul(2)
         {
             return Some(format!(
@@ -1147,6 +1215,14 @@ impl Agent {
                     .width(Length::Fill),
                 ]
                 .spacing(8),
+                row![
+                    text("Request timeout (seconds)").width(Length::Fill),
+                    text_input("15-600", &self.timeout_input)
+                        .on_input(Message::TimeoutChanged)
+                        .width(90),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
                 rule::horizontal(1),
                 text("Provider"),
                 pick_list(
@@ -1234,12 +1310,24 @@ impl Agent {
         } else {
             "Analysis"
         };
+        let clear_history: Element<'_, Message> = if self.show_history {
+            icon_button(
+                crate::style::LucideIcon::Trash2,
+                "Clear history",
+                Some(Message::ClearHistory),
+            )
+        } else {
+            row![].into()
+        };
         let base = container(
             column![
                 controls,
                 rule::horizontal(1),
                 row![
-                    text(output_title).width(Length::Fill),
+                    row![text(output_title), clear_history]
+                        .spacing(4)
+                        .align_y(Alignment::Center)
+                        .width(Length::Fill),
                     icon_button(
                         crate::style::LucideIcon::History,
                         if self.show_history {
@@ -1248,11 +1336,6 @@ impl Agent {
                             "Show history"
                         },
                         Some(Message::ToggleHistory),
-                    ),
-                    icon_button(
-                        crate::style::LucideIcon::Trash2,
-                        "Clear history",
-                        Some(Message::ClearHistory),
                     ),
                     icon_button(
                         crate::style::LucideIcon::FileText,
@@ -1363,10 +1446,14 @@ impl Agent {
         } else {
             format!("Valid for {remaining}s")
         };
-        Self::analysis_details(analysis, validity)
+        Self::analysis_details(analysis, validity, self.mode)
     }
 
-    fn analysis_details(analysis: &AnalysisResult, validity: String) -> Element<'_, Message> {
+    fn analysis_details(
+        analysis: &AnalysisResult,
+        validity: String,
+        mode: AnalysisMode,
+    ) -> Element<'_, Message> {
         let prices = |values: &[f64]| {
             if values.is_empty() {
                 "n/a".to_string()
@@ -1405,8 +1492,44 @@ impl Agent {
                 .join("\n")
         };
 
+        if mode == AnalysisMode::NextCandle {
+            return column![
+                text(analysis_title(mode, analysis.action)).size(crate::style::text_size::TITLE),
+                row![
+                    text(format!(
+                        "Evidence strength {:.0}%",
+                        analysis.confidence.clamp(0.0, 100.0)
+                    )),
+                    text(validity),
+                ]
+                .spacing(16)
+                .align_y(Alignment::Center),
+                text(format!("Decision: {}", analysis.decision_summary)),
+                text(format!("Regime: {}", analysis.market_regime)),
+                text(format!("Support: {}", prices(&analysis.support_levels))),
+                text(format!(
+                    "Resistance: {}",
+                    prices(&analysis.resistance_levels)
+                )),
+                text("Priority levels"),
+                text(key_levels),
+                text("Evidence for UP"),
+                text(lines(&analysis.bullish_evidence)),
+                text("Evidence for DOWN"),
+                text(lines(&analysis.bearish_evidence)),
+                text("Risks and data quality"),
+                text(format!(
+                    "{}\n{}",
+                    lines(&analysis.risks),
+                    lines(&analysis.data_quality_notes)
+                )),
+            ]
+            .spacing(8)
+            .into();
+        }
+
         column![
-            text(analysis.action.to_string()).size(crate::style::text_size::TITLE),
+            text(analysis_title(mode, analysis.action)).size(crate::style::text_size::TITLE),
             row![
                 text(format!(
                     "Confidence {:.0}%",
@@ -1490,7 +1613,9 @@ impl Agent {
                     row![
                         text(format!(
                             "{} {} {}",
-                            record.analysis.action, record.symbol, record.basis
+                            analysis_title(record.mode, record.analysis.action),
+                            record.symbol,
+                            record.basis
                         ))
                         .size(crate::style::text_size::TITLE)
                         .width(Length::Fill),
@@ -1509,7 +1634,11 @@ impl Agent {
                         record.data_quality * 100.0,
                         record.latency_ms
                     )),
-                    Self::analysis_details(&record.analysis, "Historical result".to_string()),
+                    Self::analysis_details(
+                        &record.analysis,
+                        "Historical result".to_string(),
+                        record.mode,
+                    ),
                     rule::horizontal(1),
                     text("Raw output"),
                     text(raw_output),
@@ -1536,7 +1665,9 @@ impl Agent {
                             row![
                                 text(format!(
                                     "{} {} {}",
-                                    record.analysis.action, record.symbol, record.basis
+                                    analysis_title(record.mode, record.analysis.action),
+                                    record.symbol,
+                                    record.basis
                                 ))
                                 .width(Length::Fill),
                                 text(format!(
@@ -1580,8 +1711,24 @@ fn automatic_failure(automatic: bool, reason: &str) -> Task<Message> {
 
 pub fn build_prompt(mode: AnalysisMode, snapshot: &AnalysisBundle) -> String {
     let snapshot_json = serde_json::to_string(snapshot).unwrap_or_else(|_| "{}".to_string());
+    let mode_task = match mode {
+        AnalysisMode::NextCandle => format!(
+            "Predict whether the immediately next {} candle closes above or below its own open. \
+             LONG means UP and SHORT means DOWN. Produce one direction, not a trade setup. Base \
+             the prediction on current price location, support/resistance, VWAP/POC, recent \
+             footprint buy/sell volume, Delta/CVD, open interest and its change, order-book depth \
+             and imbalance, liquidations, volatility, and higher-timeframe context. Weight the \
+             most recent completed bars most heavily and do not use future information. The last \
+             bar may still be forming; use it as current state but never treat its close as final. Set \
+             valid_for_seconds to the primary timeframe length in seconds.",
+            snapshot.primary.basis
+        ),
+        _ => "Evaluate the best current trade decision for the selected analysis horizon."
+            .to_string(),
+    };
     format!(
         "Prompt version: {PROMPT_VERSION}\nAnalysis mode: {mode}\n\
+         Task: {mode_task}\n\
          Analyze only the supplied snapshot. Treat missing fields as unavailable, not zero. \
          Give extra weight to fresh order flow for Scalping, but use the longer series to avoid \
          trading directly into higher-timeframe structure. The primary snapshot is the execution \
@@ -1595,8 +1742,8 @@ pub fn build_prompt(mode: AnalysisMode, snapshot: &AnalysisBundle) -> String {
     )
 }
 
-fn system_prompt() -> &'static str {
-    r#"You are a read-only crypto market microstructure decision-support analyst. You do not place orders. Use only supplied data and never invent news, levels, open interest, liquidity or probabilities.
+fn system_prompt(mode: AnalysisMode) -> String {
+    let base = r#"You are a read-only crypto market microstructure decision-support analyst. You do not place orders. Use only supplied data and never invent news, levels, open interest, liquidity or probabilities.
 
 Decision policy:
 1. Classify regime, then independently evaluate the best LONG and SHORT setup.
@@ -1609,15 +1756,28 @@ Decision policy:
 Return exactly one JSON object with this shape:
 {"action":"LONG|SHORT|WAIT|AVOID","preferred_bias":"LONG|SHORT|NEUTRAL","decision_summary":"string","setup":"string","market_regime":"string","confidence":0,"valid_for_seconds":0,"entry_zone":{"low":null,"high":null},"stop_loss":null,"targets":[],"risk_reward":null,"key_levels":[{"price":0,"role":"SUPPORT|RESISTANCE|PIVOT","strength":0,"reason":"string"}],"support_levels":[],"resistance_levels":[],"no_trade_reason":"string","trigger_conditions":[],"execution_steps":[],"bullish_evidence":[],"bearish_evidence":[],"invalidation":[],"risks":[],"data_quality_notes":[],"recheck_conditions":[]}
 
-Confidence is evidence quality from 0 to 100, not win probability. Price levels must be numeric and derived from the snapshot. support_levels and resistance_levels are compatibility summaries of key_levels and must also be strongest-first with no more than two values each. For scalping, explicitly consider spread, depth imbalance, Delta/CVD behavior, OI change, liquidation pressure, nearby high-confluence structure and higher-timeframe conflict."#
+Confidence is evidence quality from 0 to 100, not win probability. Price levels must be numeric and derived from the snapshot. support_levels and resistance_levels are compatibility summaries of key_levels and must also be strongest-first with no more than two values each. For scalping, explicitly consider spread, depth imbalance, Delta/CVD behavior, OI change, liquidation pressure, nearby high-confluence structure and higher-timeframe conflict."#;
+    if mode == AnalysisMode::NextCandle {
+        format!(
+            "{base}\n\nNext-candle override: predict one binary direction for the immediately next \
+             primary-timeframe candle. Return LONG for an UP candle or SHORT for a DOWN candle. \
+             Do not return WAIT. Rules about entry zones, reward-to-risk, targets and execution \
+             steps do not apply; leave those fields empty or null. Use AVOID only when supplied \
+             data is unusable. Confidence remains evidence quality, not a calibrated probability."
+        )
+    } else {
+        base.to_string()
+    }
 }
 
 #[derive(Clone)]
 struct ProviderRequest {
     provider: AiProvider,
+    mode: AnalysisMode,
     base_url: String,
     model: String,
     api_key: String,
+    timeout_secs: u16,
     system_prompt: String,
     user_prompt: String,
 }
@@ -1640,6 +1800,7 @@ async fn fetch_models(
     provider: AiProvider,
     base_url: String,
     api_key: String,
+    timeout_secs: u16,
 ) -> Result<Vec<String>, String> {
     let base_url = provider_base_url(&base_url);
     let endpoint = match provider {
@@ -1647,7 +1808,7 @@ async fn fetch_models(
         AiProvider::Gemini => format!("{base_url}/models?pageSize=1000"),
         _ => format!("{base_url}/models"),
     };
-    let mut request = ai_client(provider)?.get(endpoint);
+    let mut request = ai_client(timeout_secs)?.get(endpoint);
     request = match provider {
         AiProvider::Anthropic => request
             .header("x-api-key", api_key)
@@ -1660,7 +1821,7 @@ async fn fetch_models(
         request
             .send()
             .await
-            .map_err(|error| request_error(provider, error))?,
+            .map_err(|error| request_error(provider, error, timeout_secs))?,
         "Models",
     )
     .await?;
@@ -1749,7 +1910,7 @@ async fn call_openai_compatible(request: ProviderRequest) -> Result<String, Stri
             request.base_url.trim_end_matches('/')
         )
     };
-    let client = ai_client(request.provider)?;
+    let client = ai_client(request.timeout_secs)?;
     let body = openai_request_body(&request);
     let response = client
         .post(endpoint)
@@ -1757,7 +1918,7 @@ async fn call_openai_compatible(request: ProviderRequest) -> Result<String, Stri
         .json(&body)
         .send()
         .await
-        .map_err(|error| request_error(request.provider, error))?;
+        .map_err(|error| request_error(request.provider, error, request.timeout_secs))?;
     let status = response.status();
     let body = response
         .text()
@@ -1772,7 +1933,7 @@ async fn call_openai_compatible(request: ProviderRequest) -> Result<String, Stri
     let value: Value =
         serde_json::from_str(&body).map_err(|error| format!("Invalid AI API response: {error}"))?;
     let content = extract_provider_content(request.provider, &value)?;
-    normalize_analysis(content)
+    normalize_analysis_for_mode(content, request.mode)
 }
 
 async fn call_anthropic(request: ProviderRequest) -> Result<String, String> {
@@ -1785,7 +1946,7 @@ async fn call_anthropic(request: ProviderRequest) -> Result<String, String> {
     } else {
         format!("{}/messages", request.base_url.trim_end_matches('/'))
     };
-    let response = ai_client(AiProvider::Anthropic)?
+    let response = ai_client(request.timeout_secs)?
         .post(endpoint)
         .header("x-api-key", request.api_key)
         .header("anthropic-version", "2023-06-01")
@@ -1798,10 +1959,10 @@ async fn call_anthropic(request: ProviderRequest) -> Result<String, String> {
         }))
         .send()
         .await
-        .map_err(|error| request_error(AiProvider::Anthropic, error))?;
+        .map_err(|error| request_error(AiProvider::Anthropic, error, request.timeout_secs))?;
     let value = response_json(response, "Anthropic").await?;
     let content = extract_provider_content(AiProvider::Anthropic, &value)?;
-    normalize_analysis(content)
+    normalize_analysis_for_mode(content, request.mode)
 }
 
 async fn call_gemini(request: ProviderRequest) -> Result<String, String> {
@@ -1810,7 +1971,7 @@ async fn call_gemini(request: ProviderRequest) -> Result<String, String> {
         request.base_url.trim_end_matches('/'),
         request.model
     );
-    let response = ai_client(AiProvider::Gemini)?
+    let response = ai_client(request.timeout_secs)?
         .post(endpoint)
         .header("x-goog-api-key", request.api_key)
         .json(&json!({
@@ -1824,32 +1985,28 @@ async fn call_gemini(request: ProviderRequest) -> Result<String, String> {
         }))
         .send()
         .await
-        .map_err(|error| request_error(AiProvider::Gemini, error))?;
+        .map_err(|error| request_error(AiProvider::Gemini, error, request.timeout_secs))?;
     let value = response_json(response, "Gemini").await?;
     let content = extract_provider_content(AiProvider::Gemini, &value)?;
-    normalize_analysis(content)
+    normalize_analysis_for_mode(content, request.mode)
 }
 
-fn request_timeout(provider: AiProvider) -> Duration {
-    if provider == AiProvider::XAi {
-        Duration::from_secs(180)
-    } else {
-        Duration::from_secs(45)
-    }
+fn request_timeout(timeout_secs: u16) -> Duration {
+    Duration::from_secs(u64::from(timeout_secs.clamp(15, 600)))
 }
 
-fn ai_client(provider: AiProvider) -> Result<reqwest::Client, String> {
+fn ai_client(timeout_secs: u16) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
-        .timeout(request_timeout(provider))
+        .timeout(request_timeout(timeout_secs))
         .build()
         .map_err(|error| format!("Failed to create AI client: {error}"))
 }
 
-fn request_error(provider: AiProvider, error: reqwest::Error) -> String {
+fn request_error(provider: AiProvider, error: reqwest::Error, timeout_secs: u16) -> String {
     if error.is_timeout() {
         format!(
             "{provider} request timed out after {} seconds.",
-            request_timeout(provider).as_secs()
+            request_timeout(timeout_secs).as_secs()
         )
     } else if error.is_connect() {
         format!("Could not connect to {provider}: {error}")
@@ -1891,7 +2048,7 @@ fn extract_provider_content<'a>(provider: AiProvider, value: &'a Value) -> Resul
         .ok_or_else(|| format!("{provider} response has no text content."))
 }
 
-fn normalize_analysis(content: &str) -> Result<String, String> {
+fn normalize_analysis_for_mode(content: &str, mode: AnalysisMode) -> Result<String, String> {
     let trimmed = content.trim();
     let trimmed = trimmed
         .strip_prefix("```json")
@@ -1922,19 +2079,23 @@ fn normalize_analysis(content: &str) -> Result<String, String> {
     if !has_text("decision_summary") {
         return Err("Model response is missing a decision summary.".to_string());
     }
+    if mode == AnalysisMode::NextCandle && !matches!(action, "LONG" | "SHORT") {
+        return Err("Next K response has no UP/DOWN direction.".to_string());
+    }
     match action {
         "LONG" | "SHORT"
-            if value
-                .pointer("/entry_zone/low")
-                .and_then(Value::as_f64)
-                .is_none()
-                || value
-                    .pointer("/entry_zone/high")
+            if mode != AnalysisMode::NextCandle
+                && (value
+                    .pointer("/entry_zone/low")
                     .and_then(Value::as_f64)
                     .is_none()
-                || value.get("stop_loss").and_then(Value::as_f64).is_none()
-                || !has_items("targets")
-                || !has_items("execution_steps") =>
+                    || value
+                        .pointer("/entry_zone/high")
+                        .and_then(Value::as_f64)
+                        .is_none()
+                    || value.get("stop_loss").and_then(Value::as_f64).is_none()
+                    || !has_items("targets")
+                    || !has_items("execution_steps")) =>
         {
             return Err(
                 "Directional analysis is missing entry, stop, target, or execution steps."
@@ -1954,6 +2115,11 @@ fn normalize_analysis(content: &str) -> Result<String, String> {
         _ => {}
     }
     serde_json::to_string_pretty(&value).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+fn normalize_analysis(content: &str) -> Result<String, String> {
+    normalize_analysis_for_mode(content, AnalysisMode::Scalping)
 }
 
 fn truncate(value: &str, max_chars: usize) -> String {
@@ -2050,8 +2216,53 @@ mod tests {
         assert!(prompt.contains("BTCUSDT"));
         assert!(prompt.contains("order_flow"));
         assert!(prompt.contains("relative CVD"));
-        assert!(system_prompt().contains("WAIT is an active conclusion, not the default"));
-        assert!(system_prompt().contains("at most four key_levels"));
+        assert!(
+            system_prompt(AnalysisMode::Scalping)
+                .contains("WAIT is an active conclusion, not the default")
+        );
+        assert!(system_prompt(AnalysisMode::Scalping).contains("at most four key_levels"));
+    }
+
+    #[test]
+    fn next_candle_prompt_uses_the_source_timeframe_and_microstructure() {
+        let snapshot = AnalysisBundle {
+            primary: sample_snapshot(),
+            higher_timeframe_contexts: Vec::new(),
+        };
+        let prompt = build_prompt(AnalysisMode::NextCandle, &snapshot);
+
+        for expected in [
+            "immediately next M1 candle",
+            "LONG means UP",
+            "Delta/CVD",
+            "open interest",
+            "order-book depth",
+            "liquidations",
+        ] {
+            assert!(prompt.contains(expected), "missing {expected}");
+        }
+    }
+
+    #[test]
+    fn next_candle_mode_requires_an_up_or_down_result() {
+        assert_eq!(
+            analysis_title(AnalysisMode::NextCandle, TradeAction::Long),
+            "NEXT K: UP"
+        );
+        assert_eq!(
+            analysis_title(AnalysisMode::NextCandle, TradeAction::Short),
+            "NEXT K: DOWN"
+        );
+        assert!(system_prompt(AnalysisMode::NextCandle).contains("Do not return WAIT"));
+
+        let mut agent = Agent::default();
+        agent.mode = AnalysisMode::NextCandle;
+        drop(agent.update(
+            Message::AnalysisCompleted(Ok(r#"{"action":"WAIT"}"#.to_string())),
+            None,
+        ));
+        assert!(agent.analysis.is_none());
+        assert!(agent.status.contains("no UP/DOWN direction"));
     }
 
     #[test]
@@ -2067,6 +2278,14 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.action, TradeAction::Long);
         assert_eq!(parsed.entry_zone.low, Some(99.5));
+    }
+
+    #[test]
+    fn next_candle_response_does_not_require_a_trade_plan() {
+        let prediction = r#"{"action":"LONG","decision_summary":"Order flow favors an up close","confidence":68,"bullish_evidence":["Positive Delta and rising OI"],"bearish_evidence":["Nearby resistance"]}"#;
+
+        assert!(normalize_analysis_for_mode(prediction, AnalysisMode::NextCandle).is_ok());
+        assert!(normalize_analysis_for_mode(prediction, AnalysisMode::Scalping).is_err());
     }
 
     #[test]
@@ -2309,18 +2528,21 @@ mod tests {
     }
 
     #[test]
-    fn xai_allows_longer_reasoning_requests() {
-        assert_eq!(request_timeout(AiProvider::XAi), Duration::from_secs(180));
-        assert_eq!(request_timeout(AiProvider::OpenAi), Duration::from_secs(45));
+    fn request_timeout_is_configurable_and_bounded() {
+        assert_eq!(request_timeout(300), Duration::from_secs(300));
+        assert_eq!(request_timeout(0), Duration::from_secs(15));
+        assert_eq!(request_timeout(1_000), Duration::from_secs(600));
     }
 
     #[test]
     fn reasoning_models_use_completion_token_limit() {
         let request = |model: &str| ProviderRequest {
             provider: AiProvider::OpenAi,
+            mode: AnalysisMode::Scalping,
             base_url: String::new(),
             model: model.to_string(),
             api_key: String::new(),
+            timeout_secs: 180,
             system_prompt: String::new(),
             user_prompt: String::new(),
         };
@@ -2374,5 +2596,45 @@ mod tests {
         let record: AnalysisHistoryRecord = serde_json::from_str(legacy).unwrap();
         assert!(record.raw_output.is_empty());
         assert!(record.source_pane_id.is_none());
+    }
+
+    #[test]
+    fn historical_annotation_recovers_source_without_saved_pane_id() {
+        let pane_id = uuid::Uuid::new_v4();
+        let mut agent = Agent::new(AiConfig::default());
+        agent.sources = vec![ChartSource {
+            pane_id,
+            label: "BTCUSDT | M1 | Kline".into(),
+            symbol: "BTCUSDT".into(),
+            venue: "Binance".into(),
+            basis: "M1".into(),
+        }];
+        agent.history = vec![AnalysisHistoryRecord {
+            analyzed_at_ms: 1,
+            provider: AiProvider::OpenAi,
+            model: "test-model".into(),
+            prompt_version: PROMPT_VERSION.into(),
+            mode: AnalysisMode::Scalping,
+            symbol: "BTCUSDT".into(),
+            venue: "Binance".into(),
+            basis: "M1".into(),
+            snapshot_id: "id".into(),
+            snapshot_generated_at_ms: 1,
+            latest_price: Some(100.0),
+            data_quality: 0.9,
+            context_count: 0,
+            latency_ms: 0,
+            source_pane_id: None,
+            snapshot_bar_time_ms: Some(1),
+            raw_output: String::new(),
+            analysis: AnalysisResult::default(),
+        }];
+        agent.show_history = true;
+        drop(agent.update(Message::SelectHistory(0), None));
+
+        assert_eq!(
+            agent.displayed_chart_annotation().map(|(source, _)| source),
+            Some(pane_id)
+        );
     }
 }

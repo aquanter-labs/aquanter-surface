@@ -217,6 +217,12 @@ impl Flowsurface {
                 self.alerts.update(message);
             }
             Message::Ai(message) => {
+                if matches!(&message, ai::Message::SelectHistory(_)) {
+                    let sources = self
+                        .active_dashboard()
+                        .analysis_sources(self.main_window.id);
+                    self.ai_agent.set_sources(sources);
+                }
                 let annotation_selection_changed = matches!(
                     &message,
                     ai::Message::SelectHistory(_)

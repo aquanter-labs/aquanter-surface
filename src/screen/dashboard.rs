@@ -594,6 +594,9 @@ impl Dashboard {
                     Some(crate::ai::ChartSource {
                         pane_id: state.unique_id(),
                         label: format!("{symbol} | {} | {chart_kind}", chart.basis()),
+                        symbol: ticker_info.ticker.to_string(),
+                        venue: format!("{:?}", ticker_info.exchange()),
+                        basis: chart.basis().to_string(),
                     })
                 }
                 _ => None,

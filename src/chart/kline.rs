@@ -166,14 +166,6 @@ impl Chart for KlineChart {
 }
 
 impl PlotConstants for KlineChart {
-    fn min_scaling(&self) -> f32 {
-        self.kind.min_scaling()
-    }
-
-    fn max_scaling(&self) -> f32 {
-        self.kind.max_scaling()
-    }
-
     fn max_cell_width(&self) -> f32 {
         self.kind.max_cell_width()
     }
@@ -3503,7 +3495,7 @@ struct FootprintCellLayout<'a> {
 impl FootprintCellLayout<'_> {
     /// Compute the text size for cluster labels based on on-screen cell dimensions.
     fn text_size(&self, scaling: f32) -> f32 {
-        footprint_cluster_text_size(self.cell_h * scaling)
+        footprint_cell_text_size(self.cell_h * scaling, self.cell_w * scaling)
     }
 
     /// Whether cluster text labels should be drawn given current zoom level.
@@ -3658,6 +3650,13 @@ pub(crate) fn footprint_cluster_text_size(cell_height_unscaled: f32) -> f32 {
     cell_height_unscaled.round().min(16.0) - 3.0
 }
 
+fn footprint_cell_text_size(cell_height_unscaled: f32, cell_width_unscaled: f32) -> f32 {
+    let base = footprint_cluster_text_size(cell_height_unscaled);
+    let width_size = (cell_width_unscaled * 0.12).round().min(18.0);
+    base.max(width_size)
+        .min(cell_height_unscaled.round().min(18.0).max(base))
+}
+
 pub(crate) fn footprint_text_fits(text: &str, text_size: f32, available_width: f32) -> bool {
     text.chars().count() as f32 * text_size * 0.62 <= available_width
 }
@@ -3747,8 +3746,12 @@ mod tests {
     }
 
     #[test]
-    fn footprint_text_size_ignores_horizontal_zoom_and_uses_available_width() {
-        assert_eq!(footprint_cluster_text_size(12.0), 9.0);
+    fn footprint_text_size_grows_with_available_cell_width() {
+        let compact = footprint_cell_text_size(12.0, 80.0);
+        let expanded = footprint_cell_text_size(12.0, 120.0);
+        assert_eq!(compact, 10.0);
+        assert_eq!(expanded, 12.0);
+        assert!(expanded > compact);
         assert!(footprint_text_fits("123.45", 9.0, 34.0));
         assert!(!footprint_text_fits("123.45", 9.0, 33.0));
     }

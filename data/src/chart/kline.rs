@@ -340,20 +340,6 @@ impl KlineChartKind {
         )
     }
 
-    pub fn min_scaling(&self) -> f32 {
-        match self {
-            KlineChartKind::Footprint { .. } => 0.4,
-            KlineChartKind::Candles => 0.6,
-        }
-    }
-
-    pub fn max_scaling(&self) -> f32 {
-        match self {
-            KlineChartKind::Footprint { .. } => 1.2,
-            KlineChartKind::Candles => 2.5,
-        }
-    }
-
     pub fn max_cell_width(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 360.0,
