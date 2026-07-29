@@ -40,6 +40,14 @@ use iced::{
 };
 use std::{collections::HashMap, time::Instant, vec};
 
+fn market_label(market: exchange::adapter::MarketKind) -> &'static str {
+    match market {
+        exchange::adapter::MarketKind::Spot => "SPOT",
+        exchange::adapter::MarketKind::LinearPerps => "PERP",
+        exchange::adapter::MarketKind::InversePerps => "INVERSE PERP",
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Pane(window::Id, pane::Message),
@@ -59,6 +67,8 @@ pub enum Message {
         data: FetchedData,
     },
     ResolveStreams(uuid::Uuid, Vec<PersistStreamKind>),
+    Trading(uuid::Uuid, crate::trading::Message),
+    TradingLevelDragged(uuid::Uuid, crate::trading::TradingLineId, f64, bool),
     RequestPalette,
 }
 
@@ -97,7 +107,6 @@ impl Default for Dashboard {
 #[derive(Debug, Clone)]
 pub enum Event {
     Ai(crate::ai::Message),
-    Trading(crate::trading::Message),
     Notification(Toast),
     DistributeFetchedData {
         layout_id: uuid::Uuid,
@@ -431,8 +440,16 @@ impl Dashboard {
                             pane::Effect::Ai(message) => {
                                 return (Task::none(), Some(Event::Ai(message)));
                             }
-                            pane::Effect::Trading(message) => {
-                                return (Task::none(), Some(Event::Trading(message)));
+                            pane::Effect::Trading(pane_id, message) => {
+                                return (Task::done(Message::Trading(pane_id, message)), None);
+                            }
+                            pane::Effect::TradingLevelDragged(source, id, price, finished) => {
+                                return (
+                                    Task::done(Message::TradingLevelDragged(
+                                        source, id, price, finished,
+                                    )),
+                                    None,
+                                );
                             }
                         };
                         return (task, None);
@@ -441,6 +458,16 @@ impl Dashboard {
             },
             Message::RequestPalette => {
                 return (Task::none(), Some(Event::RequestPalette));
+            }
+            Message::Trading(pane_id, message) => {
+                let task = self.update_trading(main_window.id, pane_id, message);
+                self.sync_trading_overlays(main_window.id);
+                return (task, None);
+            }
+            Message::TradingLevelDragged(source, id, price, finished) => {
+                let task = self.update_trading_level(main_window.id, source, id, price, finished);
+                self.sync_trading_overlays(main_window.id);
+                return (task, None);
             }
             Message::ChangePaneStatus(pane_id, status) => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window.id, pane_id) {
@@ -580,13 +607,18 @@ impl Dashboard {
     }
 
     pub fn analysis_sources(&self, main_window: window::Id) -> Vec<crate::ai::ChartSource> {
+        let ai_group = self.iter_all_panes(main_window).find_map(|(_, _, state)| {
+            matches!(&state.content, pane::Content::AiAnalysis)
+                .then_some(state.link_group)
+                .flatten()
+        });
         self.iter_all_panes(main_window)
             .filter_map(|(_, _, state)| match &state.content {
                 pane::Content::Kline {
                     chart: Some(chart),
                     kind,
                     ..
-                } => {
+                } if ai_group.is_none() || state.link_group == ai_group => {
                     let ticker_info = chart.ticker_info();
                     let chart_kind =
                         if matches!(kind, data::chart::KlineChartKind::Footprint { .. }) {
@@ -594,10 +626,15 @@ impl Dashboard {
                         } else {
                             "Kline"
                         };
-                    let symbol = ticker_info.ticker.display_symbol_and_type().0;
+                    let (symbol, market) = ticker_info.ticker.display_symbol_and_type();
                     Some(crate::ai::ChartSource {
                         pane_id: state.unique_id(),
-                        label: format!("{symbol} | {} | {chart_kind}", chart.basis()),
+                        label: format!(
+                            "{symbol} {} | {:?} | {} | {chart_kind}",
+                            market_label(market),
+                            ticker_info.exchange().venue(),
+                            chart.basis()
+                        ),
                         symbol: ticker_info.ticker.to_string(),
                         venue: format!("{:?}", ticker_info.exchange()),
                         basis: chart.basis().to_string(),
@@ -615,12 +652,9 @@ impl Dashboard {
                     chart: Some(chart),
                     kind,
                     ..
-                } if chart.ticker_info().exchange().venue()
-                    == exchange::adapter::Venue::Binance
-                    && chart.ticker_info().market_type()
-                        == exchange::adapter::MarketKind::LinearPerps =>
-                {
-                    let symbol = chart.ticker_info().ticker.display_symbol_and_type().0;
+                } => {
+                    let (symbol, market) = chart.ticker_info().ticker.display_symbol_and_type();
+                    let (latest_update_ms, best_bid, best_ask) = chart.trading_market_info();
                     let chart_kind =
                         if matches!(kind, data::chart::KlineChartKind::Footprint { .. }) {
                             "Footprint"
@@ -629,13 +663,26 @@ impl Dashboard {
                         };
                     Some(crate::trading::ChartSource {
                         pane_id: state.unique_id(),
-                        label: format!("{symbol} | {} | {chart_kind}", chart.basis()),
+                        link_group: state.link_group,
+                        binance_usdm: chart.ticker_info().exchange().venue()
+                            == exchange::adapter::Venue::Binance
+                            && chart.ticker_info().market_type()
+                                == exchange::adapter::MarketKind::LinearPerps,
+                        label: format!(
+                            "{symbol} {} | {:?} | {} | {chart_kind}",
+                            market_label(market),
+                            chart.ticker_info().exchange().venue(),
+                            chart.basis()
+                        ),
                         symbol,
                         min_tick: chart.ticker_info().min_ticksize.as_f64(),
                         min_qty: chart.ticker_info().min_qty.as_f64(),
                         latest_price: chart
                             .alert_observation(state.unique_id())
                             .map(|value| value.price),
+                        latest_update_ms,
+                        best_bid,
+                        best_ask,
                     })
                 }
                 _ => None,
@@ -643,12 +690,86 @@ impl Dashboard {
             .collect()
     }
 
-    pub fn set_trading_overlay(
+    pub fn sync_trading(&mut self, main_window: window::Id, proxy: Option<exchange::proxy::Proxy>) {
+        let sources = self.trading_sources(main_window);
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, state)| {
+                let link_group = state.link_group;
+                if let Some(trader) = state.trader_mut() {
+                    trader.set_proxy(proxy.clone());
+                    trader.set_chart_sources(
+                        sources
+                            .iter()
+                            .filter(|source| {
+                                link_group.is_none() || source.link_group == link_group
+                            })
+                            .cloned()
+                            .collect(),
+                    );
+                }
+            });
+        self.sync_trading_overlays(main_window);
+    }
+
+    pub fn tick_trading(&mut self, main_window: window::Id, now: Instant) -> Task<Message> {
+        Task::batch(
+            self.iter_all_panes_mut(main_window)
+                .filter_map(|(_, _, state)| {
+                    let pane_id = state.unique_id();
+                    let task = state.trader_mut()?.tick(now);
+                    Some(task.map(move |message| Message::Trading(pane_id, message)))
+                }),
+        )
+    }
+
+    fn update_trading(
         &mut self,
         main_window: window::Id,
-        source_pane: Option<uuid::Uuid>,
-        overlay: Option<crate::trading::PositionOverlay>,
-    ) {
+        pane_id: uuid::Uuid,
+        message: crate::trading::Message,
+    ) -> Task<Message> {
+        self.get_mut_pane_state_by_uuid(main_window, pane_id)
+            .and_then(pane::State::trader_mut)
+            .map(|trader| {
+                trader
+                    .update(message)
+                    .map(move |message| Message::Trading(pane_id, message))
+            })
+            .unwrap_or_else(Task::none)
+    }
+
+    fn update_trading_level(
+        &mut self,
+        main_window: window::Id,
+        source: uuid::Uuid,
+        id: crate::trading::TradingLineId,
+        price: f64,
+        finished: bool,
+    ) -> Task<Message> {
+        Task::batch(
+            self.iter_all_panes_mut(main_window)
+                .filter_map(|(_, _, state)| {
+                    let pane_id = state.unique_id();
+                    let trader = state.trader_mut()?;
+                    (trader.selected_chart() == Some(source)).then(|| {
+                        trader
+                            .update(crate::trading::Message::ChartLevelDragged(
+                                id, price, finished,
+                            ))
+                            .map(move |message| Message::Trading(pane_id, message))
+                    })
+                }),
+        )
+    }
+
+    fn sync_trading_overlays(&mut self, main_window: window::Id) {
+        let overlays = self
+            .iter_all_panes(main_window)
+            .filter_map(|(_, _, state)| {
+                let trader = state.trader()?;
+                Some((trader.selected_chart()?, trader.overlay()))
+            })
+            .collect::<HashMap<_, _>>();
         self.iter_all_panes_mut(main_window)
             .for_each(|(_, _, state)| {
                 let pane_id = state.unique_id();
@@ -656,11 +777,7 @@ impl Dashboard {
                     chart: Some(chart), ..
                 } = &mut state.content
                 {
-                    if Some(pane_id) == source_pane {
-                        chart.set_trading_overlay(overlay.clone());
-                    } else {
-                        chart.set_trading_overlay(None);
-                    }
+                    chart.set_trading_overlay(overlays.get(&pane_id).cloned().flatten());
                 }
             });
     }
@@ -898,7 +1015,6 @@ impl Dashboard {
         tickers_table: &'a TickersTable,
         timezone: UserTimezone,
         ai_agent: &'a crate::ai::Agent,
-        trader: &'a crate::trading::Trader,
     ) -> Element<'a, Message> {
         let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
             let is_focused = self.focus == Some((main_window.id, id));
@@ -912,7 +1028,6 @@ impl Dashboard {
                 timezone,
                 tickers_table,
                 ai_agent,
-                trader,
             )
         })
         .min_size(240)
@@ -933,7 +1048,6 @@ impl Dashboard {
         tickers_table: &'a TickersTable,
         timezone: UserTimezone,
         ai_agent: &'a crate::ai::Agent,
-        trader: &'a crate::trading::Trader,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
             let content = container(
@@ -949,7 +1063,6 @@ impl Dashboard {
                         timezone,
                         tickers_table,
                         ai_agent,
-                        trader,
                     )
                 })
                 .on_click(pane::Message::PaneClicked),

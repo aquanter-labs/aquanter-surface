@@ -128,8 +128,10 @@ pub enum Message {
     DrawingChanged(usize, Drawing),
     DrawingFinished,
     DrawingDeleted(usize),
-    DrawingContextMenu(usize, Point),
+    DrawingsCleared,
+    DrawingContextMenu(Option<usize>, Point),
     DrawingContextMenuClosed,
+    TradingLevelDragged(crate::trading::TradingLineId, f64, bool),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -529,8 +531,10 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
         | Message::DrawingChanged(_, _)
         | Message::DrawingFinished
         | Message::DrawingDeleted(_)
+        | Message::DrawingsCleared
         | Message::DrawingContextMenu(_, _)
-        | Message::DrawingContextMenuClosed => return,
+        | Message::DrawingContextMenuClosed
+        | Message::TradingLevelDragged(_, _, _) => return,
     }
     chart.invalidate_all();
 }

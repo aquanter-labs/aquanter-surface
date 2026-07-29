@@ -28,7 +28,7 @@ use iced::{Alignment, Color, Element, Point, Rectangle, Renderer, Size, Theme, V
 
 use enum_map::EnumMap;
 use std::cell::Cell;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::time::Instant;
 
 const MAX_CACHED_LIQUIDATIONS: usize = 10_000;
@@ -194,6 +194,7 @@ pub struct KlineChart {
     open_interest: BTreeMap<UnixMs, f64>,
     liquidations: VecDeque<Liquidation>,
     orderbook: [GroupedDepth; 2],
+    latest_market_update_ms: u64,
     indicators: EnumMap<KlineIndicator, Option<Box<dyn KlineIndicatorImpl>>>,
     fetching_trades: (bool, Option<Handle>),
     pub(crate) kind: KlineChartKind,
@@ -205,6 +206,7 @@ pub struct KlineChart {
     timezone: Cell<data::UserTimezone>,
     ai_annotation: Option<crate::ai::ChartAnnotation>,
     trading_overlay: Option<crate::trading::PositionOverlay>,
+    dragged_trading_line: Cell<Option<crate::trading::TradingLineId>>,
     drawing_tool: Option<DrawingTool>,
     drawings: Vec<Drawing>,
     selected_drawing: Option<usize>,
@@ -213,7 +215,7 @@ pub struct KlineChart {
 
 #[derive(Debug, Clone, Copy)]
 struct DrawingContextMenu {
-    index: usize,
+    index: Option<usize>,
     position: Point,
 }
 
@@ -527,6 +529,7 @@ impl KlineChart {
                     timezone: Cell::new(data::UserTimezone::Utc),
                     ai_annotation: None,
                     trading_overlay: None,
+                    dragged_trading_line: Cell::new(None),
                     drawing_tool: None,
                     drawings: Vec::new(),
                     selected_drawing: None,
@@ -536,6 +539,7 @@ impl KlineChart {
                     open_interest: BTreeMap::new(),
                     liquidations: VecDeque::new(),
                     orderbook: [GroupedDepth::new(), GroupedDepth::new()],
+                    latest_market_update_ms: 0,
                     indicators,
                     fetching_trades: (false, None),
                     request_handler: RequestHandler::default(),
@@ -603,6 +607,7 @@ impl KlineChart {
                     timezone: Cell::new(data::UserTimezone::Utc),
                     ai_annotation: None,
                     trading_overlay: None,
+                    dragged_trading_line: Cell::new(None),
                     drawing_tool: None,
                     drawings: Vec::new(),
                     selected_drawing: None,
@@ -612,6 +617,7 @@ impl KlineChart {
                     open_interest: BTreeMap::new(),
                     liquidations: VecDeque::new(),
                     orderbook: [GroupedDepth::new(), GroupedDepth::new()],
+                    latest_market_update_ms: 0,
                     indicators,
                     fetching_trades: (false, None),
                     request_handler: RequestHandler::default(),
@@ -624,6 +630,7 @@ impl KlineChart {
     }
 
     pub fn update_latest_kline(&mut self, kline: &Kline) {
+        self.latest_market_update_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
         match self.data_source {
             PlotData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_klines(&[*kline]);
@@ -645,10 +652,11 @@ impl KlineChart {
         }
     }
 
-    pub fn insert_depth(&mut self, depth: &Depth, _update_t: UnixMs) {
+    pub fn insert_depth(&mut self, depth: &Depth, update_t: UnixMs) {
         if !matches!(self.kind, KlineChartKind::Footprint { .. }) {
             return;
         }
+        self.latest_market_update_ms = update_t.as_u64();
         let step = self.chart.tick_size;
         self.orderbook[Side::Bid.idx()].regroup_from_raw(&depth.bids, Side::Bid, step);
         self.orderbook[Side::Ask.idx()].regroup_from_raw(&depth.asks, Side::Ask, step);
@@ -660,6 +668,20 @@ impl KlineChart {
 
     pub fn ticker_info(&self) -> TickerInfo {
         self.chart.ticker_info
+    }
+
+    pub(crate) fn trading_market_info(&self) -> (u64, Option<f64>, Option<f64>) {
+        let bid = self.orderbook[Side::Bid.idx()]
+            .orders
+            .keys()
+            .next_back()
+            .map(|price| price.to_f64());
+        let ask = self.orderbook[Side::Ask.idx()]
+            .orders
+            .keys()
+            .next()
+            .map(|price| price.to_f64());
+        (self.latest_market_update_ms, bid, ask)
     }
 
     pub(crate) fn set_ai_annotation(&mut self, annotation: crate::ai::ChartAnnotation) {
@@ -715,9 +737,10 @@ impl KlineChart {
                 self.selected_drawing = None;
                 self.drawing_context_menu = None;
             }
+            Message::DrawingsCleared => self.clear_drawings(),
             Message::DrawingContextMenu(index, position) => {
-                if index < self.drawings.len() {
-                    self.selected_drawing = Some(index);
+                if index.is_none_or(|index| index < self.drawings.len()) {
+                    self.selected_drawing = index;
                     self.drawing_context_menu = Some(DrawingContextMenu { index, position });
                 }
             }
@@ -1504,6 +1527,77 @@ impl KlineChart {
             })
     }
 
+    fn trading_line_hit(
+        &self,
+        position: Point,
+        bounds: Rectangle,
+    ) -> Option<crate::trading::TradingLineId> {
+        let overlay = self.trading_overlay.as_ref()?;
+        let screen_y = |price: f64| {
+            (self.chart.price_to_y(Price::from_f64(price)) + self.chart.translation.y)
+                * self.chart.scaling
+                + bounds.height / 2.0
+        };
+        let mut levels = Vec::new();
+        if let Some(price) = overlay.stop_loss {
+            levels.push((crate::trading::TradingLineId::StopLoss, price));
+        }
+        if let Some(price) = overlay.take_profit {
+            levels.push((crate::trading::TradingLineId::TakeProfit, price));
+        }
+        levels.extend(overlay.orders.iter().map(|order| (order.id, order.price)));
+        levels
+            .into_iter()
+            .filter_map(|(id, price)| {
+                let distance = (position.y - screen_y(price)).abs();
+                (distance <= 6.0).then_some((id, distance))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(id, _)| id)
+    }
+
+    fn trading_line_interaction(
+        &self,
+        event: &Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        let Some(position) = cursor.position_in(bounds) else {
+            if matches!(
+                event,
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+            ) && self.dragged_trading_line.take().is_some()
+            {
+                return Some(canvas::Action::capture());
+            }
+            return None;
+        };
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                let id = self.trading_line_hit(position, bounds)?;
+                self.dragged_trading_line.set(Some(id));
+                Some(canvas::Action::capture())
+            }
+            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                let id = self.dragged_trading_line.get()?;
+                let price = self.drawing_anchor(position, bounds).price;
+                Some(
+                    canvas::Action::publish(Message::TradingLevelDragged(id, price, false))
+                        .and_capture(),
+                )
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                let id = self.dragged_trading_line.take()?;
+                let price = self.drawing_anchor(position, bounds).price;
+                Some(
+                    canvas::Action::publish(Message::TradingLevelDragged(id, price, true))
+                        .and_capture(),
+                )
+            }
+            _ => None,
+        }
+    }
+
     fn drawing_interaction(
         &self,
         interaction: &mut Interaction,
@@ -1523,12 +1617,24 @@ impl KlineChart {
         if let Some(menu) = self.drawing_context_menu {
             match event {
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                    let message =
-                        if drawing_context_menu_delete_hit(menu.position, bounds, position) {
-                            Message::DrawingDeleted(menu.index)
-                        } else {
-                            Message::DrawingContextMenuClosed
-                        };
+                    let message = if menu.index.is_some()
+                        && drawing_context_menu_item_hit(
+                            menu,
+                            bounds,
+                            position,
+                            DrawingMenuItem::Delete,
+                        ) {
+                        Message::DrawingDeleted(menu.index.expect("selected drawing"))
+                    } else if drawing_context_menu_item_hit(
+                        menu,
+                        bounds,
+                        position,
+                        DrawingMenuItem::ClearAll,
+                    ) {
+                        Message::DrawingsCleared
+                    } else {
+                        Message::DrawingContextMenuClosed
+                    };
                     return Some(canvas::Action::publish(message).and_capture());
                 }
                 Event::Keyboard(iced::keyboard::Event::KeyPressed {
@@ -1544,16 +1650,11 @@ impl KlineChart {
         }
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
-                if let Some((index, _)) = self.drawing_hit(position, bounds) {
-                    Some(
-                        canvas::Action::publish(Message::DrawingContextMenu(index, position))
-                            .and_capture(),
-                    )
-                } else {
-                    self.drawing_context_menu.map(|_| {
-                        canvas::Action::publish(Message::DrawingContextMenuClosed).and_capture()
-                    })
-                }
+                let index = self.drawing_hit(position, bounds).map(|(index, _)| index);
+                Some(
+                    canvas::Action::publish(Message::DrawingContextMenu(index, position))
+                        .and_capture(),
+                )
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let anchor = self.drawing_anchor(position, bounds);
@@ -1630,19 +1731,42 @@ fn moved_drawing(
     drawing
 }
 
-fn drawing_context_menu_bounds(position: Point, bounds: Rectangle) -> Rectangle {
-    const WIDTH: f32 = 116.0;
-    const HEIGHT: f32 = 34.0;
+fn drawing_context_menu_bounds(menu: DrawingContextMenu, bounds: Rectangle) -> Rectangle {
+    const WIDTH: f32 = 184.0;
+    let height = if menu.index.is_some() { 68.0 } else { 34.0 };
     Rectangle {
-        x: position.x.min((bounds.width - WIDTH).max(0.0)),
-        y: position.y.min((bounds.height - HEIGHT).max(0.0)),
+        x: menu.position.x.min((bounds.width - WIDTH).max(0.0)),
+        y: menu.position.y.min((bounds.height - height).max(0.0)),
         width: WIDTH,
-        height: HEIGHT,
+        height,
     }
 }
 
-fn drawing_context_menu_delete_hit(menu_position: Point, bounds: Rectangle, click: Point) -> bool {
-    drawing_context_menu_bounds(menu_position, bounds).contains(click)
+#[derive(Debug, Clone, Copy)]
+enum DrawingMenuItem {
+    Delete,
+    ClearAll,
+}
+
+fn drawing_context_menu_item_hit(
+    menu: DrawingContextMenu,
+    bounds: Rectangle,
+    click: Point,
+    item: DrawingMenuItem,
+) -> bool {
+    let menu_bounds = drawing_context_menu_bounds(menu, bounds);
+    let row = match (menu.index.is_some(), item) {
+        (true, DrawingMenuItem::Delete) => 0.0,
+        (true, DrawingMenuItem::ClearAll) | (false, DrawingMenuItem::ClearAll) => 1.0,
+        (false, DrawingMenuItem::Delete) => return false,
+    };
+    let row = if menu.index.is_none() { 0.0 } else { row };
+    Rectangle {
+        y: menu_bounds.y + row * 34.0,
+        height: 34.0,
+        ..menu_bounds
+    }
+    .contains(click)
 }
 
 fn distance_to_segment(point: Point, start: Point, end: Point) -> f32 {
@@ -1671,6 +1795,9 @@ impl canvas::Program<Message> for KlineChart {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
+        if let Some(action) = self.trading_line_interaction(event, bounds, cursor) {
+            return Some(action);
+        }
         if self.drawing_tool.is_some()
             || self.drawing_context_menu.is_some()
             || matches!(interaction, Interaction::Drawing { .. })
@@ -1951,44 +2078,73 @@ impl canvas::Program<Message> for KlineChart {
             draw_ai_annotation(&mut ai_frame, chart, palette, &self.data_source, annotation);
         }
         if let Some(overlay) = &self.trading_overlay {
-            draw_trading_overlay(&mut ai_frame, chart, palette, overlay);
+            draw_trading_overlay(
+                &mut ai_frame,
+                chart,
+                palette,
+                &self.data_source,
+                matches!(self.kind, KlineChartKind::Footprint { .. }),
+                overlay,
+            );
         }
         let ai_annotation = ai_frame.into_geometry();
 
         let mut context_menu_frame = canvas::Frame::new(renderer, bounds_size);
         if let Some(menu) = self.drawing_context_menu {
-            let menu_bounds = drawing_context_menu_bounds(menu.position, bounds);
-            context_menu_frame.fill_rectangle(
-                menu_bounds.position(),
-                menu_bounds.size(),
-                palette.background.strong.color,
-            );
+            let menu_bounds = drawing_context_menu_bounds(menu, bounds);
+            let menu_path =
+                Path::rounded_rectangle(menu_bounds.position(), menu_bounds.size(), 3.0.into());
+            context_menu_frame.fill(&menu_path, palette.background.weakest.color);
             context_menu_frame.stroke(
-                &Path::rectangle(menu_bounds.position(), menu_bounds.size()),
+                &menu_path,
                 Stroke::default()
                     .with_width(1.0)
-                    .with_color(palette.background.strong.text.scale_alpha(0.25)),
+                    .with_color(palette.background.weak.color),
             );
-            context_menu_frame.fill_text(canvas::Text {
-                content: char::from_u32(style::LucideIcon::Trash2 as u32)
-                    .expect("Lucide icon codepoints must be valid")
-                    .to_string(),
-                position: Point::new(menu_bounds.x + 10.0, menu_bounds.center_y()),
-                size: iced::Pixels(13.0),
-                color: palette.background.strong.text,
-                align_y: Alignment::Center.into(),
-                font: style::LUCIDE_FONT,
-                ..canvas::Text::default()
-            });
-            context_menu_frame.fill_text(canvas::Text {
-                content: "Delete".to_string(),
-                position: Point::new(menu_bounds.x + 34.0, menu_bounds.center_y()),
-                size: iced::Pixels(style::text_size::BODY),
-                color: palette.background.strong.text,
-                align_y: Alignment::Center.into(),
-                font: style::AZERET_MONO,
-                ..canvas::Text::default()
-            });
+            let mut rows = Vec::new();
+            if menu.index.is_some() {
+                rows.push(("Delete", menu_bounds.y + 17.0));
+            }
+            rows.push((
+                "Clear all drawings",
+                menu_bounds.y + rows.len() as f32 * 34.0 + 17.0,
+            ));
+            let hovered = cursor.position_in(bounds);
+            for (index, (label, y)) in rows.into_iter().enumerate() {
+                let row_bounds = Rectangle {
+                    x: menu_bounds.x + 2.0,
+                    y: menu_bounds.y + index as f32 * 34.0 + 2.0,
+                    width: menu_bounds.width - 4.0,
+                    height: 30.0,
+                };
+                if hovered.is_some_and(|position| row_bounds.contains(position)) {
+                    context_menu_frame.fill_rectangle(
+                        row_bounds.position(),
+                        row_bounds.size(),
+                        palette.background.weak.color,
+                    );
+                }
+                context_menu_frame.fill_text(canvas::Text {
+                    content: char::from_u32(style::LucideIcon::Trash2 as u32)
+                        .expect("Lucide icon codepoints must be valid")
+                        .to_string(),
+                    position: Point::new(menu_bounds.x + 10.0, y),
+                    size: iced::Pixels(13.0),
+                    color: palette.background.base.text,
+                    align_y: Alignment::Center.into(),
+                    font: style::LUCIDE_FONT,
+                    ..canvas::Text::default()
+                });
+                context_menu_frame.fill_text(canvas::Text {
+                    content: label.to_string(),
+                    position: Point::new(menu_bounds.x + 34.0, y),
+                    size: iced::Pixels(style::text_size::BODY),
+                    color: palette.background.base.text,
+                    align_y: Alignment::Center.into(),
+                    font: style::AZERET_MONO,
+                    ..canvas::Text::default()
+                });
+            }
         }
         let context_menu = context_menu_frame.into_geometry();
 
@@ -2009,6 +2165,15 @@ impl canvas::Program<Message> for KlineChart {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
+        if self.dragged_trading_line.get().is_some() {
+            return mouse::Interaction::Grabbing;
+        }
+        if cursor
+            .position_in(bounds)
+            .is_some_and(|position| self.trading_line_hit(position, bounds).is_some())
+        {
+            return mouse::Interaction::ResizingVertically;
+        }
         match interaction {
             Interaction::Panning { .. } => mouse::Interaction::Grabbing,
             Interaction::Zoomin { .. } => mouse::Interaction::ZoomIn,
@@ -2271,14 +2436,154 @@ fn draw_trading_overlay(
     frame: &mut canvas::Frame,
     chart: &ViewState,
     palette: &Extended,
+    data_source: &PlotData<KlineDataPoint>,
+    footprint: bool,
     overlay: &crate::trading::PositionOverlay,
 ) {
     let region = chart.visible_region(frame.size());
     let line_width = 1.0 / chart.scaling;
-    let draw_level = |frame: &mut canvas::Frame, label: &str, price: f64, color: Color| {
-        if !price.is_finite() || price <= 0.0 {
-            return;
+    let mut drawn_trades = HashSet::new();
+    for trade in &overlay.trade_history {
+        let kline = match data_source {
+            PlotData::TimeBased(series) => series
+                .datapoints
+                .range(..=UnixMs(trade.time_ms))
+                .next_back()
+                .map(|(_, point)| &point.kline),
+            PlotData::TickBased(series) => series
+                .datapoints
+                .iter()
+                .min_by_key(|point| point.kline.time.as_u64().abs_diff(trade.time_ms))
+                .map(|point| &point.kline),
+        };
+        let Some(kline) = kline else {
+            continue;
+        };
+        let buy = trade.side == crate::trading::Side::Buy;
+        if !drawn_trades.insert((kline.time.as_u64(), buy)) {
+            continue;
         }
+        let marker_price = if footprint {
+            if buy {
+                kline.open.min(kline.close)
+            } else {
+                kline.open.max(kline.close)
+            }
+        } else if buy {
+            kline.low
+        } else {
+            kline.high
+        };
+        let x = chart.interval_to_x(kline.time.as_u64());
+        let y = chart.price_to_y(marker_price);
+        if x >= region.x
+            && x <= region.x + region.width
+            && y >= region.y
+            && y <= region.y + region.height
+        {
+            crate::chart::indicator::kline::flow_metrics::draw_direction_arrow(
+                frame,
+                x,
+                y,
+                buy,
+                5.0,
+                chart.scaling,
+                if buy {
+                    palette.success.base.color
+                } else {
+                    palette.danger.base.color
+                },
+            );
+        }
+    }
+    let mut levels = Vec::new();
+    let mut push_level = |label: String, price: f64, color: Color| {
+        if price.is_finite() && price > 0.0 {
+            levels.push((
+                label,
+                price,
+                color,
+                chart.price_to_y(Price::from_f64(price)),
+            ));
+        }
+    };
+    if let Some(price) = overlay.entry_price {
+        push_level(
+            format!(
+                "{} | PnL {:.2} USDT",
+                if overlay.is_long { "LONG" } else { "SHORT" },
+                overlay.unrealized_pnl
+            ),
+            price,
+            palette.primary.base.color,
+        );
+    }
+    if let Some(price) = overlay.liquidation_price {
+        push_level(
+            format!(
+                "{} {price:.2}",
+                if overlay.liquidation_estimated {
+                    "LIQ EST"
+                } else {
+                    "LIQ"
+                }
+            ),
+            price,
+            palette.danger.weak.color,
+        );
+    }
+    if let Some(price) = overlay.stop_loss {
+        push_level(
+            format!(
+                "SL {price:.2} | PnL {:.2} USDT",
+                overlay.stop_loss_pnl.unwrap_or_default()
+            ),
+            price,
+            palette.danger.base.color,
+        );
+    }
+    if let Some(price) = overlay.take_profit {
+        push_level(
+            format!(
+                "TP {price:.2} | PnL {:.2} USDT",
+                overlay.take_profit_pnl.unwrap_or_default()
+            ),
+            price,
+            palette.success.base.color,
+        );
+    }
+    for order in &overlay.orders {
+        push_level(
+            format!("{} {:.2}", order.label, order.price),
+            order.price,
+            if order.side == crate::trading::Side::Buy {
+                palette.success.base.color
+            } else {
+                palette.danger.base.color
+            },
+        );
+    }
+    let label_half_height = 7.0 / chart.scaling;
+    levels.retain(|level| {
+        trading_level_is_visible(
+            level.3,
+            region.y,
+            region.y + region.height,
+            label_half_height,
+        )
+    });
+    levels.sort_by(|a, b| a.3.total_cmp(&b.3));
+    let label_offset = 3.0 / chart.scaling;
+    let label_positions = spread_trading_label_positions(
+        &levels
+            .iter()
+            .map(|level| level.3 - label_offset)
+            .collect::<Vec<_>>(),
+        region.y + label_half_height,
+        region.y + region.height - label_half_height,
+        14.0 / chart.scaling,
+    );
+    for ((label, price, color, _), label_y) in levels.into_iter().zip(label_positions) {
         let y = chart.price_to_y(Price::from_f64(price));
         frame.stroke(
             &Path::line(
@@ -2291,41 +2596,45 @@ fn draw_trading_overlay(
         );
         draw_cluster_text(
             frame,
-            &format!("{label} {price}"),
-            Point::new(region.x + 4.0 / chart.scaling, y),
+            &label,
+            Point::new(region.x + 4.0 / chart.scaling, label_y),
             11.0 / chart.scaling,
             color,
             Alignment::Start,
             Alignment::End,
         );
-    };
+    }
+}
 
-    draw_level(
-        frame,
-        &format!(
-            "{} {} PnL {:.2}",
-            overlay.symbol,
-            if overlay.is_long { "LONG" } else { "SHORT" },
-            overlay.unrealized_pnl
-        ),
-        overlay.entry_price,
-        palette.primary.base.color,
-    );
-    draw_level(
-        frame,
-        "BE",
-        overlay.break_even_price,
-        palette.background.strong.text,
-    );
-    if let Some(price) = overlay.liquidation_price {
-        draw_level(frame, "LIQ", price, palette.danger.strong.color);
+fn trading_level_is_visible(y: f32, top: f32, bottom: f32, padding: f32) -> bool {
+    y >= top + padding && y <= bottom - padding
+}
+
+fn spread_trading_label_positions(ys: &[f32], top: f32, bottom: f32, gap: f32) -> Vec<f32> {
+    let mut result = Vec::with_capacity(ys.len());
+    for &y in ys {
+        result.push(
+            result
+                .last()
+                .map_or(y.max(top), |previous| y.max(*previous + gap)),
+        );
     }
-    if let Some(price) = overlay.stop_loss {
-        draw_level(frame, "SL", price, palette.danger.base.color);
+    if let Some(last) = result.last().copied()
+        && last > bottom
+    {
+        let shift = last - bottom;
+        result.iter_mut().for_each(|y| *y -= shift);
     }
-    if let Some(price) = overlay.take_profit {
-        draw_level(frame, "TP", price, palette.success.base.color);
+    for index in (0..result.len().saturating_sub(1)).rev() {
+        result[index] = result[index].min(result[index + 1] - gap);
     }
+    if let Some(first) = result.first().copied()
+        && first < top
+    {
+        let shift = top - first;
+        result.iter_mut().for_each(|y| *y += shift);
+    }
+    result
 }
 
 fn draw_footprint_orderbook(
@@ -3867,19 +4176,24 @@ mod tests {
     }
 
     #[test]
-    fn drawing_context_menu_only_deletes_from_its_menu_item() {
+    fn drawing_context_menu_separates_delete_and_clear_all() {
         let bounds = Rectangle::new(Point::ORIGIN, Size::new(300.0, 200.0));
-        let menu = Point::new(250.0, 190.0);
+        let menu = DrawingContextMenu {
+            index: Some(0),
+            position: Point::new(250.0, 190.0),
+        };
 
-        assert!(drawing_context_menu_delete_hit(
+        assert!(drawing_context_menu_item_hit(
             menu,
             bounds,
-            Point::new(250.0, 180.0)
+            Point::new(200.0, 150.0),
+            DrawingMenuItem::Delete,
         ));
-        assert!(!drawing_context_menu_delete_hit(
+        assert!(drawing_context_menu_item_hit(
             menu,
             bounds,
-            Point::new(100.0, 100.0)
+            Point::new(200.0, 180.0),
+            DrawingMenuItem::ClearAll,
         ));
     }
 
@@ -3888,5 +4202,19 @@ mod tests {
         let bounds = Rectangle::new(Point::new(80.0, 40.0), Size::new(300.0, 200.0));
 
         assert_eq!(canvas_local_center(bounds), Point::new(150.0, 100.0));
+    }
+
+    #[test]
+    fn trading_labels_keep_a_readable_gap() {
+        let labels = spread_trading_label_positions(&[50.0, 51.0, 52.0], 0.0, 100.0, 14.0);
+        assert!(labels.windows(2).all(|pair| pair[1] - pair[0] >= 14.0));
+        assert!(labels[0] >= 0.0 && labels[2] <= 100.0);
+    }
+
+    #[test]
+    fn trading_labels_ignore_levels_outside_the_chart() {
+        assert!(!trading_level_is_visible(-1.0, 0.0, 100.0, 7.0));
+        assert!(trading_level_is_visible(50.0, 0.0, 100.0, 7.0));
+        assert!(!trading_level_is_visible(101.0, 0.0, 100.0, 7.0));
     }
 }

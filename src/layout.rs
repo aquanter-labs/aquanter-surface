@@ -33,7 +33,6 @@ pub struct SavedState {
     pub proxy_cfg: Option<exchange::proxy::Proxy>,
     pub ai_cfg: data::config::ai::AiConfig,
     pub alert_cfg: data::config::alerts::AlertConfig,
-    pub trading_cfg: data::config::trading::TradingConfig,
 }
 
 impl SavedState {
@@ -65,7 +64,6 @@ impl Default for SavedState {
             proxy_cfg: None,
             ai_cfg: data::config::ai::AiConfig::default(),
             alert_cfg: data::config::alerts::AlertConfig::default(),
-            trading_cfg: data::config::trading::TradingConfig::default(),
         }
     }
 }
@@ -121,8 +119,13 @@ impl From<&pane::State> for data::Pane {
             pane::Content::Starter => data::Pane::Starter {
                 link_group: pane.link_group,
             },
-            pane::Content::AiAnalysis => data::Pane::AiAnalysis,
-            pane::Content::Trading => data::Pane::Trading,
+            pane::Content::AiAnalysis => data::Pane::AiAnalysisPanel {
+                link_group: pane.link_group,
+            },
+            pane::Content::Trading(trader) => data::Pane::TradingPanel {
+                config: trader.config().clone(),
+                link_group: pane.link_group,
+            },
             pane::Content::Heatmap {
                 chart,
                 indicators,
@@ -193,6 +196,13 @@ impl From<&pane::State> for data::Pane {
 }
 
 pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
+    configuration_with_trading(pane, None)
+}
+
+fn configuration_with_trading(
+    pane: data::Pane,
+    legacy_trading: Option<&data::config::trading::TradingConfig>,
+) -> Configuration<pane::State> {
     match pane {
         data::Pane::Split { axis, ratio, a, b } => Configuration::Split {
             axis: match axis {
@@ -200,8 +210,8 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
                 Axis::Vertical => pane_grid::Axis::Vertical,
             },
             ratio,
-            a: Box::new(configuration(*a)),
-            b: Box::new(configuration(*b)),
+            a: Box::new(configuration_with_trading(*a, legacy_trading)),
+            b: Box::new(configuration_with_trading(*b, legacy_trading)),
         },
         data::Pane::Starter { link_group } => Configuration::Pane(pane::State::from_config(
             pane::Content::Starter,
@@ -215,12 +225,41 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
             data::layout::pane::Settings::default(),
             None,
         )),
+        data::Pane::AiAnalysisPanel { link_group } => {
+            Configuration::Pane(pane::State::from_config(
+                pane::Content::AiAnalysis,
+                vec![],
+                data::layout::pane::Settings::default(),
+                link_group,
+            ))
+        }
         data::Pane::Trading => Configuration::Pane(pane::State::from_config(
-            pane::Content::Trading,
+            pane::Content::Trading(Box::new(crate::trading::Trader::new(
+                {
+                    let mut config = legacy_trading.cloned().unwrap_or_default();
+                    config.account_id = Uuid::new_v4().to_string();
+                    if let Err(error) = data::config::trading::migrate_legacy_credentials(
+                        &config.account_id,
+                        config.testnet,
+                    ) {
+                        log::warn!("{error}");
+                    }
+                    config
+                },
+                None,
+            ))),
             vec![],
             data::layout::pane::Settings::default(),
             None,
         )),
+        data::Pane::TradingPanel { config, link_group } => {
+            Configuration::Pane(pane::State::from_config(
+                pane::Content::Trading(Box::new(crate::trading::Trader::new(config, None))),
+                vec![],
+                data::layout::pane::Settings::default(),
+                link_group,
+            ))
+        }
         data::Pane::ShaderHeatmap {
             stream_type,
             settings,
@@ -339,14 +378,18 @@ pub fn load_saved_state() -> SavedState {
                 let mut popout_windows = Vec::new();
 
                 for (pane, window_spec) in &layout.dashboard.popout {
-                    let configuration = configuration(pane.clone());
+                    let configuration =
+                        configuration_with_trading(pane.clone(), Some(&state.trading_cfg));
                     popout_windows.push((configuration, *window_spec));
                 }
 
                 let layout_id = Uuid::new_v4();
 
                 let dashboard = Dashboard::from_config(
-                    configuration(layout.dashboard.pane.clone()),
+                    configuration_with_trading(
+                        layout.dashboard.pane.clone(),
+                        Some(&state.trading_cfg),
+                    ),
                     popout_windows,
                     layout_id,
                 );
@@ -412,7 +455,6 @@ pub fn load_saved_state() -> SavedState {
                 proxy_cfg,
                 ai_cfg: state.ai_cfg,
                 alert_cfg: state.alert_cfg,
-                trading_cfg: state.trading_cfg,
             }
         }
         Err(e) => {

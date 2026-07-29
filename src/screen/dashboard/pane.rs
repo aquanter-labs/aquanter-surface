@@ -55,7 +55,8 @@ pub enum Effect {
     SwitchTickersInGroup(TickerInfo),
     FocusWidget(iced::widget::Id),
     Ai(crate::ai::Message),
-    Trading(crate::trading::Message),
+    Trading(uuid::Uuid, crate::trading::Message),
+    TradingLevelDragged(uuid::Uuid, crate::trading::TradingLineId, f64, bool),
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -106,7 +107,6 @@ pub enum Event {
     ToggleKlineColorPicker(KlineColorPicker),
     BeginKlineIntervalSelection(crate::chart::kline::IntervalSelection),
     DrawingToolSelected(Option<crate::chart::DrawingTool>),
-    ClearDrawings,
     StreamModifierChanged(modal::stream::Message),
     ComparisonChartInteraction(super::chart::comparison::Message),
     HeatmapShaderInteraction(crate::widget::chart::heatmap::Message),
@@ -431,7 +431,13 @@ impl State {
                     (content, streams)
                 }
                 ContentKind::AiAnalysis => (Content::AiAnalysis, vec![]),
-                ContentKind::Trading => (Content::Trading, vec![]),
+                ContentKind::Trading => (
+                    Content::Trading(Box::new(crate::trading::Trader::new(
+                        data::config::trading::TradingConfig::default(),
+                        None,
+                    ))),
+                    vec![],
+                ),
                 ContentKind::Starter => unreachable!(),
             }
         };
@@ -557,7 +563,6 @@ impl State {
         timezone: UserTimezone,
         tickers_table: &'a TickersTable,
         ai_agent: &'a crate::ai::Agent,
-        trader: &'a crate::trading::Trader,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
         let mut top_left_buttons = match &self.content {
             Content::Starter => row![],
@@ -567,7 +572,12 @@ impl State {
                 }),
                 text("AI Analysis")
             ],
-            Content::Trading => row![text("Trading")],
+            Content::Trading(_) => row![
+                link_group_button(id, self.link_group, |id| {
+                    Message::PaneEvent(id, Event::ShowModal(Modal::LinkGroup))
+                }),
+                text("Trading")
+            ],
             _ => row![link_group_button(id, self.link_group, |id| {
                 Message::PaneEvent(id, Event::ShowModal(Modal::LinkGroup))
             })],
@@ -583,7 +593,7 @@ impl State {
             let mut label = {
                 let symbol = base_ti.ticker.display_symbol_and_type().0;
                 match base_ti.ticker.market_type() {
-                    MarketKind::Spot => symbol,
+                    MarketKind::Spot => symbol + " SPOT",
                     MarketKind::LinearPerps | MarketKind::InversePerps => symbol + " PERP",
                 }
             };
@@ -618,7 +628,7 @@ impl State {
             top_left_buttons = top_left_buttons.push(tickers_list_btn);
         } else if !matches!(
             self.content,
-            Content::Starter | Content::AiAnalysis | Content::Trading
+            Content::Starter | Content::AiAnalysis | Content::Trading(_)
         ) && !self.has_stream()
         {
             let content = row![
@@ -765,16 +775,20 @@ impl State {
                     tickers_table,
                 )
             }
-            Content::Trading => {
+            Content::Trading(trader) => {
                 let base = trader
-                    .view()
+                    .view(timezone)
                     .map(move |message| Message::PaneEvent(id, Event::Trading(message)));
                 self.compose_stack_view(
                     base,
                     id,
                     None,
                     compact_controls,
-                    || column![].into(),
+                    || {
+                        trader
+                            .settings_view()
+                            .map(move |message| Message::PaneEvent(id, Event::Trading(message)))
+                    },
                     None,
                     tickers_table,
                 )
@@ -1292,6 +1306,13 @@ impl State {
                     }
                 }
             }
+            Event::ChartInteraction(super::chart::Message::TradingLevelDragged(
+                id,
+                price,
+                finished,
+            )) => {
+                return Some(Effect::TradingLevelDragged(self.id, id, price, finished));
+            }
             Event::ChartInteraction(msg) => match &mut self.content {
                 Content::Heatmap { chart: Some(c), .. } => {
                     super::chart::update(c, &msg);
@@ -1686,17 +1707,8 @@ impl State {
                 }
                 self.modal = None;
             }
-            Event::ClearDrawings => {
-                if let Content::Kline {
-                    chart: Some(chart), ..
-                } = &mut self.content
-                {
-                    chart.clear_drawings();
-                }
-                self.modal = None;
-            }
             Event::Ai(message) => return Some(Effect::Ai(message)),
-            Event::Trading(message) => return Some(Effect::Trading(message)),
+            Event::Trading(message) => return Some(Effect::Trading(self.id, message)),
         }
         None
     }
@@ -1773,13 +1785,6 @@ impl State {
                 Some("Drawing tools"),
                 tooltip_pos,
                 modal_btn_style(Modal::DrawingTools),
-            ));
-            buttons = buttons.push(button_with_tooltip(
-                style::lucide_icon_text(style::LucideIcon::Trash2, 13),
-                Message::PaneEvent(pane, Event::ClearDrawings),
-                Some("Clear drawings and AI levels"),
-                tooltip_pos,
-                control_btn_style(false),
             ));
         }
 
@@ -1972,7 +1977,7 @@ impl State {
             Content::Ladder(panel) => panel
                 .as_mut()
                 .and_then(|p| p.invalidate(Some(now)).map(Action::Panel)),
-            Content::Starter | Content::AiAnalysis | Content::Trading => None,
+            Content::Starter | Content::AiAnalysis | Content::Trading(_) => None,
             Content::Comparison(chart) => chart
                 .as_mut()
                 .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
@@ -2001,7 +2006,7 @@ impl State {
             }
             Content::Ladder(_) | Content::TimeAndSales(_) => Some(100),
             Content::ShaderHeatmap { .. } => None,
-            Content::Starter | Content::AiAnalysis | Content::Trading => None,
+            Content::Starter | Content::AiAnalysis | Content::Trading(_) => None,
         }
     }
 
@@ -2047,6 +2052,20 @@ impl State {
         self.id
     }
 
+    pub fn trader(&self) -> Option<&crate::trading::Trader> {
+        match &self.content {
+            Content::Trading(trader) => Some(trader),
+            _ => None,
+        }
+    }
+
+    pub fn trader_mut(&mut self) -> Option<&mut crate::trading::Trader> {
+        match &mut self.content {
+            Content::Trading(trader) => Some(trader),
+            _ => None,
+        }
+    }
+
     pub fn apply_synced_settings(
         &mut self,
         studies: &Option<data::chart::Study>,
@@ -2086,7 +2105,7 @@ pub enum Content {
     #[default]
     Starter,
     AiAnalysis,
-    Trading,
+    Trading(Box<crate::trading::Trader>),
     Heatmap {
         chart: Option<HeatmapChart>,
         indicators: Vec<HeatmapIndicator>,
@@ -2276,7 +2295,10 @@ impl Content {
         match kind {
             ContentKind::Starter => Content::Starter,
             ContentKind::AiAnalysis => Content::AiAnalysis,
-            ContentKind::Trading => Content::Trading,
+            ContentKind::Trading => Content::Trading(Box::new(crate::trading::Trader::new(
+                data::config::trading::TradingConfig::default(),
+                None,
+            ))),
             ContentKind::CandlestickChart => Content::Kline {
                 chart: None,
                 indicators: vec![KlineIndicator::Volume],
@@ -2328,7 +2350,7 @@ impl Content {
             Content::TimeAndSales(panel) => Some(panel.as_ref()?.last_update()),
             Content::Ladder(panel) => Some(panel.as_ref()?.last_update()),
             Content::Comparison(chart) => Some(chart.as_ref()?.last_update()),
-            Content::Starter | Content::AiAnalysis | Content::Trading => None,
+            Content::Starter | Content::AiAnalysis | Content::Trading(_) => None,
             Content::ShaderHeatmap { chart, .. } => Some(chart.as_ref()?.last_tick?),
         }
     }
@@ -2411,7 +2433,7 @@ impl Content {
             | Content::Ladder(_)
             | Content::Starter
             | Content::AiAnalysis
-            | Content::Trading
+            | Content::Trading(_)
             | Content::Comparison(_)
             | Content::ShaderHeatmap { .. } => {
                 panic!("indicator reorder on {} pane", self)
@@ -2460,7 +2482,7 @@ impl Content {
             | Content::Ladder(_)
             | Content::Starter
             | Content::AiAnalysis
-            | Content::Trading
+            | Content::Trading(_)
             | Content::Comparison(_) => None,
         }
     }
@@ -2531,7 +2553,7 @@ impl Content {
             Content::Comparison(_) => ContentKind::ComparisonChart,
             Content::Starter => ContentKind::Starter,
             Content::AiAnalysis => ContentKind::AiAnalysis,
-            Content::Trading => ContentKind::Trading,
+            Content::Trading(_) => ContentKind::Trading,
             Content::ShaderHeatmap { .. } => ContentKind::ShaderHeatmap,
         }
     }
@@ -2552,7 +2574,7 @@ impl Content {
             Content::Comparison(chart) => chart.is_some(),
             Content::Starter => true,
             Content::AiAnalysis => true,
-            Content::Trading => true,
+            Content::Trading(_) => true,
         }
     }
 
@@ -2581,7 +2603,7 @@ impl PartialEq for Content {
             (self, other),
             (Content::Starter, Content::Starter)
                 | (Content::AiAnalysis, Content::AiAnalysis)
-                | (Content::Trading, Content::Trading)
+                | (Content::Trading(_), Content::Trading(_))
                 | (Content::Heatmap { .. }, Content::Heatmap { .. })
                 | (Content::Kline { .. }, Content::Kline { .. })
                 | (Content::TimeAndSales(_), Content::TimeAndSales(_))

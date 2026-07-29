@@ -568,7 +568,69 @@ struct AnalysisHistoryRecord {
     snapshot_bar_time_ms: Option<u64>,
     #[serde(default)]
     raw_output: String,
+    #[serde(default)]
+    outcome: SignalOutcome,
+    #[serde(default)]
+    entry_triggered_at_ms: Option<u64>,
     analysis: AnalysisResult,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+enum SignalOutcome {
+    #[default]
+    Unscored,
+    Pending,
+    Win,
+    Loss,
+    Ambiguous,
+    NoEntry,
+}
+
+impl fmt::Display for SignalOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Unscored => "Unscored",
+            Self::Pending => "Pending",
+            Self::Win => "Win",
+            Self::Loss => "Loss",
+            Self::Ambiguous => "Ambiguous",
+            Self::NoEntry => "No entry",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HistoryPeriod {
+    #[default]
+    All,
+    Day,
+    Week,
+    Month,
+}
+
+impl HistoryPeriod {
+    const ALL: [Self; 4] = [Self::All, Self::Day, Self::Week, Self::Month];
+
+    fn cutoff_ms(self, now_ms: i64) -> i64 {
+        let duration = match self {
+            Self::All => return i64::MIN,
+            Self::Day => 24 * 60 * 60 * 1_000,
+            Self::Week => 7 * 24 * 60 * 60 * 1_000,
+            Self::Month => 30 * 24 * 60 * 60 * 1_000,
+        };
+        now_ms.saturating_sub(duration)
+    }
+}
+
+impl fmt::Display for HistoryPeriod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::All => "All time",
+            Self::Day => "24 hours",
+            Self::Week => "7 days",
+            Self::Month => "30 days",
+        })
+    }
 }
 
 fn sum_options(values: impl Iterator<Item = Option<f64>>) -> Option<f64> {
@@ -682,6 +744,10 @@ pub enum Message {
     SelectHistory(usize),
     CloseHistoryDetail,
     ClearHistory,
+    HistoryPeriodChanged(HistoryPeriod),
+    HistorySymbolChanged(String),
+    HistoryBasisChanged(String),
+    HistoryModelChanged(String),
     TogglePromptReview,
     ToggleRawJson,
     AnalysisCompleted(Result<String, String>),
@@ -707,6 +773,10 @@ pub struct Agent {
     history: Vec<AnalysisHistoryRecord>,
     show_history: bool,
     selected_history: Option<usize>,
+    history_period: HistoryPeriod,
+    history_symbol: String,
+    history_basis: String,
+    history_model: String,
     show_prompt_review: bool,
     show_raw_json: bool,
     status: String,
@@ -745,6 +815,10 @@ impl Agent {
             history: load_history(),
             show_history: false,
             selected_history: None,
+            history_period: HistoryPeriod::All,
+            history_symbol: "All symbols".to_string(),
+            history_basis: "All timeframes".to_string(),
+            history_model: "All models".to_string(),
             show_prompt_review: false,
             show_raw_json: false,
             status: "Select a Kline or Footprint pane, then refresh the snapshot.".to_string(),
@@ -1077,6 +1151,10 @@ impl Agent {
                 }
                 Err(error) => self.status = error,
             },
+            Message::HistoryPeriodChanged(value) => self.history_period = value,
+            Message::HistorySymbolChanged(value) => self.history_symbol = value,
+            Message::HistoryBasisChanged(value) => self.history_basis = value,
+            Message::HistoryModelChanged(value) => self.history_model = value,
         }
         Task::none()
     }
@@ -1113,6 +1191,8 @@ impl Agent {
             source_pane_id: self.analysis_source.map(|source| source.to_string()),
             snapshot_bar_time_ms: primary.bars.last().map(|bar| bar.time_ms),
             raw_output: self.result.clone(),
+            outcome: SignalOutcome::Unscored,
+            entry_triggered_at_ms: None,
             analysis,
         });
         if self.history.len() > MAX_HISTORY_RECORDS {
@@ -1129,6 +1209,11 @@ impl Agent {
         };
         match snapshot {
             Ok(snapshot) => {
+                if settle_history(&mut self.history, &snapshot.primary)
+                    && let Err(error) = save_history(&self.history)
+                {
+                    log::warn!("Failed to save AI signal outcomes: {error}");
+                }
                 self.prompt = build_prompt(self.mode, &snapshot);
                 self.status = format!(
                     "{} {} | {} bars + {} contexts | quality {:.0}%",
@@ -1368,7 +1453,9 @@ impl Agent {
             let modal = container(
                 column![
                     row![
-                        text("Prompt review").size(crate::style::text_size::TITLE),
+                        text("Prompt review")
+                            .size(crate::style::text_size::TITLE)
+                            .width(Length::Fill),
                         icon_button(
                             crate::style::LucideIcon::X,
                             "Close",
@@ -1402,7 +1489,9 @@ impl Agent {
             let modal = container(
                 column![
                     row![
-                        text("Raw JSON").size(crate::style::text_size::TITLE),
+                        text("Raw JSON")
+                            .size(crate::style::text_size::TITLE)
+                            .width(Length::Fill),
                         icon_button(
                             crate::style::LucideIcon::X,
                             "Close",
@@ -1603,6 +1692,12 @@ impl Agent {
                     data::config::timezone::TimeLabelKind::Custom("%Y-%m-%d %H:%M:%S"),
                 )
                 .unwrap_or_else(|| "Unknown time".to_string());
+            let snapshot_at = timezone
+                .format_with_kind(
+                    record.snapshot_generated_at_ms,
+                    data::config::timezone::TimeLabelKind::Custom("%Y-%m-%d %H:%M:%S"),
+                )
+                .unwrap_or_else(|| "Unknown time".to_string());
             let raw_output = if record.raw_output.is_empty() {
                 "Raw output was not stored for this older record."
             } else {
@@ -1634,6 +1729,11 @@ impl Agent {
                         record.data_quality * 100.0,
                         record.latency_ms
                     )),
+                    text(format!(
+                        "Snapshot {} | {} | {} contexts",
+                        record.snapshot_id, snapshot_at, record.context_count
+                    )),
+                    text(format!("Signal outcome: {}", record.outcome)),
                     Self::analysis_details(
                         &record.analysis,
                         "Historical result".to_string(),
@@ -1648,8 +1748,146 @@ impl Agent {
             .padding(iced::padding::right(12))
             .into();
         }
+        let options = |all: &str, values: Vec<&str>| {
+            let mut values = values.into_iter().map(str::to_string).collect::<Vec<_>>();
+            values.sort();
+            values.dedup();
+            values.insert(0, all.to_string());
+            values
+        };
+        let symbols = options(
+            "All symbols",
+            self.history
+                .iter()
+                .map(|record| record.symbol.as_str())
+                .collect(),
+        );
+        let bases = options(
+            "All timeframes",
+            self.history
+                .iter()
+                .map(|record| record.basis.as_str())
+                .collect(),
+        );
+        let models = options(
+            "All models",
+            self.history
+                .iter()
+                .map(|record| record.model.as_str())
+                .collect(),
+        );
+        let cutoff = self
+            .history_period
+            .cutoff_ms(chrono::Utc::now().timestamp_millis());
+        let filtered = (0..self.history.len())
+            .filter(|index| {
+                let record = &self.history[*index];
+                record.analyzed_at_ms >= cutoff
+                    && (self.history_symbol == "All symbols"
+                        || record.symbol == self.history_symbol)
+                    && (self.history_basis == "All timeframes"
+                        || record.basis == self.history_basis)
+                    && (self.history_model == "All models" || record.model == self.history_model)
+            })
+            .collect::<Vec<_>>();
+        let wins = filtered
+            .iter()
+            .filter(|index| self.history[**index].outcome == SignalOutcome::Win)
+            .count();
+        let losses = filtered
+            .iter()
+            .filter(|index| self.history[**index].outcome == SignalOutcome::Loss)
+            .count();
+        let pending = filtered
+            .iter()
+            .filter(|index| self.history[**index].outcome == SignalOutcome::Pending)
+            .count();
+        let ambiguous = filtered
+            .iter()
+            .filter(|index| self.history[**index].outcome == SignalOutcome::Ambiguous)
+            .count();
+        let no_entry = filtered
+            .iter()
+            .filter(|index| self.history[**index].outcome == SignalOutcome::NoEntry)
+            .count();
+        let directional = filtered
+            .iter()
+            .filter(|index| {
+                matches!(
+                    self.history[**index].analysis.action,
+                    TradeAction::Long | TradeAction::Short
+                )
+            })
+            .count();
+        let resolved = wins + losses;
+        let accuracy = (resolved > 0).then(|| wins as f64 * 100.0 / resolved as f64);
+        let filters = column![
+            row![
+                column![
+                    text("Time").size(crate::style::text_size::SMALL),
+                    pick_list(
+                        HistoryPeriod::ALL,
+                        Some(self.history_period),
+                        Message::HistoryPeriodChanged,
+                    )
+                    .width(Length::Fill),
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+                column![
+                    text("Symbol").size(crate::style::text_size::SMALL),
+                    pick_list(
+                        symbols,
+                        Some(self.history_symbol.clone()),
+                        Message::HistorySymbolChanged,
+                    )
+                    .width(Length::Fill),
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+            ]
+            .spacing(6),
+            row![
+                column![
+                    text("Timeframe").size(crate::style::text_size::SMALL),
+                    pick_list(
+                        bases,
+                        Some(self.history_basis.clone()),
+                        Message::HistoryBasisChanged,
+                    )
+                    .width(Length::Fill),
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+                column![
+                    text("Model").size(crate::style::text_size::SMALL),
+                    pick_list(
+                        models,
+                        Some(self.history_model.clone()),
+                        Message::HistoryModelChanged,
+                    )
+                    .width(Length::Fill),
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+            ]
+            .spacing(6),
+            text(format!(
+                "Accuracy {} | {}W / {}L | {} pending | {} directional signals",
+                accuracy.map_or_else(|| "--".to_string(), |value| format!("{value:.1}%")),
+                wins,
+                losses,
+                pending,
+                directional
+            )),
+            text(format!("{ambiguous} ambiguous | {no_entry} no entry"))
+                .size(crate::style::text_size::SMALL),
+            rule::horizontal(1),
+        ]
+        .spacing(6);
         let records =
-            (0..self.history.len())
+            filtered
+                .into_iter()
                 .rev()
                 .take(100)
                 .fold(column![].spacing(8), |records, index| {
@@ -1685,19 +1923,14 @@ impl Agent {
                             ]
                             .align_y(Alignment::Center)
                             .spacing(12),
-                            text(format!(
-                                "{} | snapshot {} | quality {:.0}% | {} contexts",
-                                record.model,
-                                record.snapshot_id,
-                                record.data_quality * 100.0,
-                                record.context_count
-                            )),
                             rule::horizontal(1),
                         ]
                         .spacing(4),
                     )
                 });
-        container(records).padding(iced::padding::right(12)).into()
+        container(column![filters, records].spacing(8))
+            .padding(iced::padding::right(12))
+            .into()
     }
 }
 
@@ -1783,16 +2016,49 @@ struct ProviderRequest {
 }
 
 async fn call_provider(request: ProviderRequest) -> Result<String, String> {
+    let mode = request.mode;
+    let content = call_provider_raw(request.clone()).await?;
+    match normalize_analysis_for_mode(&content, mode) {
+        Ok(result) => Ok(result),
+        Err(first_error) => {
+            log::warn!(
+                "AI structured response validation failed: {first_error}; raw={}",
+                truncate(&content, 2_000)
+            );
+            let repair = ProviderRequest {
+                system_prompt: format!(
+                    "{}\n\nRepair task: Correct only the JSON syntax, field types, and required schema. Do not invent market facts, prices, or recommendations. Return exactly one JSON object and no prose.",
+                    system_prompt(mode)
+                ),
+                user_prompt: format!(
+                    "Validation error: {first_error}\n\nOriginal model response:\n{}",
+                    truncate(&content, 16_000)
+                ),
+                ..request
+            };
+            let repaired = call_provider_raw(repair).await.map_err(|error| {
+                format!("Malformed AI result ({first_error}); repair request failed: {error}")
+            })?;
+            normalize_analysis_for_mode(&repaired, mode).map_err(|repair_error| {
+                format!(
+                    "Malformed AI result ({first_error}); repaired result is still invalid: {repair_error}"
+                )
+            })
+        }
+    }
+}
+
+async fn call_provider_raw(request: ProviderRequest) -> Result<String, String> {
     match request.provider {
-        AiProvider::Anthropic => call_anthropic(request).await,
-        AiProvider::Gemini => call_gemini(request).await,
+        AiProvider::Anthropic => call_anthropic_raw(request).await,
+        AiProvider::Gemini => call_gemini_raw(request).await,
         AiProvider::OpenAi
         | AiProvider::OpenRouter
         | AiProvider::DeepSeek
         | AiProvider::XAi
         | AiProvider::Groq
         | AiProvider::Mistral
-        | AiProvider::Custom => call_openai_compatible(request).await,
+        | AiProvider::Custom => call_openai_compatible_raw(request).await,
     }
 }
 
@@ -1897,7 +2163,7 @@ fn openai_request_body(request: &ProviderRequest) -> Value {
     body
 }
 
-async fn call_openai_compatible(request: ProviderRequest) -> Result<String, String> {
+async fn call_openai_compatible_raw(request: ProviderRequest) -> Result<String, String> {
     let endpoint = if request
         .base_url
         .trim_end_matches('/')
@@ -1932,11 +2198,10 @@ async fn call_openai_compatible(request: ProviderRequest) -> Result<String, Stri
     }
     let value: Value =
         serde_json::from_str(&body).map_err(|error| format!("Invalid AI API response: {error}"))?;
-    let content = extract_provider_content(request.provider, &value)?;
-    normalize_analysis_for_mode(content, request.mode)
+    extract_provider_content(request.provider, &value)
 }
 
-async fn call_anthropic(request: ProviderRequest) -> Result<String, String> {
+async fn call_anthropic_raw(request: ProviderRequest) -> Result<String, String> {
     let endpoint = if request
         .base_url
         .trim_end_matches('/')
@@ -1961,11 +2226,10 @@ async fn call_anthropic(request: ProviderRequest) -> Result<String, String> {
         .await
         .map_err(|error| request_error(AiProvider::Anthropic, error, request.timeout_secs))?;
     let value = response_json(response, "Anthropic").await?;
-    let content = extract_provider_content(AiProvider::Anthropic, &value)?;
-    normalize_analysis_for_mode(content, request.mode)
+    extract_provider_content(AiProvider::Anthropic, &value)
 }
 
-async fn call_gemini(request: ProviderRequest) -> Result<String, String> {
+async fn call_gemini_raw(request: ProviderRequest) -> Result<String, String> {
     let endpoint = format!(
         "{}/models/{}:generateContent",
         request.base_url.trim_end_matches('/'),
@@ -1987,8 +2251,7 @@ async fn call_gemini(request: ProviderRequest) -> Result<String, String> {
         .await
         .map_err(|error| request_error(AiProvider::Gemini, error, request.timeout_secs))?;
     let value = response_json(response, "Gemini").await?;
-    let content = extract_provider_content(AiProvider::Gemini, &value)?;
-    normalize_analysis_for_mode(content, request.mode)
+    extract_provider_content(AiProvider::Gemini, &value)
 }
 
 fn request_timeout(timeout_secs: u16) -> Duration {
@@ -2030,32 +2293,55 @@ async fn response_json(response: reqwest::Response, provider: &str) -> Result<Va
     serde_json::from_str(&body).map_err(|error| format!("Invalid {provider} response: {error}"))
 }
 
-fn extract_provider_content<'a>(provider: AiProvider, value: &'a Value) -> Result<&'a str, String> {
-    let pointer = match provider {
-        AiProvider::Anthropic => "/content/0/text",
-        AiProvider::Gemini => "/candidates/0/content/parts/0/text",
+fn extract_provider_content(provider: AiProvider, value: &Value) -> Result<String, String> {
+    let parts: Vec<&Value> = match provider {
+        AiProvider::Anthropic => value
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .collect(),
+        AiProvider::Gemini => value
+            .pointer("/candidates/0/content/parts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .collect(),
         AiProvider::OpenAi
         | AiProvider::OpenRouter
         | AiProvider::DeepSeek
         | AiProvider::XAi
         | AiProvider::Groq
         | AiProvider::Mistral
-        | AiProvider::Custom => "/choices/0/message/content",
+        | AiProvider::Custom => {
+            let content = value.pointer("/choices/0/message/content");
+            if let Some(items) = content.and_then(Value::as_array) {
+                items.iter().collect()
+            } else {
+                return content
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("{provider} response has no text content."));
+            }
+        }
     };
-    value
-        .pointer(pointer)
-        .and_then(Value::as_str)
+    let content = parts
+        .iter()
+        .filter_map(|part| {
+            part.get("text")
+                .and_then(Value::as_str)
+                .or_else(|| part.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    (!content.trim().is_empty())
+        .then_some(content)
         .ok_or_else(|| format!("{provider} response has no text content."))
 }
 
 fn normalize_analysis_for_mode(content: &str, mode: AnalysisMode) -> Result<String, String> {
-    let trimmed = content.trim();
-    let trimmed = trimmed
-        .strip_prefix("```json")
-        .or_else(|| trimmed.strip_prefix("```"))
-        .unwrap_or(trimmed);
-    let trimmed = trimmed.strip_suffix("```").unwrap_or(trimmed).trim();
-    let value: Value = serde_json::from_str(trimmed)
+    let json = extract_json_object(content)?;
+    let value: Value = serde_json::from_str(json)
         .map_err(|error| format!("Model returned invalid JSON: {error}"))?;
     let action = value
         .get("action")
@@ -2117,6 +2403,39 @@ fn normalize_analysis_for_mode(content: &str, mode: AnalysisMode) -> Result<Stri
     serde_json::to_string_pretty(&value).map_err(|error| error.to_string())
 }
 
+fn extract_json_object(content: &str) -> Result<&str, String> {
+    let start = content
+        .find('{')
+        .ok_or_else(|| "Model response contains no JSON object.".to_string())?;
+    let mut depth = 0_u32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, ch) in content[start..].char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Ok(&content[start..start + offset + ch.len_utf8()]);
+                }
+            }
+            _ => {}
+        }
+    }
+    Err("Model response contains a truncated JSON object.".to_string())
+}
+
 #[cfg(test)]
 fn normalize_analysis(content: &str) -> Result<String, String> {
     normalize_analysis_for_mode(content, AnalysisMode::Scalping)
@@ -2134,6 +2453,103 @@ fn snapshot_fingerprint(snapshot: &AnalysisBundle) -> String {
             (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
         });
     format!("{hash:016x}")
+}
+
+fn settle_history(history: &mut [AnalysisHistoryRecord], snapshot: &MarketSnapshot) -> bool {
+    let mut changed = false;
+    for record in history.iter_mut().filter(|record| {
+        record.symbol == snapshot.symbol
+            && record.venue == snapshot.venue
+            && record.basis == snapshot.basis
+            && matches!(
+                record.outcome,
+                SignalOutcome::Unscored | SignalOutcome::Pending
+            )
+    }) {
+        let (outcome, entered_at) = evaluate_signal(record, &snapshot.bars);
+        if outcome != record.outcome || entered_at != record.entry_triggered_at_ms {
+            record.outcome = outcome;
+            record.entry_triggered_at_ms = entered_at;
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn evaluate_signal(
+    record: &AnalysisHistoryRecord,
+    bars: &[MarketBar],
+) -> (SignalOutcome, Option<u64>) {
+    let is_long = match record.analysis.action {
+        TradeAction::Long => true,
+        TradeAction::Short => false,
+        TradeAction::Wait | TradeAction::Avoid => return (SignalOutcome::Unscored, None),
+    };
+    let (Some(stop), Some(target), Some(signal_time)) = (
+        record.analysis.stop_loss,
+        record.analysis.targets.first().copied(),
+        record.snapshot_bar_time_ms,
+    ) else {
+        return (SignalOutcome::Unscored, None);
+    };
+    let Some(entry) = record.latest_price else {
+        return (SignalOutcome::Unscored, None);
+    };
+    let (entry_low, entry_high) = match (
+        record.analysis.entry_zone.low,
+        record.analysis.entry_zone.high,
+    ) {
+        (Some(low), Some(high)) => (low.min(high), low.max(high)),
+        _ => (entry, entry),
+    };
+    let future = bars
+        .iter()
+        .filter(|bar| bar.time_ms > signal_time)
+        .collect::<Vec<_>>();
+    let deadline = signal_time.saturating_add(record.analysis.valid_for_seconds * 1_000);
+    let entered_at = record.entry_triggered_at_ms.or_else(|| {
+        future
+            .iter()
+            .find(|bar| {
+                (record.analysis.valid_for_seconds == 0 || bar.time_ms <= deadline)
+                    && bar.low <= entry_high
+                    && bar.high >= entry_low
+            })
+            .map(|bar| bar.time_ms)
+    });
+    let Some(entered_at) = entered_at else {
+        let outcome = if record.analysis.valid_for_seconds > 0
+            && future.last().is_some_and(|bar| bar.time_ms > deadline)
+        {
+            SignalOutcome::NoEntry
+        } else {
+            SignalOutcome::Pending
+        };
+        return (outcome, None);
+    };
+    let entry_index = future
+        .iter()
+        .position(|bar| bar.time_ms >= entered_at)
+        .unwrap_or(future.len());
+    for bar in &future[entry_index..] {
+        let hit_target = if is_long {
+            bar.high >= target
+        } else {
+            bar.low <= target
+        };
+        let hit_stop = if is_long {
+            bar.low <= stop
+        } else {
+            bar.high >= stop
+        };
+        match (hit_target, hit_stop) {
+            (true, true) => return (SignalOutcome::Ambiguous, Some(entered_at)),
+            (true, false) => return (SignalOutcome::Win, Some(entered_at)),
+            (false, true) => return (SignalOutcome::Loss, Some(entered_at)),
+            (false, false) => {}
+        }
+    }
+    (SignalOutcome::Pending, Some(entered_at))
 }
 
 fn history_json(records: &[AnalysisHistoryRecord]) -> Result<String, String> {
@@ -2504,6 +2920,35 @@ mod tests {
                 content
             );
         }
+
+        let multipart = json!({"choices": [{"message": {"content": [
+            {"type": "text", "text": "{\"action\":"},
+            {"type": "text", "text": "\"WAIT\"}"}
+        ]}}]});
+        assert_eq!(
+            extract_provider_content(AiProvider::OpenAi, &multipart).unwrap(),
+            content
+        );
+    }
+
+    #[test]
+    fn structured_response_extracts_json_from_prose_and_fences() {
+        let response = r#"Result follows:
+```json
+{"action":"WAIT","decision_summary":"No edge","no_trade_reason":"Mixed flow","trigger_conditions":["Break"],"execution_steps":["Wait"]}
+```
+Do not trade yet."#;
+        let normalized = normalize_analysis(response).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&normalized).unwrap()["action"],
+            "WAIT"
+        );
+        assert!(extract_json_object("prefix {\"x\":\"} inside\"} suffix").is_ok());
+        assert!(
+            extract_json_object("{\"x\":1")
+                .unwrap_err()
+                .contains("truncated")
+        );
     }
 
     #[test]
@@ -2577,6 +3022,8 @@ mod tests {
             source_pane_id: None,
             snapshot_bar_time_ms: Some(1),
             raw_output: r#"{"action":"WAIT"}"#.into(),
+            outcome: SignalOutcome::Unscored,
+            entry_triggered_at_ms: None,
             analysis,
         };
         let json = history_json(&[record]).unwrap();
@@ -2627,6 +3074,8 @@ mod tests {
             source_pane_id: None,
             snapshot_bar_time_ms: Some(1),
             raw_output: String::new(),
+            outcome: SignalOutcome::Unscored,
+            entry_triggered_at_ms: None,
             analysis: AnalysisResult::default(),
         }];
         agent.show_history = true;
@@ -2635,6 +3084,45 @@ mod tests {
         assert_eq!(
             agent.displayed_chart_annotation().map(|(source, _)| source),
             Some(pane_id)
+        );
+    }
+
+    #[test]
+    fn signal_outcome_uses_entry_then_first_tp_or_sl_touch() {
+        let legacy = r#"{"analyzed_at_ms":1,"provider":"OpenAi","model":"test","prompt_version":"v1","mode":"Scalping","symbol":"BTCUSDT","venue":"Binance","basis":"M1","snapshot_id":"id","snapshot_generated_at_ms":1,"latest_price":100.0,"data_quality":0.9,"context_count":1,"latency_ms":50,"snapshot_bar_time_ms":1000,"analysis":{"action":"LONG","entry_zone":{"low":99.0,"high":101.0},"stop_loss":95.0,"targets":[110.0],"valid_for_seconds":60}}"#;
+        let record: AnalysisHistoryRecord = serde_json::from_str(legacy).unwrap();
+        let bar = |time_ms, low, high| MarketBar {
+            time_ms,
+            open: 100.0,
+            high,
+            low,
+            close: 100.0,
+            volume: 1.0,
+            buy_volume: None,
+            sell_volume: None,
+            delta: None,
+            cvd: None,
+            open_interest: None,
+        };
+
+        assert_eq!(
+            evaluate_signal(
+                &record,
+                &[
+                    bar(1_000, 90.0, 120.0),
+                    bar(2_000, 99.0, 101.0),
+                    bar(3_000, 100.0, 111.0)
+                ]
+            ),
+            (SignalOutcome::Win, Some(2_000))
+        );
+        assert_eq!(
+            evaluate_signal(&record, &[bar(2_000, 94.0, 111.0)]),
+            (SignalOutcome::Ambiguous, Some(2_000))
+        );
+        assert_eq!(
+            evaluate_signal(&record, &[bar(62_000, 99.0, 101.0)]),
+            (SignalOutcome::NoEntry, None)
         );
     }
 }

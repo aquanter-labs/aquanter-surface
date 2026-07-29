@@ -150,7 +150,7 @@ pub fn tooltip(theme: &Theme) -> Style {
 
 pub mod button {
     use iced::{
-        Border, Theme,
+        Border, Color, Theme,
         widget::button::{Status, Style},
     };
 
@@ -198,6 +198,42 @@ pub mod button {
                 }
                 _ => None,
             },
+            border: Border {
+                radius: 3.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    pub fn trade_buy(theme: &Theme, status: Status) -> Style {
+        trade_action(theme, status, true)
+    }
+
+    pub fn trade_sell(theme: &Theme, status: Status) -> Style {
+        trade_action(theme, status, false)
+    }
+
+    fn trade_action(theme: &Theme, status: Status, buy: bool) -> Style {
+        let palette = theme.extended_palette();
+        let base = if buy {
+            palette.success.base.color
+        } else {
+            palette.danger.base.color
+        };
+        let background = match status {
+            Status::Hovered => base.scale_alpha(0.9),
+            Status::Pressed => base.scale_alpha(0.7),
+            Status::Disabled => palette.background.weak.color,
+            Status::Active => base.scale_alpha(if palette.is_dark { 0.72 } else { 0.82 }),
+        };
+        Style {
+            text_color: if status == Status::Disabled {
+                palette.background.weak.text
+            } else {
+                Color::WHITE
+            },
+            background: Some(background.into()),
             border: Border {
                 radius: 3.0.into(),
                 ..Default::default()

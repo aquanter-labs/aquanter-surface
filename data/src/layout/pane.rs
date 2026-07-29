@@ -32,7 +32,17 @@ pub enum Pane {
         link_group: Option<LinkGroup>,
     },
     AiAnalysis,
+    AiAnalysisPanel {
+        #[serde(deserialize_with = "ok_or_default", default)]
+        link_group: Option<LinkGroup>,
+    },
     Trading,
+    TradingPanel {
+        #[serde(default)]
+        config: crate::config::trading::TradingConfig,
+        #[serde(deserialize_with = "ok_or_default", default)]
+        link_group: Option<LinkGroup>,
+    },
     HeatmapChart {
         layout: ViewConfig,
         #[serde(deserialize_with = "ok_or_default", default)]
@@ -357,5 +367,24 @@ impl PaneSetup {
             depth_aggr,
             push_freq,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ai_panel_link_group_round_trips() {
+        let pane = Pane::AiAnalysisPanel {
+            link_group: Some(LinkGroup::C),
+        };
+        let decoded: Pane = serde_json::from_str(&serde_json::to_string(&pane).unwrap()).unwrap();
+        assert!(matches!(
+            decoded,
+            Pane::AiAnalysisPanel {
+                link_group: Some(LinkGroup::C)
+            }
+        ));
     }
 }
