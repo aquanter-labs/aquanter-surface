@@ -97,6 +97,7 @@ impl Default for Dashboard {
 #[derive(Debug, Clone)]
 pub enum Event {
     Ai(crate::ai::Message),
+    Trading(crate::trading::Message),
     Notification(Toast),
     DistributeFetchedData {
         layout_id: uuid::Uuid,
@@ -430,6 +431,9 @@ impl Dashboard {
                             pane::Effect::Ai(message) => {
                                 return (Task::none(), Some(Event::Ai(message)));
                             }
+                            pane::Effect::Trading(message) => {
+                                return (Task::none(), Some(Event::Trading(message)));
+                            }
                         };
                         return (task, None);
                     }
@@ -602,6 +606,63 @@ impl Dashboard {
                 _ => None,
             })
             .collect()
+    }
+
+    pub fn trading_sources(&self, main_window: window::Id) -> Vec<crate::trading::ChartSource> {
+        self.iter_all_panes(main_window)
+            .filter_map(|(_, _, state)| match &state.content {
+                pane::Content::Kline {
+                    chart: Some(chart),
+                    kind,
+                    ..
+                } if chart.ticker_info().exchange().venue()
+                    == exchange::adapter::Venue::Binance
+                    && chart.ticker_info().market_type()
+                        == exchange::adapter::MarketKind::LinearPerps =>
+                {
+                    let symbol = chart.ticker_info().ticker.display_symbol_and_type().0;
+                    let chart_kind =
+                        if matches!(kind, data::chart::KlineChartKind::Footprint { .. }) {
+                            "Footprint"
+                        } else {
+                            "Kline"
+                        };
+                    Some(crate::trading::ChartSource {
+                        pane_id: state.unique_id(),
+                        label: format!("{symbol} | {} | {chart_kind}", chart.basis()),
+                        symbol,
+                        min_tick: chart.ticker_info().min_ticksize.as_f64(),
+                        min_qty: chart.ticker_info().min_qty.as_f64(),
+                        latest_price: chart
+                            .alert_observation(state.unique_id())
+                            .map(|value| value.price),
+                    })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn set_trading_overlay(
+        &mut self,
+        main_window: window::Id,
+        source_pane: Option<uuid::Uuid>,
+        overlay: Option<crate::trading::PositionOverlay>,
+    ) {
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, state)| {
+                let pane_id = state.unique_id();
+                if let pane::Content::Kline {
+                    chart: Some(chart), ..
+                } = &mut state.content
+                {
+                    if Some(pane_id) == source_pane {
+                        chart.set_trading_overlay(overlay.clone());
+                    } else {
+                        chart.set_trading_overlay(None);
+                    }
+                }
+            });
     }
 
     pub fn alert_sources(
@@ -837,6 +898,7 @@ impl Dashboard {
         tickers_table: &'a TickersTable,
         timezone: UserTimezone,
         ai_agent: &'a crate::ai::Agent,
+        trader: &'a crate::trading::Trader,
     ) -> Element<'a, Message> {
         let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
             let is_focused = self.focus == Some((main_window.id, id));
@@ -850,6 +912,7 @@ impl Dashboard {
                 timezone,
                 tickers_table,
                 ai_agent,
+                trader,
             )
         })
         .min_size(240)
@@ -870,6 +933,7 @@ impl Dashboard {
         tickers_table: &'a TickersTable,
         timezone: UserTimezone,
         ai_agent: &'a crate::ai::Agent,
+        trader: &'a crate::trading::Trader,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
             let content = container(
@@ -885,6 +949,7 @@ impl Dashboard {
                         timezone,
                         tickers_table,
                         ai_agent,
+                        trader,
                     )
                 })
                 .on_click(pane::Message::PaneClicked),

@@ -204,6 +204,7 @@ pub struct KlineChart {
     interval_selection: Option<IntervalSelection>,
     timezone: Cell<data::UserTimezone>,
     ai_annotation: Option<crate::ai::ChartAnnotation>,
+    trading_overlay: Option<crate::trading::PositionOverlay>,
     drawing_tool: Option<DrawingTool>,
     drawings: Vec<Drawing>,
     selected_drawing: Option<usize>,
@@ -525,6 +526,7 @@ impl KlineChart {
                     interval_selection: None,
                     timezone: Cell::new(data::UserTimezone::Utc),
                     ai_annotation: None,
+                    trading_overlay: None,
                     drawing_tool: None,
                     drawings: Vec::new(),
                     selected_drawing: None,
@@ -600,6 +602,7 @@ impl KlineChart {
                     interval_selection: None,
                     timezone: Cell::new(data::UserTimezone::Utc),
                     ai_annotation: None,
+                    trading_overlay: None,
                     drawing_tool: None,
                     drawings: Vec::new(),
                     selected_drawing: None,
@@ -665,6 +668,10 @@ impl KlineChart {
 
     pub(crate) fn clear_ai_annotation(&mut self) {
         self.ai_annotation = None;
+    }
+
+    pub(crate) fn set_trading_overlay(&mut self, overlay: Option<crate::trading::PositionOverlay>) {
+        self.trading_overlay = overlay;
     }
 
     pub fn drawing_tool(&self) -> Option<DrawingTool> {
@@ -1930,11 +1937,21 @@ impl canvas::Program<Message> for KlineChart {
         let drawings = drawings_frame.into_geometry();
 
         let mut ai_frame = canvas::Frame::new(renderer, bounds_size);
-        if let Some(annotation) = self.ai_annotation.as_ref().filter(|value| value.is_valid()) {
+        if self
+            .ai_annotation
+            .as_ref()
+            .is_some_and(|value| value.is_valid())
+            || self.trading_overlay.is_some()
+        {
             ai_frame.translate(Vector::new(bounds.width / 2.0, bounds.height / 2.0));
             ai_frame.scale(chart.scaling);
             ai_frame.translate(chart.translation);
+        }
+        if let Some(annotation) = self.ai_annotation.as_ref().filter(|value| value.is_valid()) {
             draw_ai_annotation(&mut ai_frame, chart, palette, &self.data_source, annotation);
+        }
+        if let Some(overlay) = &self.trading_overlay {
+            draw_trading_overlay(&mut ai_frame, chart, palette, overlay);
         }
         let ai_annotation = ai_frame.into_geometry();
 
@@ -2247,6 +2264,67 @@ fn draw_ai_annotation(
             }
             crate::ai::ChartSignal::Neutral => {}
         }
+    }
+}
+
+fn draw_trading_overlay(
+    frame: &mut canvas::Frame,
+    chart: &ViewState,
+    palette: &Extended,
+    overlay: &crate::trading::PositionOverlay,
+) {
+    let region = chart.visible_region(frame.size());
+    let line_width = 1.0 / chart.scaling;
+    let draw_level = |frame: &mut canvas::Frame, label: &str, price: f64, color: Color| {
+        if !price.is_finite() || price <= 0.0 {
+            return;
+        }
+        let y = chart.price_to_y(Price::from_f64(price));
+        frame.stroke(
+            &Path::line(
+                Point::new(region.x, y),
+                Point::new(region.x + region.width, y),
+            ),
+            Stroke::default()
+                .with_width(line_width)
+                .with_color(color.scale_alpha(0.85)),
+        );
+        draw_cluster_text(
+            frame,
+            &format!("{label} {price}"),
+            Point::new(region.x + 4.0 / chart.scaling, y),
+            11.0 / chart.scaling,
+            color,
+            Alignment::Start,
+            Alignment::End,
+        );
+    };
+
+    draw_level(
+        frame,
+        &format!(
+            "{} {} PnL {:.2}",
+            overlay.symbol,
+            if overlay.is_long { "LONG" } else { "SHORT" },
+            overlay.unrealized_pnl
+        ),
+        overlay.entry_price,
+        palette.primary.base.color,
+    );
+    draw_level(
+        frame,
+        "BE",
+        overlay.break_even_price,
+        palette.background.strong.text,
+    );
+    if let Some(price) = overlay.liquidation_price {
+        draw_level(frame, "LIQ", price, palette.danger.strong.color);
+    }
+    if let Some(price) = overlay.stop_loss {
+        draw_level(frame, "SL", price, palette.danger.base.color);
+    }
+    if let Some(price) = overlay.take_profit {
+        draw_level(frame, "TP", price, palette.success.base.color);
     }
 }
 

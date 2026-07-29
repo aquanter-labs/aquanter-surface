@@ -11,6 +11,7 @@ mod modal;
 mod notify;
 mod screen;
 mod style;
+mod trading;
 mod version;
 mod widget;
 mod window;
@@ -76,6 +77,7 @@ fn main() {
 struct Flowsurface {
     main_window: window::Window,
     ai_agent: ai::Agent,
+    trader: trading::Trader,
     alerts: alerts::Alerts,
     pending_ai_alert: Option<PendingAiAlert>,
     sidebar: dashboard::Sidebar,
@@ -100,6 +102,7 @@ struct PendingAiAlert {
 #[derive(Debug, Clone)]
 enum Message {
     Ai(ai::Message),
+    Trading(trading::Message),
     Alerts(alerts::Message),
     Sidebar(dashboard::sidebar::Message),
     MarketWsEvent(exchange::Event),
@@ -156,6 +159,7 @@ impl Flowsurface {
         let mut state = Self {
             main_window: window::Window::new(main_window_id),
             ai_agent: ai::Agent::new(saved_state.ai_cfg),
+            trader: trading::Trader::new(saved_state.trading_cfg, saved_state.proxy_cfg.clone()),
             alerts: alerts::Alerts::new(saved_state.alert_cfg),
             pending_ai_alert: None,
             layout_manager: saved_state.layout_manager,
@@ -201,13 +205,19 @@ impl Flowsurface {
                 log::error!("No active layout could be selected at startup");
                 Task::none()
             });
+        let connect_trading = if state.trader.has_credentials() {
+            Task::done(Message::Trading(trading::Message::Connect))
+        } else {
+            Task::none()
+        };
 
         (
             state,
             open_main_window
                 .discard()
                 .chain(load_layout)
-                .chain(launch_sidebar.map(Message::Sidebar)),
+                .chain(launch_sidebar.map(Message::Sidebar))
+                .chain(connect_trading),
         )
     }
 
@@ -215,6 +225,21 @@ impl Flowsurface {
         match message {
             Message::Alerts(message) => {
                 self.alerts.update(message);
+            }
+            Message::Trading(message) => {
+                let sources = self.active_dashboard().trading_sources(self.main_window.id);
+                self.trader.set_chart_sources(sources);
+                let task = self.trader.update(message).map(Message::Trading);
+                let selected_chart = self.trader.selected_chart();
+                let overlay = self.trader.overlay();
+                for layout in &mut self.layout_manager.layouts {
+                    layout.dashboard.set_trading_overlay(
+                        self.main_window.id,
+                        selected_chart,
+                        overlay.clone(),
+                    );
+                }
+                return task;
             }
             Message::Ai(message) => {
                 if matches!(&message, ai::Message::SelectHistory(_)) {
@@ -396,6 +421,8 @@ impl Flowsurface {
             Message::Tick(now) => {
                 let main_window_id = self.main_window.id;
                 let handles = self.handles.clone();
+                let trading_sources = self.active_dashboard().trading_sources(main_window_id);
+                self.trader.set_chart_sources(trading_sources);
                 let mut tasks = vec![
                     self.active_dashboard_mut()
                         .tick(&handles, now, main_window_id)
@@ -403,6 +430,7 @@ impl Flowsurface {
                             layout_id: None,
                             event: msg,
                         }),
+                    self.trader.tick(now).map(Message::Trading),
                 ];
 
                 let alert_sources = self
@@ -626,6 +654,9 @@ impl Flowsurface {
                             Task::none()
                         }
                         Some(dashboard::Event::Ai(message)) => Task::done(Message::Ai(message)),
+                        Some(dashboard::Event::Trading(message)) => {
+                            Task::done(Message::Trading(message))
+                        }
                         None => Task::none(),
                     };
 
@@ -885,6 +916,7 @@ impl Flowsurface {
                     tickers_table,
                     self.timezone,
                     &self.ai_agent,
+                    &self.trader,
                 )
                 .map(move |msg| Message::Dashboard {
                     layout_id: None,
@@ -937,6 +969,7 @@ impl Flowsurface {
                         tickers_table,
                         self.timezone,
                         &self.ai_agent,
+                        &self.trader,
                     )
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
@@ -1571,6 +1604,7 @@ impl Flowsurface {
             proxy_cfg_persisted,
             self.ai_agent.config().clone(),
             self.alerts.config().clone(),
+            self.trader.config().clone(),
         );
 
         match serde_json::to_string(&state) {

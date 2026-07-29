@@ -33,6 +33,7 @@ pub struct SavedState {
     pub proxy_cfg: Option<exchange::proxy::Proxy>,
     pub ai_cfg: data::config::ai::AiConfig,
     pub alert_cfg: data::config::alerts::AlertConfig,
+    pub trading_cfg: data::config::trading::TradingConfig,
 }
 
 impl SavedState {
@@ -64,6 +65,7 @@ impl Default for SavedState {
             proxy_cfg: None,
             ai_cfg: data::config::ai::AiConfig::default(),
             alert_cfg: data::config::alerts::AlertConfig::default(),
+            trading_cfg: data::config::trading::TradingConfig::default(),
         }
     }
 }
@@ -120,6 +122,7 @@ impl From<&pane::State> for data::Pane {
                 link_group: pane.link_group,
             },
             pane::Content::AiAnalysis => data::Pane::AiAnalysis,
+            pane::Content::Trading => data::Pane::Trading,
             pane::Content::Heatmap {
                 chart,
                 indicators,
@@ -208,6 +211,12 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
         )),
         data::Pane::AiAnalysis => Configuration::Pane(pane::State::from_config(
             pane::Content::AiAnalysis,
+            vec![],
+            data::layout::pane::Settings::default(),
+            None,
+        )),
+        data::Pane::Trading => Configuration::Pane(pane::State::from_config(
+            pane::Content::Trading,
             vec![],
             data::layout::pane::Settings::default(),
             None,
@@ -403,6 +412,7 @@ pub fn load_saved_state() -> SavedState {
                 proxy_cfg,
                 ai_cfg: state.ai_cfg,
                 alert_cfg: state.alert_cfg,
+                trading_cfg: state.trading_cfg,
             }
         }
         Err(e) => {

@@ -55,6 +55,7 @@ pub enum Effect {
     SwitchTickersInGroup(TickerInfo),
     FocusWidget(iced::widget::Id),
     Ai(crate::ai::Message),
+    Trading(crate::trading::Message),
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -111,6 +112,7 @@ pub enum Event {
     HeatmapShaderInteraction(crate::widget::chart::heatmap::Message),
     MiniTickersListInteraction(modal::pane::mini_tickers_list::Message),
     Ai(crate::ai::Message),
+    Trading(crate::trading::Message),
 }
 
 pub struct State {
@@ -429,6 +431,7 @@ impl State {
                     (content, streams)
                 }
                 ContentKind::AiAnalysis => (Content::AiAnalysis, vec![]),
+                ContentKind::Trading => (Content::Trading, vec![]),
                 ContentKind::Starter => unreachable!(),
             }
         };
@@ -554,6 +557,7 @@ impl State {
         timezone: UserTimezone,
         tickers_table: &'a TickersTable,
         ai_agent: &'a crate::ai::Agent,
+        trader: &'a crate::trading::Trader,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
         let mut top_left_buttons = match &self.content {
             Content::Starter => row![],
@@ -563,6 +567,7 @@ impl State {
                 }),
                 text("AI Analysis")
             ],
+            Content::Trading => row![text("Trading")],
             _ => row![link_group_button(id, self.link_group, |id| {
                 Message::PaneEvent(id, Event::ShowModal(Modal::LinkGroup))
             })],
@@ -611,8 +616,10 @@ impl State {
                 .height(widget::PANE_CONTROL_BTN_HEIGHT);
 
             top_left_buttons = top_left_buttons.push(tickers_list_btn);
-        } else if !matches!(self.content, Content::Starter | Content::AiAnalysis)
-            && !self.has_stream()
+        } else if !matches!(
+            self.content,
+            Content::Starter | Content::AiAnalysis | Content::Trading
+        ) && !self.has_stream()
         {
             let content = row![
                 text("Choose a ticker")
@@ -754,6 +761,20 @@ impl State {
                             .settings_view()
                             .map(move |message| Message::PaneEvent(id, Event::Ai(message)))
                     },
+                    None,
+                    tickers_table,
+                )
+            }
+            Content::Trading => {
+                let base = trader
+                    .view()
+                    .map(move |message| Message::PaneEvent(id, Event::Trading(message)));
+                self.compose_stack_view(
+                    base,
+                    id,
+                    None,
+                    compact_controls,
+                    || column![].into(),
                     None,
                     tickers_table,
                 )
@@ -1260,6 +1281,8 @@ impl State {
                 if kind == ContentKind::AiAnalysis {
                     self.streams = ResolvedStream::Ready(vec![]);
                     return Some(Effect::Ai(crate::ai::Message::RefreshSnapshot));
+                } else if kind == ContentKind::Trading {
+                    self.streams = ResolvedStream::Ready(vec![]);
                 } else if kind != ContentKind::Starter {
                     self.streams = ResolvedStream::waiting(vec![]);
                     let modal = Modal::MiniTickersList(MiniPanel::new());
@@ -1673,6 +1696,7 @@ impl State {
                 self.modal = None;
             }
             Event::Ai(message) => return Some(Effect::Ai(message)),
+            Event::Trading(message) => return Some(Effect::Trading(message)),
         }
         None
     }
@@ -1948,7 +1972,7 @@ impl State {
             Content::Ladder(panel) => panel
                 .as_mut()
                 .and_then(|p| p.invalidate(Some(now)).map(Action::Panel)),
-            Content::Starter | Content::AiAnalysis => None,
+            Content::Starter | Content::AiAnalysis | Content::Trading => None,
             Content::Comparison(chart) => chart
                 .as_mut()
                 .and_then(|c| c.invalidate(Some(now)).map(Action::Chart)),
@@ -1977,7 +2001,7 @@ impl State {
             }
             Content::Ladder(_) | Content::TimeAndSales(_) => Some(100),
             Content::ShaderHeatmap { .. } => None,
-            Content::Starter | Content::AiAnalysis => None,
+            Content::Starter | Content::AiAnalysis | Content::Trading => None,
         }
     }
 
@@ -2062,6 +2086,7 @@ pub enum Content {
     #[default]
     Starter,
     AiAnalysis,
+    Trading,
     Heatmap {
         chart: Option<HeatmapChart>,
         indicators: Vec<HeatmapIndicator>,
@@ -2251,6 +2276,7 @@ impl Content {
         match kind {
             ContentKind::Starter => Content::Starter,
             ContentKind::AiAnalysis => Content::AiAnalysis,
+            ContentKind::Trading => Content::Trading,
             ContentKind::CandlestickChart => Content::Kline {
                 chart: None,
                 indicators: vec![KlineIndicator::Volume],
@@ -2302,7 +2328,7 @@ impl Content {
             Content::TimeAndSales(panel) => Some(panel.as_ref()?.last_update()),
             Content::Ladder(panel) => Some(panel.as_ref()?.last_update()),
             Content::Comparison(chart) => Some(chart.as_ref()?.last_update()),
-            Content::Starter | Content::AiAnalysis => None,
+            Content::Starter | Content::AiAnalysis | Content::Trading => None,
             Content::ShaderHeatmap { chart, .. } => Some(chart.as_ref()?.last_tick?),
         }
     }
@@ -2385,6 +2411,7 @@ impl Content {
             | Content::Ladder(_)
             | Content::Starter
             | Content::AiAnalysis
+            | Content::Trading
             | Content::Comparison(_)
             | Content::ShaderHeatmap { .. } => {
                 panic!("indicator reorder on {} pane", self)
@@ -2433,6 +2460,7 @@ impl Content {
             | Content::Ladder(_)
             | Content::Starter
             | Content::AiAnalysis
+            | Content::Trading
             | Content::Comparison(_) => None,
         }
     }
@@ -2503,6 +2531,7 @@ impl Content {
             Content::Comparison(_) => ContentKind::ComparisonChart,
             Content::Starter => ContentKind::Starter,
             Content::AiAnalysis => ContentKind::AiAnalysis,
+            Content::Trading => ContentKind::Trading,
             Content::ShaderHeatmap { .. } => ContentKind::ShaderHeatmap,
         }
     }
@@ -2523,6 +2552,7 @@ impl Content {
             Content::Comparison(chart) => chart.is_some(),
             Content::Starter => true,
             Content::AiAnalysis => true,
+            Content::Trading => true,
         }
     }
 
@@ -2551,6 +2581,7 @@ impl PartialEq for Content {
             (self, other),
             (Content::Starter, Content::Starter)
                 | (Content::AiAnalysis, Content::AiAnalysis)
+                | (Content::Trading, Content::Trading)
                 | (Content::Heatmap { .. }, Content::Heatmap { .. })
                 | (Content::Kline { .. }, Content::Kline { .. })
                 | (Content::TimeAndSales(_), Content::TimeAndSales(_))

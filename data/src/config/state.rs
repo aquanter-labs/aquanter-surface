@@ -3,6 +3,7 @@ use super::ai::AiConfig;
 use super::alerts::AlertConfig;
 use super::sidebar::Sidebar;
 use super::timezone::UserTimezone;
+use super::trading::TradingConfig;
 use crate::layout::WindowSpec;
 use crate::{AudioStream, Layout, Theme};
 
@@ -30,6 +31,7 @@ pub struct State {
     pub proxy_cfg: Option<exchange::proxy::Proxy>,
     pub ai_cfg: AiConfig,
     pub alert_cfg: AlertConfig,
+    pub trading_cfg: TradingConfig,
 }
 
 impl State {
@@ -47,6 +49,7 @@ impl State {
         proxy_cfg: Option<exchange::proxy::Proxy>,
         ai_cfg: AiConfig,
         alert_cfg: AlertConfig,
+        trading_cfg: TradingConfig,
     ) -> Self {
         State {
             layout_manager,
@@ -62,6 +65,7 @@ impl State {
             proxy_cfg,
             ai_cfg,
             alert_cfg,
+            trading_cfg,
         }
     }
 }

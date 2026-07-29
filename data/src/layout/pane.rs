@@ -32,6 +32,7 @@ pub enum Pane {
         link_group: Option<LinkGroup>,
     },
     AiAnalysis,
+    Trading,
     HeatmapChart {
         layout: ViewConfig,
         #[serde(deserialize_with = "ok_or_default", default)]
@@ -199,6 +200,7 @@ impl VisualConfig {
 pub enum ContentKind {
     Starter,
     AiAnalysis,
+    Trading,
     HeatmapChart,
     ShaderHeatmap,
     FootprintChart,
@@ -209,9 +211,10 @@ pub enum ContentKind {
 }
 
 impl ContentKind {
-    pub const ALL: [ContentKind; 9] = [
+    pub const ALL: [ContentKind; 10] = [
         ContentKind::Starter,
         ContentKind::AiAnalysis,
+        ContentKind::Trading,
         ContentKind::HeatmapChart,
         ContentKind::ShaderHeatmap,
         ContentKind::FootprintChart,
@@ -227,6 +230,7 @@ impl std::fmt::Display for ContentKind {
         let s = match self {
             ContentKind::Starter => "Starter Pane",
             ContentKind::AiAnalysis => "AI Analysis",
+            ContentKind::Trading => "Trading",
             ContentKind::HeatmapChart => "Heatmap Chart (Legacy)",
             ContentKind::ShaderHeatmap => "Heatmap Chart",
             ContentKind::FootprintChart => "Footprint Chart",
@@ -298,7 +302,10 @@ impl PaneSetup {
                         Basis::default_kline_time(Some(base_ticker), Timeframe::M15)
                     }))
                 }
-                ContentKind::Starter | ContentKind::AiAnalysis | ContentKind::TimeAndSales => None,
+                ContentKind::Starter
+                | ContentKind::AiAnalysis
+                | ContentKind::Trading
+                | ContentKind::TimeAndSales => None,
             };
 
         let tick_multiplier = match content_kind {
@@ -321,6 +328,7 @@ impl PaneSetup {
             | ContentKind::ComparisonChart
             | ContentKind::TimeAndSales
             | ContentKind::AiAnalysis
+            | ContentKind::Trading
             | ContentKind::Starter => current_tick_multiplier,
         };
 
