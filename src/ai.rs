@@ -633,6 +633,53 @@ impl fmt::Display for HistoryPeriod {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ConfidenceFilter {
+    #[default]
+    All,
+    AtLeast50,
+    AtLeast60,
+    AtLeast70,
+    AtLeast80,
+    AtLeast90,
+}
+
+impl ConfidenceFilter {
+    const ALL: [Self; 6] = [
+        Self::All,
+        Self::AtLeast50,
+        Self::AtLeast60,
+        Self::AtLeast70,
+        Self::AtLeast80,
+        Self::AtLeast90,
+    ];
+
+    fn matches(self, confidence: f32) -> bool {
+        let minimum = match self {
+            Self::All => return true,
+            Self::AtLeast50 => 50.0,
+            Self::AtLeast60 => 60.0,
+            Self::AtLeast70 => 70.0,
+            Self::AtLeast80 => 80.0,
+            Self::AtLeast90 => 90.0,
+        };
+        confidence >= minimum
+    }
+}
+
+impl fmt::Display for ConfidenceFilter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::All => "All confidence",
+            Self::AtLeast50 => "50%+",
+            Self::AtLeast60 => "60%+",
+            Self::AtLeast70 => "70%+",
+            Self::AtLeast80 => "80%+",
+            Self::AtLeast90 => "90%+",
+        })
+    }
+}
+
 fn sum_options(values: impl Iterator<Item = Option<f64>>) -> Option<f64> {
     let values = values.flatten().collect::<Vec<_>>();
     (!values.is_empty()).then(|| values.into_iter().sum())
@@ -748,6 +795,7 @@ pub enum Message {
     HistorySymbolChanged(String),
     HistoryBasisChanged(String),
     HistoryModelChanged(String),
+    HistoryConfidenceChanged(ConfidenceFilter),
     TogglePromptReview,
     ToggleRawJson,
     AnalysisCompleted(Result<String, String>),
@@ -777,6 +825,7 @@ pub struct Agent {
     history_symbol: String,
     history_basis: String,
     history_model: String,
+    history_confidence: ConfidenceFilter,
     show_prompt_review: bool,
     show_raw_json: bool,
     status: String,
@@ -819,6 +868,7 @@ impl Agent {
             history_symbol: "All symbols".to_string(),
             history_basis: "All timeframes".to_string(),
             history_model: "All models".to_string(),
+            history_confidence: ConfidenceFilter::All,
             show_prompt_review: false,
             show_raw_json: false,
             status: "Select a Kline or Footprint pane, then refresh the snapshot.".to_string(),
@@ -1155,6 +1205,7 @@ impl Agent {
             Message::HistorySymbolChanged(value) => self.history_symbol = value,
             Message::HistoryBasisChanged(value) => self.history_basis = value,
             Message::HistoryModelChanged(value) => self.history_model = value,
+            Message::HistoryConfidenceChanged(value) => self.history_confidence = value,
         }
         Task::none()
     }
@@ -1788,6 +1839,7 @@ impl Agent {
                     && (self.history_basis == "All timeframes"
                         || record.basis == self.history_basis)
                     && (self.history_model == "All models" || record.model == self.history_model)
+                    && self.history_confidence.matches(record.analysis.confidence)
             })
             .collect::<Vec<_>>();
         let wins = filtered
@@ -1872,6 +1924,16 @@ impl Agent {
                 .width(Length::Fill),
             ]
             .spacing(6),
+            column![
+                text("Minimum confidence").size(crate::style::text_size::SMALL),
+                pick_list(
+                    ConfidenceFilter::ALL,
+                    Some(self.history_confidence),
+                    Message::HistoryConfidenceChanged,
+                )
+                .width(Length::Fill),
+            ]
+            .spacing(2),
             text(format!(
                 "Accuracy {} | {}W / {}L | {} pending | {} directional signals",
                 accuracy.map_or_else(|| "--".to_string(), |value| format!("{value:.1}%")),
@@ -3124,5 +3186,12 @@ Do not trade yet."#;
             evaluate_signal(&record, &[bar(62_000, 99.0, 101.0)]),
             (SignalOutcome::NoEntry, None)
         );
+    }
+
+    #[test]
+    fn confidence_filter_applies_minimum_inclusively() {
+        assert!(ConfidenceFilter::All.matches(0.0));
+        assert!(ConfidenceFilter::AtLeast70.matches(70.0));
+        assert!(!ConfidenceFilter::AtLeast70.matches(69.9));
     }
 }
