@@ -587,16 +587,15 @@ enum SignalOutcome {
     NoEntry,
 }
 
-impl fmt::Display for SignalOutcome {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Unscored => "Unscored",
-            Self::Pending => "Pending",
-            Self::Win => "Win",
-            Self::Loss => "Loss",
-            Self::Ambiguous => "Ambiguous",
-            Self::NoEntry => "No entry",
-        })
+fn signal_outcome_label(outcome: SignalOutcome, entered: bool) -> &'static str {
+    match outcome {
+        SignalOutcome::Unscored => "Not scored",
+        SignalOutcome::Pending if entered => "Awaiting TP/SL",
+        SignalOutcome::Pending => "Awaiting entry",
+        SignalOutcome::Win => "TP hit",
+        SignalOutcome::Loss => "SL hit",
+        SignalOutcome::Ambiguous => "Ambiguous",
+        SignalOutcome::NoEntry => "No entry",
     }
 }
 
@@ -1813,7 +1812,13 @@ impl Agent {
                         "Snapshot {} | {} | {} contexts",
                         record.snapshot_id, snapshot_at, record.context_count
                     )),
-                    text(format!("Signal outcome: {}", record.outcome)),
+                    text(format!(
+                        "Signal outcome: {}",
+                        signal_outcome_label(
+                            record.outcome,
+                            record.entry_triggered_at_ms.is_some()
+                        )
+                    )),
                     Self::analysis_details(
                         &record.analysis,
                         "Historical result".to_string(),
@@ -1989,6 +1994,9 @@ impl Agent {
                             data::config::timezone::TimeLabelKind::Custom("%Y-%m-%d %H:%M:%S"),
                         )
                         .unwrap_or_else(|| "Unknown time".to_string());
+                    let outcome = record.outcome;
+                    let outcome_label =
+                        signal_outcome_label(outcome, record.entry_triggered_at_ms.is_some());
                     records.push(
                         column![
                             row![
@@ -1999,13 +2007,6 @@ impl Agent {
                                     record.basis
                                 ))
                                 .width(Length::Fill),
-                                text(format!(
-                                    "{} | {:.0}% | {} | {} ms",
-                                    analyzed_at,
-                                    record.analysis.confidence.clamp(0.0, 100.0),
-                                    record.provider,
-                                    record.latency_ms
-                                )),
                                 icon_button(
                                     crate::style::LucideIcon::FileText,
                                     "View analysis details",
@@ -2014,6 +2015,32 @@ impl Agent {
                             ]
                             .align_y(Alignment::Center)
                             .spacing(12),
+                            row![
+                                text(outcome_label).style(move |theme: &iced::Theme| {
+                                    let palette = theme.extended_palette();
+                                    iced::widget::text::Style {
+                                        color: Some(match outcome {
+                                            SignalOutcome::Win => palette.success.base.color,
+                                            SignalOutcome::Loss => palette.danger.base.color,
+                                            SignalOutcome::Pending => palette.primary.base.color,
+                                            SignalOutcome::Ambiguous => palette.warning.base.color,
+                                            SignalOutcome::NoEntry | SignalOutcome::Unscored => {
+                                                palette.background.weak.text
+                                            }
+                                        }),
+                                    }
+                                }),
+                                text(format!(
+                                    "{} | {:.0}% | {} | {} ms",
+                                    analyzed_at,
+                                    record.analysis.confidence.clamp(0.0, 100.0),
+                                    record.provider,
+                                    record.latency_ms
+                                ))
+                                .width(Length::Fill),
+                            ]
+                            .spacing(10)
+                            .align_y(Alignment::Center),
                             rule::horizontal(1),
                         ]
                         .spacing(4),
@@ -3229,5 +3256,23 @@ Do not trade yet."#;
         let mut agent = Agent::new(AiConfig::default());
         drop(agent.update(Message::PromptWrapChanged(false), None));
         assert!(!agent.prompt_wrap);
+    }
+
+    #[test]
+    fn history_outcome_labels_distinguish_entry_state() {
+        assert_eq!(signal_outcome_label(SignalOutcome::Win, true), "TP hit");
+        assert_eq!(signal_outcome_label(SignalOutcome::Loss, true), "SL hit");
+        assert_eq!(
+            signal_outcome_label(SignalOutcome::Pending, true),
+            "Awaiting TP/SL"
+        );
+        assert_eq!(
+            signal_outcome_label(SignalOutcome::Pending, false),
+            "Awaiting entry"
+        );
+        assert_eq!(
+            signal_outcome_label(SignalOutcome::NoEntry, false),
+            "No entry"
+        );
     }
 }
