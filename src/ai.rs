@@ -2,7 +2,8 @@ use data::config::ai::{AiConfig, AiProvider};
 use iced::{
     Alignment, Element, Length, Padding, Task,
     widget::{
-        button, column, container, pick_list, row, rule, scrollable, text, text_input, tooltip,
+        button, checkbox, column, container, pick_list, row, rule, scrollable, text, text_input,
+        tooltip,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -797,6 +798,7 @@ pub enum Message {
     HistoryModelChanged(String),
     HistoryConfidenceChanged(ConfidenceFilter),
     TogglePromptReview,
+    PromptWrapChanged(bool),
     ToggleRawJson,
     AnalysisCompleted(Result<String, String>),
 }
@@ -827,6 +829,7 @@ pub struct Agent {
     history_model: String,
     history_confidence: ConfidenceFilter,
     show_prompt_review: bool,
+    prompt_wrap: bool,
     show_raw_json: bool,
     status: String,
     is_loading: bool,
@@ -870,6 +873,7 @@ impl Agent {
             history_model: "All models".to_string(),
             history_confidence: ConfidenceFilter::All,
             show_prompt_review: false,
+            prompt_wrap: true,
             show_raw_json: false,
             status: "Select a Kline or Footprint pane, then refresh the snapshot.".to_string(),
             is_loading: false,
@@ -1189,6 +1193,7 @@ impl Agent {
                 self.show_prompt_review = !self.show_prompt_review;
                 self.show_raw_json = false;
             }
+            Message::PromptWrapChanged(value) => self.prompt_wrap = value,
             Message::ToggleRawJson => {
                 self.show_raw_json = !self.show_raw_json;
                 self.show_prompt_review = false;
@@ -1501,12 +1506,34 @@ impl Agent {
             } else {
                 &self.prompt
             };
+            let scrollbar = scrollable::Scrollbar::new().width(4).scroller_width(4);
+            let direction = if self.prompt_wrap {
+                scrollable::Direction::Vertical(scrollbar)
+            } else {
+                scrollable::Direction::Both {
+                    vertical: scrollbar,
+                    horizontal: scrollbar,
+                }
+            };
+            let prompt_text = text(prompt).wrapping(if self.prompt_wrap {
+                iced::widget::text::Wrapping::WordOrGlyph
+            } else {
+                iced::widget::text::Wrapping::None
+            });
+            let prompt_text = if self.prompt_wrap {
+                prompt_text.width(Length::Fill)
+            } else {
+                prompt_text
+            };
             let modal = container(
                 column![
                     row![
                         text("Prompt review")
                             .size(crate::style::text_size::TITLE)
                             .width(Length::Fill),
+                        checkbox(self.prompt_wrap)
+                            .label("Wrap")
+                            .on_toggle(Message::PromptWrapChanged),
                         icon_button(
                             crate::style::LucideIcon::X,
                             "Close",
@@ -1515,7 +1542,9 @@ impl Agent {
                     ]
                     .spacing(12)
                     .align_y(Alignment::Center),
-                    scrollable(text(prompt)).height(Length::Fill),
+                    scrollable(prompt_text)
+                        .direction(direction)
+                        .height(Length::Fill),
                 ]
                 .spacing(12),
             )
@@ -3193,5 +3222,12 @@ Do not trade yet."#;
         assert!(ConfidenceFilter::All.matches(0.0));
         assert!(ConfidenceFilter::AtLeast70.matches(70.0));
         assert!(!ConfidenceFilter::AtLeast70.matches(69.9));
+    }
+
+    #[test]
+    fn prompt_wrap_setting_updates_review_layout_mode() {
+        let mut agent = Agent::new(AiConfig::default());
+        drop(agent.update(Message::PromptWrapChanged(false), None));
+        assert!(!agent.prompt_wrap);
     }
 }
