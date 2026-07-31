@@ -654,7 +654,7 @@ impl Dashboard {
                     ..
                 } => {
                     let (symbol, market) = chart.ticker_info().ticker.display_symbol_and_type();
-                    let (latest_update_ms, best_bid, best_ask) = chart.trading_market_info();
+                    let (market_latency_ms, best_bid, best_ask) = chart.trading_market_info();
                     let chart_kind =
                         if matches!(kind, data::chart::KlineChartKind::Footprint { .. }) {
                             "Footprint"
@@ -680,7 +680,7 @@ impl Dashboard {
                         latest_price: chart
                             .alert_observation(state.unique_id())
                             .map(|value| value.price),
-                        latest_update_ms,
+                        market_latency_ms,
                         best_bid,
                         best_ask,
                     })
@@ -1589,7 +1589,7 @@ impl Dashboard {
                         }
                         pane::Content::Kline { chart, .. } => {
                             if let Some(c) = chart {
-                                c.insert_trades(buffer);
+                                c.insert_trades(buffer, update_t);
                             }
                         }
                         pane::Content::TimeAndSales(panel) => {

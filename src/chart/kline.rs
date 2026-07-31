@@ -42,6 +42,10 @@ fn footprint_orderbook_margin(kind: &KlineChartKind, config: &Config, scaling: f
     }
 }
 
+fn market_latency_ms(received_at_ms: u64, event_at_ms: u64) -> u64 {
+    received_at_ms.saturating_sub(event_at_ms)
+}
+
 impl Chart for KlineChart {
     type IndicatorKind = KlineIndicator;
 
@@ -194,7 +198,7 @@ pub struct KlineChart {
     open_interest: BTreeMap<UnixMs, f64>,
     liquidations: VecDeque<Liquidation>,
     orderbook: [GroupedDepth; 2],
-    latest_market_update_ms: u64,
+    latest_market_latency_ms: Option<u64>,
     indicators: EnumMap<KlineIndicator, Option<Box<dyn KlineIndicatorImpl>>>,
     fetching_trades: (bool, Option<Handle>),
     pub(crate) kind: KlineChartKind,
@@ -539,7 +543,7 @@ impl KlineChart {
                     open_interest: BTreeMap::new(),
                     liquidations: VecDeque::new(),
                     orderbook: [GroupedDepth::new(), GroupedDepth::new()],
-                    latest_market_update_ms: 0,
+                    latest_market_latency_ms: None,
                     indicators,
                     fetching_trades: (false, None),
                     request_handler: RequestHandler::default(),
@@ -617,7 +621,7 @@ impl KlineChart {
                     open_interest: BTreeMap::new(),
                     liquidations: VecDeque::new(),
                     orderbook: [GroupedDepth::new(), GroupedDepth::new()],
-                    latest_market_update_ms: 0,
+                    latest_market_latency_ms: None,
                     indicators,
                     fetching_trades: (false, None),
                     request_handler: RequestHandler::default(),
@@ -630,7 +634,6 @@ impl KlineChart {
     }
 
     pub fn update_latest_kline(&mut self, kline: &Kline) {
-        self.latest_market_update_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
         match self.data_source {
             PlotData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_klines(&[*kline]);
@@ -656,7 +659,10 @@ impl KlineChart {
         if !matches!(self.kind, KlineChartKind::Footprint { .. }) {
             return;
         }
-        self.latest_market_update_ms = update_t.as_u64();
+        self.latest_market_latency_ms = Some(market_latency_ms(
+            chrono::Utc::now().timestamp_millis().max(0) as u64,
+            update_t.as_u64(),
+        ));
         let step = self.chart.tick_size;
         self.orderbook[Side::Bid.idx()].regroup_from_raw(&depth.bids, Side::Bid, step);
         self.orderbook[Side::Ask.idx()].regroup_from_raw(&depth.asks, Side::Ask, step);
@@ -670,7 +676,7 @@ impl KlineChart {
         self.chart.ticker_info
     }
 
-    pub(crate) fn trading_market_info(&self) -> (u64, Option<f64>, Option<f64>) {
+    pub(crate) fn trading_market_info(&self) -> (Option<u64>, Option<f64>, Option<f64>) {
         let bid = self.orderbook[Side::Bid.idx()]
             .orders
             .keys()
@@ -681,7 +687,7 @@ impl KlineChart {
             .keys()
             .next()
             .map(|price| price.to_f64());
-        (self.latest_market_update_ms, bid, ask)
+        (self.latest_market_latency_ms, bid, ask)
     }
 
     pub(crate) fn set_ai_annotation(&mut self, annotation: crate::ai::ChartAnnotation) {
@@ -1054,7 +1060,11 @@ impl KlineChart {
         self.invalidate(None);
     }
 
-    pub fn insert_trades(&mut self, buffer: &[Trade]) {
+    pub fn insert_trades(&mut self, buffer: &[Trade], update_t: UnixMs) {
+        self.latest_market_latency_ms = Some(market_latency_ms(
+            chrono::Utc::now().timestamp_millis().max(0) as u64,
+            update_t.as_u64(),
+        ));
         self.raw_trades.extend_from_slice(buffer);
 
         match self.data_source {
@@ -4114,6 +4124,12 @@ fn should_show_text(cell_height_unscaled: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn market_latency_is_fixed_at_event_arrival() {
+        assert_eq!(market_latency_ms(1_050, 1_000), 50);
+        assert_eq!(market_latency_ms(900, 1_000), 0);
+    }
 
     #[test]
     fn footprint_orderbook_reserves_right_margin_only_when_enabled() {

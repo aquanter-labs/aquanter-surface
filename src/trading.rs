@@ -356,7 +356,7 @@ pub struct ChartSource {
     pub min_tick: f64,
     pub min_qty: f64,
     pub latest_price: Option<f64>,
-    pub latest_update_ms: u64,
+    pub market_latency_ms: Option<u64>,
     pub best_bid: Option<f64>,
     pub best_ask: Option<f64>,
 }
@@ -1814,13 +1814,8 @@ impl Trader {
         let latency = if self.is_simulation() {
             selected_chart
                 .as_ref()
-                .filter(|source| source.latest_update_ms > 0)
-                .map(|source| {
-                    format!(
-                        "Market {} ms",
-                        local_time_ms().saturating_sub(source.latest_update_ms)
-                    )
-                })
+                .and_then(|source| source.market_latency_ms)
+                .map(|latency| format!("Market {latency} ms"))
                 .unwrap_or_else(|| "Market -- ms".to_string())
         } else {
             self.latency_ms
