@@ -646,7 +646,7 @@ impl Trader {
                 self.update_simulated_market(price);
             }
         }
-        self.recalculate_quantity();
+        self.recalculate_quantity_if_empty();
     }
 
     pub fn selected_chart(&self) -> Option<uuid::Uuid> {
@@ -816,6 +816,7 @@ impl Trader {
                         .unwrap_or_default();
                     self.status = format!("{exchange} selected.");
                 }
+                self.recalculate_quantity();
             }
             Message::SimulationBalanceChanged(value) => {
                 self.simulation_balance = integer_input(value);
@@ -903,6 +904,7 @@ impl Trader {
                     Ok((client, snapshot)) => {
                         self.client = Some(client);
                         self.snapshot = Some(snapshot);
+                        self.recalculate_quantity();
                         self.healthy = true;
                         self.last_poll = Some(std::time::Instant::now());
                         self.status = format!(
@@ -972,7 +974,7 @@ impl Trader {
                         self.snapshot = Some(snapshot);
                         self.dragged_protection = None;
                         self.healthy = true;
-                        self.recalculate_quantity();
+                        self.recalculate_quantity_if_empty();
                         self.last_poll = Some(std::time::Instant::now());
                         self.status = "Account synchronized.".to_string();
                     }
@@ -1335,6 +1337,12 @@ impl Trader {
         }
     }
 
+    fn recalculate_quantity_if_empty(&mut self) {
+        if self.quantity.trim().is_empty() {
+            self.recalculate_quantity();
+        }
+    }
+
     fn finish_request_timing(&mut self) {
         self.latency_ms = self
             .request_started
@@ -1417,7 +1425,6 @@ impl Trader {
                 Err(error) => error,
             };
             self.persist_simulation();
-            self.recalculate_quantity();
             return Task::none();
         }
         let Some(client) = self.client.clone() else {
@@ -4126,6 +4133,35 @@ mod tests {
             Some(0.05)
         );
         assert_eq!(quantity_from_allocation(1_000.0, 25, 10, 0.0, 0.001), None);
+    }
+
+    #[test]
+    fn account_refresh_does_not_overwrite_entered_quantity() {
+        let mut trader = Trader::new(
+            TradingConfig {
+                exchange: TradingExchange::Simulation,
+                ..TradingConfig::default()
+            },
+            None,
+        );
+        trader.set_chart_sources(vec![ChartSource {
+            pane_id: uuid::Uuid::new_v4(),
+            link_group: None,
+            binance_usdm: true,
+            label: "BTCUSDT".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            min_tick: 0.1,
+            min_qty: 0.001,
+            latest_price: Some(100.0),
+            market_latency_ms: None,
+            best_bid: None,
+            best_ask: None,
+        }]);
+        trader.quantity = "1".to_string();
+
+        let _ = trader.update(Message::SnapshotLoaded(Ok(simulated_snapshot(9_000))));
+
+        assert_eq!(trader.quantity, "1");
     }
 
     #[test]
