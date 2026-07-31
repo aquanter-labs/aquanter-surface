@@ -46,6 +46,19 @@ fn market_latency_ms(received_at_ms: u64, event_at_ms: u64) -> u64 {
     received_at_ms.saturating_sub(event_at_ms)
 }
 
+fn smooth_market_latency(current: Option<f64>, sample_ms: u64) -> Option<f64> {
+    if sample_ms == 0 {
+        return current;
+    }
+    Some(current.map_or(sample_ms as f64, |value| {
+        value * 0.9 + sample_ms as f64 * 0.1
+    }))
+}
+
+fn displayed_market_latency(value: Option<f64>) -> Option<u64> {
+    value.map(|value| ((value / 5.0).round() as u64 * 5).max(5))
+}
+
 impl Chart for KlineChart {
     type IndicatorKind = KlineIndicator;
 
@@ -198,7 +211,7 @@ pub struct KlineChart {
     open_interest: BTreeMap<UnixMs, f64>,
     liquidations: VecDeque<Liquidation>,
     orderbook: [GroupedDepth; 2],
-    latest_market_latency_ms: Option<u64>,
+    latest_market_latency_ms: Option<f64>,
     indicators: EnumMap<KlineIndicator, Option<Box<dyn KlineIndicatorImpl>>>,
     fetching_trades: (bool, Option<Handle>),
     pub(crate) kind: KlineChartKind,
@@ -659,10 +672,13 @@ impl KlineChart {
         if !matches!(self.kind, KlineChartKind::Footprint { .. }) {
             return;
         }
-        self.latest_market_latency_ms = Some(market_latency_ms(
-            chrono::Utc::now().timestamp_millis().max(0) as u64,
-            update_t.as_u64(),
-        ));
+        self.latest_market_latency_ms = smooth_market_latency(
+            self.latest_market_latency_ms,
+            market_latency_ms(
+                chrono::Utc::now().timestamp_millis().max(0) as u64,
+                update_t.as_u64(),
+            ),
+        );
         let step = self.chart.tick_size;
         self.orderbook[Side::Bid.idx()].regroup_from_raw(&depth.bids, Side::Bid, step);
         self.orderbook[Side::Ask.idx()].regroup_from_raw(&depth.asks, Side::Ask, step);
@@ -687,7 +703,7 @@ impl KlineChart {
             .keys()
             .next()
             .map(|price| price.to_f64());
-        (self.latest_market_latency_ms, bid, ask)
+        (displayed_market_latency(self.latest_market_latency_ms), bid, ask)
     }
 
     pub(crate) fn set_ai_annotation(&mut self, annotation: crate::ai::ChartAnnotation) {
@@ -1061,10 +1077,13 @@ impl KlineChart {
     }
 
     pub fn insert_trades(&mut self, buffer: &[Trade], update_t: UnixMs) {
-        self.latest_market_latency_ms = Some(market_latency_ms(
-            chrono::Utc::now().timestamp_millis().max(0) as u64,
-            update_t.as_u64(),
-        ));
+        self.latest_market_latency_ms = smooth_market_latency(
+            self.latest_market_latency_ms,
+            market_latency_ms(
+                chrono::Utc::now().timestamp_millis().max(0) as u64,
+                update_t.as_u64(),
+            ),
+        );
         self.raw_trades.extend_from_slice(buffer);
 
         match self.data_source {
@@ -4129,6 +4148,14 @@ mod tests {
     fn market_latency_is_fixed_at_event_arrival() {
         assert_eq!(market_latency_ms(1_050, 1_000), 50);
         assert_eq!(market_latency_ms(900, 1_000), 0);
+
+        let latency = smooth_market_latency(None, 100);
+        assert_eq!(smooth_market_latency(latency, 0), latency);
+
+        let latency = smooth_market_latency(latency, 200);
+        assert_eq!(latency, Some(110.0));
+        assert_eq!(displayed_market_latency(latency), Some(110));
+        assert_eq!(displayed_market_latency(Some(112.0)), Some(110));
     }
 
     #[test]
