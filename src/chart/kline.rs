@@ -61,9 +61,8 @@ fn displayed_market_latency(value: Option<f64>) -> Option<u64> {
 
 fn missing_open_interest_range(
     open_interest: &BTreeMap<UnixMs, f64>,
-    visible_earliest: UnixMs,
+    required_earliest: UnixMs,
     kline_latest: UnixMs,
-    prefetch_earliest: UnixMs,
 ) -> Option<FetchRange> {
     let earliest = open_interest.keys().next().copied().unwrap_or(kline_latest);
     let latest = open_interest
@@ -71,13 +70,10 @@ fn missing_open_interest_range(
         .next_back()
         .copied()
         .unwrap_or(UnixMs::ZERO);
-    if visible_earliest < earliest {
-        Some(FetchRange::OpenInterest(prefetch_earliest, earliest))
+    if required_earliest < earliest {
+        Some(FetchRange::OpenInterest(required_earliest, earliest))
     } else if latest < kline_latest {
-        Some(FetchRange::OpenInterest(
-            latest.max(prefetch_earliest),
-            kline_latest,
-        ))
+        Some(FetchRange::OpenInterest(latest, kline_latest))
     } else {
         None
     }
@@ -844,21 +840,32 @@ impl KlineChart {
                 }
 
                 // priority 3, open interest used by AI and indicators
-                if self
-                    .chart
-                    .ticker_info
-                    .exchange()
-                    .open_interest_source_timeframe(timeseries.interval)
-                    .is_some()
-                    && let Some(range) = missing_open_interest_range(
-                        &self.open_interest,
-                        visible_earliest_ms,
-                        kline_latest,
-                        UnixMs::new(prefetch_earliest),
-                    )
-                    && let Some(action) = request_fetch(&mut self.request_handler, range)
+                let exchange = self.chart.ticker_info.exchange();
+                if let Some(source_timeframe) =
+                    exchange.open_interest_source_timeframe(timeseries.interval)
                 {
-                    return Some(action);
+                    let required_earliest = if matches!(
+                        exchange,
+                        exchange::adapter::Exchange::BinanceLinear
+                            | exchange::adapter::Exchange::BinanceInverse
+                    ) {
+                        const BINANCE_OI_HISTORY_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
+                        let cutoff = (chrono::Utc::now().timestamp_millis().max(0) as u64)
+                            .saturating_sub(BINANCE_OI_HISTORY_MS);
+                        let interval = source_timeframe.to_milliseconds();
+                        kline_earliest.max(UnixMs::new(cutoff.div_ceil(interval) * interval))
+                    } else {
+                        kline_earliest
+                    };
+
+                    if let Some(range) = missing_open_interest_range(
+                        &self.open_interest,
+                        required_earliest,
+                        kline_latest,
+                    ) && let Some(action) = request_fetch(&mut self.request_handler, range)
+                    {
+                        return Some(action);
+                    }
                 }
 
                 // priority 4, indicators
@@ -4200,16 +4207,28 @@ mod tests {
     }
 
     #[test]
-    fn empty_open_interest_requests_the_visible_history() {
+    fn open_interest_requests_the_loaded_history() {
         assert_eq!(
-            missing_open_interest_range(
-                &BTreeMap::new(),
-                UnixMs::new(2_000),
-                UnixMs::new(4_000),
-                UnixMs::new(1_000),
-            ),
+            missing_open_interest_range(&BTreeMap::new(), UnixMs::new(1_000), UnixMs::new(4_000),),
             Some(FetchRange::OpenInterest(
                 UnixMs::new(1_000),
+                UnixMs::new(4_000)
+            ))
+        );
+
+        let mut partial = BTreeMap::from([(UnixMs::new(2_000), 1.0), (UnixMs::new(3_000), 1.0)]);
+        assert_eq!(
+            missing_open_interest_range(&partial, UnixMs::new(1_000), UnixMs::new(4_000)),
+            Some(FetchRange::OpenInterest(
+                UnixMs::new(1_000),
+                UnixMs::new(2_000)
+            ))
+        );
+        partial.insert(UnixMs::new(1_000), 1.0);
+        assert_eq!(
+            missing_open_interest_range(&partial, UnixMs::new(1_000), UnixMs::new(4_000)),
+            Some(FetchRange::OpenInterest(
+                UnixMs::new(3_000),
                 UnixMs::new(4_000)
             ))
         );
