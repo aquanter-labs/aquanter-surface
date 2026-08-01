@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{fmt, io::ErrorKind, time::Duration};
 
-const PROMPT_VERSION: &str = "microstructure-v3";
+const PROMPT_VERSION: &str = "microstructure-v4";
 const ANALYSIS_HISTORY_PATH: &str = "ai/analysis-history.jsonl";
 const MAX_HISTORY_RECORDS: usize = 500;
 
@@ -297,6 +297,27 @@ enum TradeBias {
     Neutral,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum ExecutionState {
+    Ready,
+    TriggerPending,
+    #[default]
+    NoEdge,
+    Unavailable,
+}
+
+impl fmt::Display for ExecutionState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Ready => write!(f, "READY"),
+            Self::TriggerPending => write!(f, "TRIGGER PENDING"),
+            Self::NoEdge => write!(f, "NO EDGE"),
+            Self::Unavailable => write!(f, "UNAVAILABLE"),
+        }
+    }
+}
+
 impl fmt::Display for TradeBias {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -461,6 +482,9 @@ struct PriceZone {
 struct AnalysisResult {
     action: TradeAction,
     preferred_bias: TradeBias,
+    execution_state: ExecutionState,
+    bullish_score: f32,
+    bearish_score: f32,
     market_regime: String,
     decision_summary: String,
     setup: String,
@@ -489,6 +513,9 @@ impl Default for AnalysisResult {
         Self {
             action: TradeAction::Wait,
             preferred_bias: TradeBias::Neutral,
+            execution_state: ExecutionState::NoEdge,
+            bullish_score: 0.0,
+            bearish_score: 0.0,
             market_regime: String::new(),
             decision_summary: String::new(),
             setup: String::new(),
@@ -516,6 +543,8 @@ impl Default for AnalysisResult {
 
 impl AnalysisResult {
     fn normalize(&mut self) {
+        self.bullish_score = self.bullish_score.clamp(0.0, 100.0);
+        self.bearish_score = self.bearish_score.clamp(0.0, 100.0);
         self.key_levels.retain(|level| {
             level.price.is_finite() && level.price > 0.0 && level.strength.is_finite()
         });
@@ -1672,6 +1701,10 @@ impl Agent {
                 ]
                 .spacing(16)
                 .align_y(Alignment::Center),
+                text(format!(
+                    "UP {:.0} / DOWN {:.0}",
+                    analysis.bullish_score, analysis.bearish_score
+                )),
                 text(format!("Decision: {}", analysis.decision_summary)),
                 text(format!("Regime: {}", analysis.market_regime)),
                 text(format!("Support: {}", prices(&analysis.support_levels))),
@@ -1708,6 +1741,10 @@ impl Agent {
             .spacing(16)
             .align_y(Alignment::Center),
             text(format!("Bias: {}", analysis.preferred_bias)),
+            text(format!(
+                "State: {} | Bull {:.0} / Bear {:.0}",
+                analysis.execution_state, analysis.bullish_score, analysis.bearish_score
+            )),
             text(format!("Decision: {}", analysis.decision_summary)),
             text(format!("Setup: {}", analysis.setup)),
             text(format!("Regime: {}", analysis.market_regime)),
@@ -2097,15 +2134,16 @@ fn system_prompt(mode: AnalysisMode) -> String {
     let base = r#"You are a read-only crypto market microstructure decision-support analyst. You do not place orders. Use only supplied data and never invent news, levels, open interest, liquidity or probabilities.
 
 Decision policy:
-1. Classify regime, then independently evaluate the best LONG and SHORT setup.
-2. Return LONG or SHORT when one side has aligned evidence and a defensible plan with reward-to-risk of at least 1.5. A conditional trigger is allowed; action describes the preferred setup, not an automatic market order.
-3. WAIT is an active conclusion, not the default. Use it only when neither side has a current asymmetric setup. For WAIT, provide preferred_bias, the exact no_trade_reason, trigger_conditions that would activate a trade, and a conditional execution guide.
-4. Use AVOID only for unusable/stale data or abnormal market conditions where analysis itself is unreliable.
-5. Never turn ordinary adjacent order-book quotes into support/resistance. Return at most four key_levels, strongest first, only when supported by swing structure, VWAP/POC, repeated reaction, exceptional liquidity concentration, order flow, or higher-timeframe confluence. Strength is evidence quality from 0 to 100.
-6. For LONG/SHORT provide a bounded entry, stop, at least one target, invalidation and concise numbered execution_steps. Do not claim certainty.
+1. Classify regime, then score the best LONG and SHORT setup independently from 0 to 100 using only available evidence. Missing optional OI, depth, liquidation, or order-flow fields reduce confidence but must not by themselves veto a setup or force WAIT.
+2. Return LONG or SHORT when one side scores at least 55 and leads the other by at least 10 points. A conditional setup is valid: use execution_state TRIGGER_PENDING until its stated trigger occurs. Use READY only when the entry trigger is already present.
+3. Reward-to-risk of 1.5 is preferred, not a hard gate. Use structure-derived entry, stop and targets, report the actual ratio, and reject only plans with no positive net asymmetry after likely fees and slippage.
+4. WAIT is an active conclusion, not the default. Use it only when both scores are below 55 or differ by less than 10, and set execution_state to NO_EDGE. Provide preferred_bias, the exact no_trade_reason, trigger_conditions that would activate a trade, and a conditional execution guide.
+5. Use AVOID with execution_state UNAVAILABLE only for unusable/stale data or abnormal market conditions where analysis itself is unreliable.
+6. Never turn ordinary adjacent order-book quotes into support/resistance. Return at most four key_levels, strongest first, only when supported by swing structure, VWAP/POC, repeated reaction, exceptional liquidity concentration, order flow, or higher-timeframe confluence. Strength is evidence quality from 0 to 100.
+7. For LONG/SHORT provide a bounded entry, stop, at least one target, invalidation and concise numbered execution_steps. Do not claim certainty.
 
 Return exactly one JSON object with this shape:
-{"action":"LONG|SHORT|WAIT|AVOID","preferred_bias":"LONG|SHORT|NEUTRAL","decision_summary":"string","setup":"string","market_regime":"string","confidence":0,"valid_for_seconds":0,"entry_zone":{"low":null,"high":null},"stop_loss":null,"targets":[],"risk_reward":null,"key_levels":[{"price":0,"role":"SUPPORT|RESISTANCE|PIVOT","strength":0,"reason":"string"}],"support_levels":[],"resistance_levels":[],"no_trade_reason":"string","trigger_conditions":[],"execution_steps":[],"bullish_evidence":[],"bearish_evidence":[],"invalidation":[],"risks":[],"data_quality_notes":[],"recheck_conditions":[]}
+{"action":"LONG|SHORT|WAIT|AVOID","preferred_bias":"LONG|SHORT|NEUTRAL","execution_state":"READY|TRIGGER_PENDING|NO_EDGE|UNAVAILABLE","bullish_score":0,"bearish_score":0,"decision_summary":"string","setup":"string","market_regime":"string","confidence":0,"valid_for_seconds":0,"entry_zone":{"low":null,"high":null},"stop_loss":null,"targets":[],"risk_reward":null,"key_levels":[{"price":0,"role":"SUPPORT|RESISTANCE|PIVOT","strength":0,"reason":"string"}],"support_levels":[],"resistance_levels":[],"no_trade_reason":"string","trigger_conditions":[],"execution_steps":[],"bullish_evidence":[],"bearish_evidence":[],"invalidation":[],"risks":[],"data_quality_notes":[],"recheck_conditions":[]}
 
 Confidence is evidence quality from 0 to 100, not win probability. Price levels must be numeric and derived from the snapshot. support_levels and resistance_levels are compatibility summaries of key_levels and must also be strongest-first with no more than two values each. For scalping, explicitly consider spread, depth imbalance, Delta/CVD behavior, OI change, liquidation pressure, nearby high-confluence structure and higher-timeframe conflict."#;
     if mode == AnalysisMode::NextCandle {
@@ -2113,7 +2151,7 @@ Confidence is evidence quality from 0 to 100, not win probability. Price levels 
             "{base}\n\nNext-candle override: predict one binary direction for the immediately next \
              primary-timeframe candle. Return LONG for an UP candle or SHORT for a DOWN candle. \
              Do not return WAIT. Rules about entry zones, reward-to-risk, targets and execution \
-             steps do not apply; leave those fields empty or null. Use AVOID only when supplied \
+             steps do not apply; leave those fields empty or null. Set execution_state to READY. Use AVOID only when supplied \
              data is unusable. Confidence remains evidence quality, not a calibrated probability."
         )
     } else {
@@ -2486,6 +2524,36 @@ fn normalize_analysis_for_mode(content: &str, mode: AnalysisMode) -> Result<Stri
     if mode == AnalysisMode::NextCandle && !matches!(action, "LONG" | "SHORT") {
         return Err("Next K response has no UP/DOWN direction.".to_string());
     }
+    if mode != AnalysisMode::NextCandle {
+        let bullish = value
+            .get("bullish_score")
+            .and_then(Value::as_f64)
+            .ok_or_else(|| "Model response is missing bullish_score.".to_string())?;
+        let bearish = value
+            .get("bearish_score")
+            .and_then(Value::as_f64)
+            .ok_or_else(|| "Model response is missing bearish_score.".to_string())?;
+        let state = value
+            .get("execution_state")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let consistent = match action {
+            "LONG" => bullish >= 55.0 && bullish - bearish >= 10.0
+                && matches!(state, "READY" | "TRIGGER_PENDING"),
+            "SHORT" => bearish >= 55.0 && bearish - bullish >= 10.0
+                && matches!(state, "READY" | "TRIGGER_PENDING"),
+            "WAIT" => {
+                ((bullish < 55.0 && bearish < 55.0) || (bullish - bearish).abs() < 10.0)
+                    && state == "NO_EDGE"
+            }
+            "AVOID" => state == "UNAVAILABLE",
+            _ => false,
+        };
+        if !consistent {
+            return Err("Action, scores, and execution_state conflict with the decision policy."
+                .to_string());
+        }
+    }
     match action {
         "LONG" | "SHORT"
             if mode != AnalysisMode::NextCandle
@@ -2754,6 +2822,9 @@ mod tests {
             system_prompt(AnalysisMode::Scalping)
                 .contains("WAIT is an active conclusion, not the default")
         );
+        assert!(system_prompt(AnalysisMode::Scalping).contains("must not by themselves veto"));
+        assert!(system_prompt(AnalysisMode::Scalping).contains("bullish_score"));
+        assert!(system_prompt(AnalysisMode::Scalping).contains("TRIGGER_PENDING"));
         assert!(system_prompt(AnalysisMode::Scalping).contains("at most four key_levels"));
     }
 
@@ -2803,8 +2874,11 @@ mod tests {
     fn response_requires_a_supported_action() {
         assert!(normalize_analysis(r#"{"action":"WAIT"}"#).is_err());
         assert!(normalize_analysis(
-            r#"{"action":"WAIT","decision_summary":"No edge yet","no_trade_reason":"Delta conflicts with OI","trigger_conditions":["CVD breaks higher"],"execution_steps":["Wait for confirmation"]}"#
+            r#"{"action":"WAIT","execution_state":"NO_EDGE","bullish_score":50,"bearish_score":45,"decision_summary":"No edge yet","no_trade_reason":"Delta conflicts with OI","trigger_conditions":["CVD breaks higher"],"execution_steps":["Wait for confirmation"]}"#
         ).is_ok());
+        assert!(normalize_analysis(
+            r#"{"action":"WAIT","execution_state":"NO_EDGE","bullish_score":70,"bearish_score":40,"decision_summary":"No edge yet","no_trade_reason":"Mixed flow","trigger_conditions":["Break"],"execution_steps":["Wait"]}"#
+        ).is_err());
         assert!(normalize_analysis(r#"{"action":"BUY"}"#).is_err());
         let parsed: AnalysisResult = serde_json::from_str(
             r#"{"action":"LONG","confidence":72,"valid_for_seconds":30,"entry_zone":{"low":99.5,"high":100.0}}"#,
@@ -2812,6 +2886,7 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.action, TradeAction::Long);
         assert_eq!(parsed.entry_zone.low, Some(99.5));
+        assert_eq!(parsed.execution_state, ExecutionState::NoEdge);
     }
 
     #[test]
@@ -3053,7 +3128,7 @@ mod tests {
     fn structured_response_extracts_json_from_prose_and_fences() {
         let response = r#"Result follows:
 ```json
-{"action":"WAIT","decision_summary":"No edge","no_trade_reason":"Mixed flow","trigger_conditions":["Break"],"execution_steps":["Wait"]}
+{"action":"WAIT","execution_state":"NO_EDGE","bullish_score":50,"bearish_score":45,"decision_summary":"No edge","no_trade_reason":"Mixed flow","trigger_conditions":["Break"],"execution_steps":["Wait"]}
 ```
 Do not trade yet."#;
         let normalized = normalize_analysis(response).unwrap();
