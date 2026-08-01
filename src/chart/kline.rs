@@ -59,6 +59,30 @@ fn displayed_market_latency(value: Option<f64>) -> Option<u64> {
     value.map(|value| ((value / 5.0).round() as u64 * 5).max(5))
 }
 
+fn missing_open_interest_range(
+    open_interest: &BTreeMap<UnixMs, f64>,
+    visible_earliest: UnixMs,
+    kline_latest: UnixMs,
+    prefetch_earliest: UnixMs,
+) -> Option<FetchRange> {
+    let earliest = open_interest.keys().next().copied().unwrap_or(kline_latest);
+    let latest = open_interest
+        .keys()
+        .next_back()
+        .copied()
+        .unwrap_or(UnixMs::ZERO);
+    if visible_earliest < earliest {
+        Some(FetchRange::OpenInterest(prefetch_earliest, earliest))
+    } else if latest < kline_latest {
+        Some(FetchRange::OpenInterest(
+            latest.max(prefetch_earliest),
+            kline_latest,
+        ))
+    } else {
+        None
+    }
+}
+
 impl Chart for KlineChart {
     type IndicatorKind = KlineIndicator;
 
@@ -819,8 +843,25 @@ impl KlineChart {
                     }
                 }
 
-                // priority 3, indicators
-                // (e.g. open interest needs external fetch as it's not derived from klines)
+                // priority 3, open interest used by AI and indicators
+                if self
+                    .chart
+                    .ticker_info
+                    .exchange()
+                    .open_interest_source_timeframe(timeseries.interval)
+                    .is_some()
+                    && let Some(range) = missing_open_interest_range(
+                        &self.open_interest,
+                        visible_earliest_ms,
+                        kline_latest,
+                        UnixMs::new(prefetch_earliest),
+                    )
+                    && let Some(action) = request_fetch(&mut self.request_handler, range)
+                {
+                    return Some(action);
+                }
+
+                // priority 4, indicators
                 let ctx = indicator::kline::FetchCtx {
                     main_chart: &self.chart,
                     timeframe: timeseries.interval,
@@ -836,7 +877,7 @@ impl KlineChart {
                     }
                 }
 
-                // priority 4, missing klines & integrity check
+                // priority 5, missing klines & integrity check
                 let check_earliest = UnixMs::new(prefetch_earliest).max(kline_earliest);
                 let check_latest = visible_latest_ms.saturating_add(timeframe_ms);
 
@@ -4156,6 +4197,22 @@ mod tests {
         assert_eq!(latency, Some(110.0));
         assert_eq!(displayed_market_latency(latency), Some(110));
         assert_eq!(displayed_market_latency(Some(112.0)), Some(110));
+    }
+
+    #[test]
+    fn empty_open_interest_requests_the_visible_history() {
+        assert_eq!(
+            missing_open_interest_range(
+                &BTreeMap::new(),
+                UnixMs::new(2_000),
+                UnixMs::new(4_000),
+                UnixMs::new(1_000),
+            ),
+            Some(FetchRange::OpenInterest(
+                UnixMs::new(1_000),
+                UnixMs::new(4_000)
+            ))
+        );
     }
 
     #[test]
