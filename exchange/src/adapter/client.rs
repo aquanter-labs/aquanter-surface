@@ -116,21 +116,22 @@ impl AdapterHandles {
         venue: Venue,
         proxy: Option<&super::proxy::Proxy>,
     ) -> Result<(), AdapterError> {
+        let client = reqwest::Client::new();
         match venue {
             Venue::Binance => {
-                self.binance = Some(binance::BinanceHandle::new(proxy)?);
+                self.binance = Some(binance::BinanceHandle::new(client, proxy)?);
             }
             Venue::Bybit => {
-                self.bybit = Some(bybit::BybitHandle::new(proxy)?);
+                self.bybit = Some(bybit::BybitHandle::new(client, proxy)?);
             }
             Venue::Hyperliquid => {
-                self.hyperliquid = Some(hyperliquid::HyperliquidHandle::new(proxy)?);
+                self.hyperliquid = Some(hyperliquid::HyperliquidHandle::new(client, proxy)?);
             }
             Venue::Okex => {
-                self.okex = Some(okex::OkexHandle::new(proxy)?);
+                self.okex = Some(okex::OkexHandle::new(client, proxy)?);
             }
             Venue::Mexc => {
-                self.mexc = Some(mexc::MexcHandle::new(proxy)?);
+                self.mexc = Some(mexc::MexcHandle::new(client, proxy)?);
             }
         }
 

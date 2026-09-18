@@ -248,7 +248,7 @@ impl Dashboard {
                     }
                     state
                         .notifications
-                        .push(Toast::error(DashboardError::Fetch(error).to_string()));
+                        .push(Toast::error(DashboardError::Fetch(error, req_id).to_string()));
                 }
             }
             Message::Pane(window, message) => match message {

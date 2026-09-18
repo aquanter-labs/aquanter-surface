@@ -2,7 +2,7 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Trade, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        hub::{TradeBuffer, WsAdapter, WsSession, WsTransport},
+        hub::{HeartbeatPolicy, TradeBuffer, WsAdapter, WsSession, WsTransport},
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util::de_string_to_number,
@@ -17,11 +17,20 @@ use sonic_rs::{JsonValueTrait, to_object_iter_unchecked};
 use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
+    time::Duration,
 };
 use tokio::sync::oneshot::{self, error::TryRecvError};
 
 const MAX_PENDING_DEPTH_EVENTS: usize = 512;
-const BINANCE_OPCODE_PING_PAYLOAD: &[u8] = b"fs";
+
+fn binance_heartbeat_policy(market: MarketKind) -> HeartbeatPolicy {
+    let silence_timeout = match market {
+        MarketKind::Spot => Duration::from_secs(45),
+        MarketKind::LinearPerps | MarketKind::InversePerps => Duration::from_secs(240),
+    };
+
+    HeartbeatPolicy::server_driven(silence_timeout)
+}
 
 fn ws_domain_from_market_type(market: MarketKind) -> &'static str {
     match market {
@@ -379,6 +388,10 @@ struct TradeAdapter {
 }
 
 impl WsAdapter for TradeAdapter {
+    fn heartbeat_policy(&self) -> HeartbeatPolicy {
+        binance_heartbeat_policy(self.market)
+    }
+
     async fn connect(&mut self) -> Result<WsTransport, String> {
         connect_stream_socket(
             self.market,
@@ -480,7 +493,7 @@ pub fn connect_trade_stream(
         proxy_cfg: proxy_cfg.clone(),
     };
 
-    WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, stream_scope).run(adapter)
+    WsSession::new(stream_scope).run(adapter)
 }
 
 struct LiquidationAdapter {
@@ -491,6 +504,10 @@ struct LiquidationAdapter {
 }
 
 impl WsAdapter for LiquidationAdapter {
+    fn heartbeat_policy(&self) -> HeartbeatPolicy {
+        binance_heartbeat_policy(self.market)
+    }
+
     async fn connect(&mut self) -> Result<WsTransport, String> {
         connect_stream_socket(
             self.market,
@@ -586,7 +603,7 @@ pub fn connect_liquidation_stream(
         proxy_cfg,
     };
 
-    WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, stream_scope).run(adapter)
+    WsSession::new(stream_scope).run(adapter)
 }
 
 struct DepthAdapter {
@@ -601,6 +618,10 @@ struct DepthAdapter {
 }
 
 impl WsAdapter for DepthAdapter {
+    fn heartbeat_policy(&self) -> HeartbeatPolicy {
+        binance_heartbeat_policy(self.market)
+    }
+
     async fn connect(&mut self) -> Result<WsTransport, String> {
         let websocket = connect_stream_socket(
             self.market,
@@ -847,7 +868,7 @@ pub fn connect_depth_stream(
         sync_machine: DepthSyncMachine::new(handle, ticker),
     };
 
-    WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, stream_scope.clone()).run(adapter)
+    WsSession::new(stream_scope.clone()).run(adapter)
 }
 
 struct KlineAdapter {
@@ -859,6 +880,10 @@ struct KlineAdapter {
 }
 
 impl WsAdapter for KlineAdapter {
+    fn heartbeat_policy(&self) -> HeartbeatPolicy {
+        binance_heartbeat_policy(self.market)
+    }
+
     async fn connect(&mut self) -> Result<WsTransport, String> {
         connect_stream_socket(
             self.market,
@@ -978,7 +1003,7 @@ pub fn connect_kline_stream(
         proxy_cfg: proxy_cfg.clone(),
     };
 
-    WsSession::with_opcode_ping(BINANCE_OPCODE_PING_PAYLOAD, stream_scope).run(adapter)
+    WsSession::new(stream_scope).run(adapter)
 }
 
 #[cfg(test)]
