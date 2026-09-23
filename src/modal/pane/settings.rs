@@ -1847,8 +1847,8 @@ pub fn kline_indicator_cfg_view<'a>(
 
             let delta_cfg = cfg.clone();
             let absorption_delta = slider(
-                0.1..=2.0,
-                bias.absorption_delta.clamp(0.1, 2.0),
+                0.1..=0.95,
+                bias.absorption_delta.clamp(0.1, 0.95),
                 move |value| {
                     let mut next = delta_cfg.clone();
                     next.order_flow_bias.absorption_delta = value;

@@ -1075,6 +1075,21 @@ struct BiasPoint {
     total: u32,
 }
 
+fn absorption_score(delta: f64, price_response: f64, config: OrderFlowBiasConfig) -> f64 {
+    let threshold = f64::from(config.absorption_delta.clamp(0.1, 0.95));
+    let strength = ((delta.abs() - threshold) / (1.0 - threshold)).clamp(0.0, 1.0);
+    if strength == 0.0 {
+        return 0.0;
+    }
+    let response_limit = f64::from(config.max_price_response.clamp(0.05, 1.0));
+    let failure = if delta.signum() != price_response.signum() {
+        1.0
+    } else {
+        ((response_limit - price_response.abs()) / response_limit).clamp(0.0, 1.0)
+    };
+    -delta.signum() * strength * failure * 35.0
+}
+
 fn order_flow_bias(bars: &[BiasBar], config: OrderFlowBiasConfig) -> BTreeMap<UnixMs, BiasPoint> {
     let lookback = usize::from(config.lookback.max(2));
     let signal_threshold = f64::from(config.signal_threshold.clamp(5.0, 100.0));
@@ -1093,14 +1108,7 @@ fn order_flow_bias(bars: &[BiasBar], config: OrderFlowBiasConfig) -> BTreeMap<Un
         let delta = (bar.delta / average_delta).clamp(-1.0, 1.0);
         let range = (bar.high - bar.low).max(f64::EPSILON);
         let price_response = ((bar.close - bar.open) / range).clamp(-1.0, 1.0);
-        let absorption = if delta.abs() >= f64::from(config.absorption_delta.clamp(0.1, 2.0))
-            && (price_response.abs() < f64::from(config.max_price_response.clamp(0.05, 1.0))
-                || delta.signum() != price_response.signum())
-        {
-            -delta * 35.0
-        } else {
-            0.0
-        };
+        let absorption = absorption_score(delta, price_response, config);
 
         let average_range =
             history.iter().map(|bar| bar.high - bar.low).sum::<f64>() / lookback as f64;
@@ -1144,6 +1152,69 @@ fn order_flow_bias(bars: &[BiasBar], config: OrderFlowBiasConfig) -> BTreeMap<Un
         );
     }
     points
+}
+
+struct BiasPlot {
+    threshold: f32,
+    tooltip: TooltipFn<BiasPoint>,
+}
+
+impl Plot<AnySeries<'_, BiasPoint>> for BiasPlot {
+    fn y_extents(
+        &self,
+        data: &AnySeries<'_, BiasPoint>,
+        range: RangeInclusive<u64>,
+    ) -> Option<(f32, f32)> {
+        let mut found = false;
+        data.for_each_in(range, |_, _| found = true);
+        found.then_some((-100.0, 100.0))
+    }
+
+    fn draw(
+        &self,
+        frame: &mut canvas::Frame,
+        chart: &ViewState,
+        theme: &Theme,
+        data: &AnySeries<'_, BiasPoint>,
+        range: RangeInclusive<u64>,
+        scale: &YScale,
+    ) {
+        let palette = theme.extended_palette();
+        let visible_width = frame.width() / chart.scaling;
+        let left = -chart.translation.x - visible_width / 2.0;
+        let right = left + visible_width;
+        let guide = palette.background.strong.text.scale_alpha(0.25);
+        for value in [-self.threshold, 0.0, self.threshold] {
+            let y = scale.to_y(value);
+            frame.stroke(
+                &canvas::Path::line(Point::new(left, y), Point::new(right, y)),
+                canvas::Stroke::default().with_width(1.0).with_color(guide),
+            );
+        }
+
+        let zero = scale.to_y(0.0);
+        let width = chart.cell_width * 0.72;
+        data.for_each_in(range, |time, point| {
+            let value = point.score as f32;
+            let y = scale.to_y(value);
+            let color = if value >= self.threshold {
+                palette.success.base.color
+            } else if value <= -self.threshold {
+                palette.danger.base.color
+            } else {
+                palette.background.strong.text.scale_alpha(0.16)
+            };
+            frame.fill_rectangle(
+                Point::new(chart.interval_to_x(time) - width / 2.0, y.min(zero)),
+                Size::new(width, (zero - y).abs().max(1.0 / chart.scaling)),
+                color,
+            );
+        });
+    }
+
+    fn tooltip_fn(&self) -> Option<&TooltipFn<BiasPoint>> {
+        Some(&self.tooltip)
+    }
 }
 
 fn imbalance_pressure(point: &KlineDataPoint, ratio: f64) -> f64 {
@@ -1234,40 +1305,41 @@ impl KlineIndicatorImpl for OrderFlowBiasIndicator {
             .into();
         }
         let signal_threshold = f64::from(self.config.signal_threshold.clamp(5.0, 100.0));
-        let plot = SignedBarPlot::new(
-            |point: &BiasPoint| point.score as f32,
-            0.8,
-            iced::Color::TRANSPARENT,
-            iced::Color::TRANSPARENT,
-        )
-        .theme_colors(true, true)
-        .with_tooltip(move |point: &BiasPoint, _| {
-            let direction = if point.score >= signal_threshold {
-                "Bullish"
-            } else if point.score <= -signal_threshold {
-                "Bearish"
-            } else {
-                "Neutral"
-            };
-            let outcome = match point.correct {
-                Some(true) => "Win",
-                Some(false) => "Loss",
-                None => "Pending / no signal",
-            };
-            let rate = if point.total == 0 {
-                "n/a".to_string()
-            } else {
-                format!("{:.1}% ({}/{})", point.wins as f64 / point.total as f64 * 100.0, point.wins, point.total)
-            };
-            PlotTooltip::new(format!(
-                "Order Flow Bias: {:+.0} ({direction})\nAbsorption {:+.0} | CVD divergence {:+.0}\nPOC rejection {:+.0} | Imbalance {:+.0}\nOutcome: {outcome}\nLoaded win rate: {rate}",
-                point.score,
-                point.absorption,
-                point.divergence,
-                point.poc_rejection,
-                point.imbalance,
-            ))
-        });
+        let plot = BiasPlot {
+            threshold: signal_threshold as f32,
+            tooltip: Box::new(move |point: &BiasPoint, _| {
+                let direction = if point.score >= signal_threshold {
+                    "Bullish"
+                } else if point.score <= -signal_threshold {
+                    "Bearish"
+                } else {
+                    "Neutral"
+                };
+                let outcome = match point.correct {
+                    Some(true) => "Win",
+                    Some(false) => "Loss",
+                    None => "Pending / no signal",
+                };
+                let rate = if point.total == 0 {
+                    "n/a".to_string()
+                } else {
+                    format!(
+                        "{:.1}% ({}/{})",
+                        point.wins as f64 / point.total as f64 * 100.0,
+                        point.wins,
+                        point.total
+                    )
+                };
+                PlotTooltip::new(format!(
+                    "Order Flow Bias: {:+.0} ({direction})\nAbsorption {:+.0} | CVD divergence {:+.0}\nPOC rejection {:+.0} | Imbalance {:+.0}\nOutcome: {outcome}\nLoaded win rate: {rate}",
+                    point.score,
+                    point.absorption,
+                    point.divergence,
+                    point.poc_rejection,
+                    point.imbalance,
+                ))
+            }),
+        };
         indicator_row(
             chart,
             &self.cache,
@@ -1577,6 +1649,12 @@ mod tests {
         let points = order_flow_bias(&absorption, config);
         assert!(points[&UnixMs::new(2)].score >= f64::from(config.signal_threshold));
         assert_eq!(points[&UnixMs::new(2)].correct, Some(true));
+
+        let balanced =
+            OrderFlowBiasConfig::from_preset(data::chart::kline::OrderFlowBiasPreset::Balanced);
+        assert_eq!(absorption_score(0.59, 0.0, balanced), 0.0);
+        assert!(absorption_score(0.61, 0.0, balanced).abs() < 2.0);
+        assert!(absorption_score(1.0, 0.0, balanced).abs() > 30.0);
     }
 
     #[test]

@@ -915,7 +915,7 @@ impl OrderFlowBiasConfig {
             OrderFlowBiasPreset::Conservative => Self {
                 preset,
                 lookback: 20,
-                signal_threshold: 40.0,
+                signal_threshold: 35.0,
                 absorption_delta: 0.75,
                 max_price_response: 0.35,
                 imbalance_ratio: 3.0,
@@ -923,7 +923,7 @@ impl OrderFlowBiasConfig {
             OrderFlowBiasPreset::Balanced => Self {
                 preset,
                 lookback: 14,
-                signal_threshold: 30.0,
+                signal_threshold: 25.0,
                 absorption_delta: 0.60,
                 max_price_response: 0.45,
                 imbalance_ratio: 2.5,
@@ -931,7 +931,7 @@ impl OrderFlowBiasConfig {
             OrderFlowBiasPreset::Aggressive => Self {
                 preset,
                 lookback: 8,
-                signal_threshold: 20.0,
+                signal_threshold: 15.0,
                 absorption_delta: 0.45,
                 max_price_response: 0.60,
                 imbalance_ratio: 2.0,

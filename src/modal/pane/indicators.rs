@@ -75,6 +75,7 @@ where
                 | data::chart::indicator::KlineIndicator::OiFlowNet
                 | data::chart::indicator::KlineIndicator::OiWeightedDelta
                 | data::chart::indicator::KlineIndicator::LiquidationPressureIndex
+                | data::chart::indicator::KlineIndicator::OrderFlowBias
         )
     {
         row![
