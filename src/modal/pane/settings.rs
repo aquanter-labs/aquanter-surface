@@ -1804,6 +1804,108 @@ pub fn kline_indicator_cfg_view<'a>(
             .spacing(8)
             .into()
         }
+        KlineIndicator::OrderFlowBias => {
+            use data::chart::kline::{OrderFlowBiasConfig, OrderFlowBiasPreset};
+
+            let bias = cfg.order_flow_bias;
+            let preset_cfg = cfg.clone();
+            let preset = pick_list(OrderFlowBiasPreset::ALL, Some(bias.preset), move |preset| {
+                let mut next = preset_cfg.clone();
+                next.order_flow_bias = if preset == OrderFlowBiasPreset::Custom {
+                    OrderFlowBiasConfig { preset, ..bias }
+                } else {
+                    OrderFlowBiasConfig::from_preset(preset)
+                };
+                Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+            });
+
+            let lookback_cfg = cfg.clone();
+            let lookback = slider(
+                2.0..=100.0,
+                bias.lookback.clamp(2, 100) as f32,
+                move |value| {
+                    let mut next = lookback_cfg.clone();
+                    next.order_flow_bias.lookback = value as u16;
+                    next.order_flow_bias = next.order_flow_bias.custom();
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            )
+            .step(1.0);
+
+            let threshold_cfg = cfg.clone();
+            let threshold = slider(
+                5.0..=100.0,
+                bias.signal_threshold.clamp(5.0, 100.0),
+                move |value| {
+                    let mut next = threshold_cfg.clone();
+                    next.order_flow_bias.signal_threshold = value;
+                    next.order_flow_bias = next.order_flow_bias.custom();
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            )
+            .step(1.0);
+
+            let delta_cfg = cfg.clone();
+            let absorption_delta = slider(
+                0.1..=2.0,
+                bias.absorption_delta.clamp(0.1, 2.0),
+                move |value| {
+                    let mut next = delta_cfg.clone();
+                    next.order_flow_bias.absorption_delta = value;
+                    next.order_flow_bias = next.order_flow_bias.custom();
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            )
+            .step(0.05);
+
+            let response_cfg = cfg.clone();
+            let price_response = slider(
+                0.05..=1.0,
+                bias.max_price_response.clamp(0.05, 1.0),
+                move |value| {
+                    let mut next = response_cfg.clone();
+                    next.order_flow_bias.max_price_response = value;
+                    next.order_flow_bias = next.order_flow_bias.custom();
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            )
+            .step(0.05);
+
+            let imbalance_cfg = cfg.clone();
+            let imbalance_ratio = slider(
+                1.1..=10.0,
+                bias.imbalance_ratio.clamp(1.1, 10.0),
+                move |value| {
+                    let mut next = imbalance_cfg.clone();
+                    next.order_flow_bias.imbalance_ratio = value;
+                    next.order_flow_bias = next.order_flow_bias.custom();
+                    Message::VisualConfigChanged(pane, VisualConfig::Kline(next), false)
+                },
+            )
+            .step(0.1);
+
+            column![
+                text("Order Flow Bias").size(crate::style::text_size::SECTION),
+                row![text("Preset"), preset]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                text(format!("Lookback: {} bars", bias.lookback)),
+                lookback,
+                text(format!("Signal threshold: {:.0}", bias.signal_threshold)),
+                threshold,
+                text(format!("Absorption Delta: {:.2}x", bias.absorption_delta)),
+                absorption_delta,
+                text(format!(
+                    "Maximum price response: {:.0}%",
+                    bias.max_price_response * 100.0
+                )),
+                price_response,
+                text(format!("Imbalance ratio: {:.1}:1", bias.imbalance_ratio)),
+                imbalance_ratio,
+            ]
+            .spacing(8)
+            .into()
+        }
         KlineIndicator::LiquidationHeatmap => {
             let heatmap = cfg.liquidation_heatmap;
             let row_cfg = cfg.clone();

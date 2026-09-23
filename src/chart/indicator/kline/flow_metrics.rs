@@ -3,7 +3,7 @@ use std::ops::RangeInclusive;
 
 use data::chart::kline::{
     KlineDataPoint, LiquidationPressureConfig, OiDeltaDivergenceConfig, OiFlowNetConfig,
-    OiWeightedDeltaConfig,
+    OiWeightedDeltaConfig, OrderFlowBiasConfig,
 };
 use data::chart::{Basis, PlotData};
 use data::util::abbr_large_numbers;
@@ -1051,6 +1051,262 @@ impl KlineIndicatorImpl for OiWeightedDeltaIndicator {
 }
 
 #[derive(Clone, Copy)]
+struct BiasBar {
+    time: UnixMs,
+    open: f64,
+    high: f64,
+    low: f64,
+    close: f64,
+    delta: f64,
+    directional: bool,
+    poc: Option<f64>,
+    imbalance: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BiasPoint {
+    score: f64,
+    absorption: f64,
+    divergence: f64,
+    poc_rejection: f64,
+    imbalance: f64,
+    correct: Option<bool>,
+    wins: u32,
+    total: u32,
+}
+
+fn order_flow_bias(bars: &[BiasBar], config: OrderFlowBiasConfig) -> BTreeMap<UnixMs, BiasPoint> {
+    let lookback = usize::from(config.lookback.max(2));
+    let signal_threshold = f64::from(config.signal_threshold.clamp(5.0, 100.0));
+    let closed_len = bars.len().saturating_sub(1);
+    let mut points = BTreeMap::new();
+    let (mut wins, mut total) = (0, 0);
+
+    for index in lookback..closed_len {
+        let bar = bars[index];
+        let history = &bars[(index - lookback)..index];
+        let average_delta =
+            history.iter().map(|bar| bar.delta.abs()).sum::<f64>() / lookback as f64;
+        if !bar.directional || average_delta <= f64::EPSILON {
+            continue;
+        }
+        let delta = (bar.delta / average_delta).clamp(-1.0, 1.0);
+        let range = (bar.high - bar.low).max(f64::EPSILON);
+        let price_response = ((bar.close - bar.open) / range).clamp(-1.0, 1.0);
+        let absorption = if delta.abs() >= f64::from(config.absorption_delta.clamp(0.1, 2.0))
+            && (price_response.abs() < f64::from(config.max_price_response.clamp(0.05, 1.0))
+                || delta.signum() != price_response.signum())
+        {
+            -delta * 35.0
+        } else {
+            0.0
+        };
+
+        let average_range =
+            history.iter().map(|bar| bar.high - bar.low).sum::<f64>() / lookback as f64;
+        let price_change = ((bar.close - history[0].close)
+            / (average_range.max(f64::EPSILON) * lookback as f64))
+            .clamp(-1.0, 1.0);
+        let cvd = bars[(index - lookback)..=index]
+            .iter()
+            .map(|bar| bar.delta)
+            .sum::<f64>();
+        let cvd = (cvd / (average_delta * (lookback + 1) as f64)).clamp(-1.0, 1.0);
+        let divergence = if price_change * cvd < 0.0 {
+            cvd * 30.0
+        } else {
+            0.0
+        };
+        let poc_rejection = bar.poc.map_or(0.0, |poc| {
+            ((bar.close - poc) / range).clamp(-1.0, 1.0) * 20.0
+        });
+        let imbalance = bar.imbalance.clamp(-1.0, 1.0) * 15.0;
+        let score = (absorption + divergence + poc_rejection + imbalance).clamp(-100.0, 100.0);
+
+        let correct = (score.abs() >= signal_threshold && index + 1 < closed_len).then(|| {
+            total += 1;
+            let hit = (score > 0.0) == (bars[index + 1].close > bar.close);
+            wins += u32::from(hit);
+            hit
+        });
+        points.insert(
+            bar.time,
+            BiasPoint {
+                score,
+                absorption,
+                divergence,
+                poc_rejection,
+                imbalance,
+                correct,
+                wins,
+                total,
+            },
+        );
+    }
+    points
+}
+
+fn imbalance_pressure(point: &KlineDataPoint, ratio: f64) -> f64 {
+    let ratio = ratio.clamp(1.1, 10.0);
+    let (buy, sell) = point
+        .footprint
+        .trades
+        .values()
+        .fold((0_u32, 0_u32), |(buy, sell), level| {
+            let buy_qty = level.buy_qty.to_f64();
+            let sell_qty = level.sell_qty.to_f64();
+            if buy_qty > 0.0 && buy_qty >= sell_qty * ratio {
+                (buy + 1, sell)
+            } else if sell_qty > 0.0 && sell_qty >= buy_qty * ratio {
+                (buy, sell + 1)
+            } else {
+                (buy, sell)
+            }
+        });
+    let total = buy + sell;
+    if total == 0 {
+        0.0
+    } else {
+        (f64::from(buy) - f64::from(sell)) / f64::from(total)
+    }
+}
+
+pub struct OrderFlowBiasIndicator {
+    config: OrderFlowBiasConfig,
+    cache: Caches,
+    data: BTreeMap<UnixMs, BiasPoint>,
+}
+
+impl OrderFlowBiasIndicator {
+    pub fn new(config: OrderFlowBiasConfig) -> Self {
+        Self {
+            config,
+            cache: Caches::default(),
+            data: BTreeMap::new(),
+        }
+    }
+
+    fn rebuild(&mut self, source: &PlotData<KlineDataPoint>) {
+        let PlotData::TimeBased(series) = source else {
+            self.data.clear();
+            return;
+        };
+        let bars = series
+            .datapoints
+            .iter()
+            .map(|(&time, point)| BiasBar {
+                time,
+                open: point.kline.open.to_f64(),
+                high: point.kline.high.to_f64(),
+                low: point.kline.low.to_f64(),
+                close: point.kline.close.to_f64(),
+                delta: point.volume_delta().to_f64(),
+                directional: point.is_directional(),
+                poc: point.poc_price().map(|price| price.to_f64()),
+                imbalance: imbalance_pressure(point, f64::from(self.config.imbalance_ratio)),
+            })
+            .collect::<Vec<_>>();
+        self.data = order_flow_bias(&bars, self.config);
+        self.cache.clear_all();
+    }
+}
+
+impl KlineIndicatorImpl for OrderFlowBiasIndicator {
+    fn clear_all_caches(&mut self) {
+        self.cache.clear_all();
+    }
+    fn clear_crosshair_caches(&mut self) {
+        self.cache.clear_crosshair();
+    }
+    fn element<'a>(
+        &'a self,
+        chart: &'a ViewState,
+        _labels: bool,
+        range: RangeInclusive<u64>,
+    ) -> Element<'a, Message> {
+        if !matches!(chart.basis, Basis::Time(_)) {
+            return center(text("Order Flow Bias requires a time-based chart")).into();
+        }
+        if self.data.is_empty() {
+            return center(text(
+                "Order Flow Bias requires directional trade-volume data",
+            ))
+            .into();
+        }
+        let signal_threshold = f64::from(self.config.signal_threshold.clamp(5.0, 100.0));
+        let plot = SignedBarPlot::new(
+            |point: &BiasPoint| point.score as f32,
+            0.8,
+            iced::Color::TRANSPARENT,
+            iced::Color::TRANSPARENT,
+        )
+        .theme_colors(true, true)
+        .with_tooltip(move |point: &BiasPoint, _| {
+            let direction = if point.score >= signal_threshold {
+                "Bullish"
+            } else if point.score <= -signal_threshold {
+                "Bearish"
+            } else {
+                "Neutral"
+            };
+            let outcome = match point.correct {
+                Some(true) => "Win",
+                Some(false) => "Loss",
+                None => "Pending / no signal",
+            };
+            let rate = if point.total == 0 {
+                "n/a".to_string()
+            } else {
+                format!("{:.1}% ({}/{})", point.wins as f64 / point.total as f64 * 100.0, point.wins, point.total)
+            };
+            PlotTooltip::new(format!(
+                "Order Flow Bias: {:+.0} ({direction})\nAbsorption {:+.0} | CVD divergence {:+.0}\nPOC rejection {:+.0} | Imbalance {:+.0}\nOutcome: {outcome}\nLoaded win rate: {rate}",
+                point.score,
+                point.absorption,
+                point.divergence,
+                point.poc_rejection,
+                point.imbalance,
+            ))
+        });
+        indicator_row(
+            chart,
+            &self.cache,
+            true,
+            plot,
+            AnySeries::forward_unix_ms(&self.data),
+            range,
+        )
+    }
+    fn availability(&self, chart: &ViewState) -> IndicatorAvailability {
+        if matches!(chart.basis, Basis::Time(_)) {
+            IndicatorAvailability::Available
+        } else {
+            IndicatorAvailability::Unavailable(AvailabilityCause::Basis(chart.basis))
+        }
+    }
+    fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {
+        self.rebuild(source);
+    }
+    fn on_insert_klines(&mut self, _: &[Kline], source: &PlotData<KlineDataPoint>) {
+        self.rebuild(source);
+    }
+    fn on_insert_trades(&mut self, _: &[Trade], _: usize, source: &PlotData<KlineDataPoint>) {
+        self.rebuild(source);
+    }
+    fn on_basis_change(&mut self, source: &PlotData<KlineDataPoint>) {
+        self.rebuild(source);
+    }
+    fn on_visual_config_change(
+        &mut self,
+        config: &data::chart::kline::Config,
+        source: &PlotData<KlineDataPoint>,
+    ) {
+        self.config = config.order_flow_bias;
+        self.rebuild(source);
+    }
+}
+
+#[derive(Clone, Copy)]
 struct LiquidationSignal {
     score: f64,
     estimated: f64,
@@ -1281,6 +1537,47 @@ impl KlineIndicatorImpl for LiquidationPressureIndicator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn order_flow_bias_scores_closed_bars_and_tracks_next_bar_wins() {
+        let bar = |index: u64| {
+            let open = 100.0 + index as f64;
+            BiasBar {
+                time: UnixMs::new(index),
+                open,
+                high: open + 3.0,
+                low: open - 1.0,
+                close: open + 2.0,
+                delta: 100.0,
+                directional: true,
+                poc: None,
+                imbalance: 0.0,
+            }
+        };
+        let bars = (0..6).map(bar).collect::<Vec<_>>();
+        let config = OrderFlowBiasConfig {
+            lookback: 2,
+            ..OrderFlowBiasConfig::default()
+        };
+        let points = order_flow_bias(&bars, config);
+
+        assert!(!points.contains_key(&UnixMs::new(5)));
+        assert!(points[&UnixMs::new(2)].score.abs() < f64::from(config.signal_threshold));
+        assert_eq!(points[&UnixMs::new(4)].correct, None);
+        assert_eq!(
+            (points[&UnixMs::new(4)].wins, points[&UnixMs::new(4)].total),
+            (0, 0)
+        );
+
+        let mut absorption = bars;
+        absorption[2].close = absorption[2].open + 0.1;
+        absorption[2].delta = -100.0;
+        absorption[2].poc = Some(absorption[2].low);
+        absorption[2].imbalance = 1.0;
+        let points = order_flow_bias(&absorption, config);
+        assert!(points[&UnixMs::new(2)].score >= f64::from(config.signal_threshold));
+        assert_eq!(points[&UnixMs::new(2)].correct, Some(true));
+    }
 
     #[test]
     fn rsi_flow_weighting_and_liquidation_rules_match_definitions() {

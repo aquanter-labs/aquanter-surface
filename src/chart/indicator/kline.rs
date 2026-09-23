@@ -138,16 +138,6 @@ pub trait KlineIndicatorImpl {
 
     fn on_timezone_change(&self, _timezone: data::UserTimezone) {}
 
-    fn obscures_footprint_cell(
-        &self,
-        _interval: u64,
-        _cell_x: f32,
-        _chart: &ViewState,
-        _visible_region: iced::Rectangle,
-    ) -> bool {
-        false
-    }
-
     fn unavailable_message(&self, chart: &ViewState, indicator: &str) -> Option<String> {
         self.availability(chart).unavailable_message(indicator)
     }
@@ -250,6 +240,9 @@ pub fn make_empty(
             super::kline::flow_metrics::LiquidationPressureIndicator::new(
                 config.liquidation_pressure,
             ),
+        ),
+        KlineIndicator::OrderFlowBias => Box::new(
+            super::kline::flow_metrics::OrderFlowBiasIndicator::new(config.order_flow_bias),
         ),
     }
 }

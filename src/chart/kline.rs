@@ -1862,6 +1862,35 @@ fn canvas_local_center(bounds: Rectangle) -> Point {
     Point::new(bounds.width / 2.0, bounds.height / 2.0)
 }
 
+fn footprint_main_clip(size: Size, profile_width_percent: Option<u8>) -> Rectangle {
+    let reserved_width = profile_width_percent.map_or(0.0, |percent| {
+        size.width * f32::from(percent.clamp(5, 100)) / 100.0
+    });
+    Rectangle {
+        x: reserved_width,
+        y: 0.0,
+        width: (size.width - reserved_width).max(0.0),
+        height: size.height,
+    }
+}
+
+#[cfg(test)]
+mod profile_layout_tests {
+    use super::*;
+
+    #[test]
+    fn footprint_content_starts_after_left_volume_profile() {
+        let clip = footprint_main_clip(Size::new(1_000.0, 600.0), Some(30));
+        assert_eq!(clip, Rectangle::new(Point::new(300.0, 0.0), Size::new(700.0, 600.0)));
+    }
+
+    #[test]
+    fn footprint_content_uses_full_width_without_volume_profile() {
+        let clip = footprint_main_clip(Size::new(1_000.0, 600.0), None);
+        assert_eq!(clip, Rectangle::new(Point::ORIGIN, Size::new(1_000.0, 600.0)));
+    }
+}
+
 impl canvas::Program<Message> for KlineChart {
     type State = Interaction;
 
@@ -1912,13 +1941,18 @@ impl canvas::Program<Message> for KlineChart {
 
         let bounds_size = bounds.size();
         let palette = theme.extended_palette();
+        let profile_width_percent = matches!(self.kind, KlineChartKind::Footprint { .. })
+            .then_some(self.visual_config.volume_profile.max_width_percent)
+            .filter(|_| self.indicators[KlineIndicator::VolumeProfile].is_some());
+        let main_clip = footprint_main_clip(bounds_size, profile_width_percent);
 
         let klines = chart.cache.main.draw(renderer, bounds_size, |frame| {
-            let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
+            frame.with_clip(main_clip, |frame| {
+                let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
 
-            frame.translate(center);
-            frame.scale(chart.scaling);
-            frame.translate(chart.translation);
+                frame.translate(center);
+                frame.scale(chart.scaling);
+                frame.translate(chart.translation);
 
             let region = chart.visible_region(frame.size());
             let (earliest, latest) = chart.interval_range(&region);
@@ -1991,17 +2025,6 @@ impl canvas::Program<Message> for KlineChart {
                         latest,
                         interval_to_x,
                         |frame, x_position, kline, trades| {
-                            let text_is_obscured =
-                                self.indicators.values().filter_map(Option::as_ref).any(
-                                    |indicator| {
-                                        indicator.obscures_footprint_cell(
-                                            kline.time.as_u64(),
-                                            x_position,
-                                            chart,
-                                            region,
-                                        )
-                                    },
-                                );
                             let individual_max = trades.max_cluster_qty_all(cell_layout.cluster);
                             let cluster_scaling =
                                 scaling.effective_qty(max_cluster_qty, individual_max);
@@ -2015,7 +2038,7 @@ impl canvas::Program<Message> for KlineChart {
                                 cluster_scaling,
                                 text_size,
                                 self.tick_size(),
-                                show_text && !text_is_obscured,
+                                show_text,
                                 self.visual_config.show_footprint_summary,
                                 imbalance,
                                 kline,
@@ -2059,7 +2082,8 @@ impl canvas::Program<Message> for KlineChart {
                 }
             }
 
-            chart.draw_last_price_line(frame, palette, region);
+                chart.draw_last_price_line(frame, palette, region);
+            });
         });
 
         let profiles = chart.cache.profiles.draw(renderer, bounds_size, |frame| {

@@ -55,6 +55,18 @@ impl OverlayBuild {
             ));
         }
 
+        // Volume profile is anchored on the left edge. Keep it behind order
+        // circles so nearby orders remain visible instead of being covered.
+        if Self::count(&self.rect_volume_profile) > 0 {
+            out.push(DrawItem::new(
+                DrawLayer::VOLUME_PROFILE,
+                DrawOp::Rects {
+                    start: self.rect_volume_profile.start,
+                    count: Self::count(&self.rect_volume_profile),
+                },
+            ));
+        }
+
         // Foreground overlays
         if Self::count(&self.rect_volume) > 0 {
             out.push(DrawItem::new(
@@ -66,17 +78,17 @@ impl OverlayBuild {
             ));
         }
 
-        if Self::count(&self.rect_volume_profile) > 0 {
-            out.push(DrawItem::new(
-                DrawLayer::VOLUME_PROFILE,
-                DrawOp::Rects {
-                    start: self.rect_volume_profile.start,
-                    count: Self::count(&self.rect_volume_profile),
-                },
-            ));
-        }
-
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn volume_profile_is_drawn_before_order_circles() {
+        assert!(DrawLayer::VOLUME_PROFILE < DrawLayer::CIRCLES);
     }
 }
 

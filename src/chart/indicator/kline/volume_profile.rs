@@ -299,10 +299,6 @@ pub(crate) fn draw_selected_range_profile(
     );
 }
 
-fn horizontal_ranges_overlap(left_a: f32, right_a: f32, left_b: f32, right_b: f32) -> bool {
-    right_a > left_b && left_a < right_b
-}
-
 fn aligned_window_start(timestamp: u64, duration_ms: u64, timezone: data::UserTimezone) -> u64 {
     let offset_ms = chrono::DateTime::from_timestamp_millis(timestamp as i64)
         .map(|datetime| {
@@ -434,10 +430,11 @@ impl VolumeProfileIndicator {
         let (anchor, max_width) =
             profile_horizontal_bounds(horizontal_region, self.config.max_width_percent);
         let palette = theme.extended_palette();
-        let (background_low, _) = bin_price_bounds(low, step, 0, self.is_footprint);
-        let (_, background_high) = bin_price_bounds(low, step, bins.len() - 1, self.is_footprint);
-        let background_top = chart.price_to_y(Price::from_f64(background_high));
-        let background_bottom = chart.price_to_y(Price::from_f64(background_low));
+        // The profile owns the full height of the main price chart. The
+        // indicator panels below it are separate canvases, so this keeps the
+        // profile height stable without covering CVD/OI/etc.
+        let background_top = visible_region.y;
+        let background_bottom = visible_region.y + visible_region.height;
         frame.fill_rectangle(
             Point::new(anchor, background_top.min(background_bottom)),
             iced::Size::new(max_width, (background_bottom - background_top).abs()),
@@ -655,43 +652,6 @@ impl KlineIndicatorImpl for VolumeProfileIndicator {
         self.timezone.set(timezone);
     }
 
-    fn obscures_footprint_cell(
-        &self,
-        interval: u64,
-        cell_x: f32,
-        chart: &ViewState,
-        visible_region: Rectangle,
-    ) -> bool {
-        let horizontal_region = if self.is_fixed {
-            let Basis::Time(timeframe) = chart.basis else {
-                return false;
-            };
-            let duration_ms = profile_duration_ms(timeframe, self.config.timeframe_multiplier);
-            let start = aligned_window_start(interval, duration_ms, self.timezone.get());
-            let left = chart.interval_to_x(start) - chart.cell_width / 2.0;
-            let right =
-                chart.interval_to_x(start.saturating_add(duration_ms)) - chart.cell_width / 2.0;
-            Rectangle {
-                x: left.min(right),
-                y: 0.0,
-                width: (right - left).abs().max(chart.cell_width),
-                height: 0.0,
-            }
-        } else {
-            visible_region
-        };
-        let (profile_left, profile_width) =
-            profile_horizontal_bounds(horizontal_region, self.config.max_width_percent);
-        let cell_left = cell_x - chart.cell_width / 2.0;
-        let cell_right = cell_x + chart.cell_width / 2.0;
-        horizontal_ranges_overlap(
-            cell_left,
-            cell_right,
-            profile_left,
-            profile_left + profile_width,
-        )
-    }
-
     fn on_insert_trades(
         &mut self,
         _trades: &[exchange::Trade],
@@ -848,8 +808,6 @@ mod tests {
         };
         assert_eq!(positive.value(VolumeProfileDisplay::Delta), 5.0);
         assert_eq!(negative.value(VolumeProfileDisplay::Delta), -5.0);
-        assert!(horizontal_ranges_overlap(0.0, 10.0, 8.0, 20.0));
-        assert!(!horizontal_ranges_overlap(0.0, 10.0, 10.0, 20.0));
     }
 
     #[test]

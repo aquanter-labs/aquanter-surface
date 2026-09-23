@@ -59,6 +59,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 
-    let fade = fade_factor(input.world_x);
-    return vec4<f32>(input.color.rgb * a * fade, input.color.a * a * fade);
+    // Order/trade markers stay fully visible when they approach the left
+    // volume-profile strip; fading them made nearby orders appear to vanish.
+    return vec4<f32>(input.color.rgb * a, input.color.a * a);
 }

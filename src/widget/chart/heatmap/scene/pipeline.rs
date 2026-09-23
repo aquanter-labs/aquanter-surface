@@ -58,9 +58,11 @@ pub struct DrawLayer(pub i16);
 impl DrawLayer {
     pub const HEATMAP: Self = Self(0);
     pub const DEPTH_PROFILE: Self = Self(10);
+    // Keep the volume profile behind live/historical order circles so the
+    // left-side profile cannot hide orders that enter its area.
+    pub const VOLUME_PROFILE: Self = Self(15);
     pub const CIRCLES: Self = Self(20);
     pub const VOLUME: Self = Self(30);
-    pub const VOLUME_PROFILE: Self = Self(40);
 }
 
 #[derive(Copy, Clone, Debug)]

@@ -437,6 +437,7 @@ pub struct Config {
     pub liquidation_heatmap: LiquidationHeatmapConfig,
     pub oi_flow_net: OiFlowNetConfig,
     pub oi_weighted_delta: OiWeightedDeltaConfig,
+    pub order_flow_bias: OrderFlowBiasConfig,
 }
 
 impl Default for Config {
@@ -459,6 +460,7 @@ impl Default for Config {
             liquidation_heatmap: LiquidationHeatmapConfig::default(),
             oi_flow_net: OiFlowNetConfig::default(),
             oi_weighted_delta: OiWeightedDeltaConfig::default(),
+            order_flow_bias: OrderFlowBiasConfig::default(),
         }
     }
 }
@@ -867,6 +869,92 @@ impl Default for SessionVwapConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+pub enum OrderFlowBiasPreset {
+    #[default]
+    Conservative,
+    Balanced,
+    Aggressive,
+    Custom,
+}
+
+impl OrderFlowBiasPreset {
+    pub const ALL: [Self; 4] = [
+        Self::Conservative,
+        Self::Balanced,
+        Self::Aggressive,
+        Self::Custom,
+    ];
+}
+
+impl std::fmt::Display for OrderFlowBiasPreset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Conservative => write!(f, "Conservative"),
+            Self::Balanced => write!(f, "Balanced"),
+            Self::Aggressive => write!(f, "Aggressive"),
+            Self::Custom => write!(f, "Custom"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct OrderFlowBiasConfig {
+    pub preset: OrderFlowBiasPreset,
+    pub lookback: u16,
+    pub signal_threshold: f32,
+    pub absorption_delta: f32,
+    pub max_price_response: f32,
+    pub imbalance_ratio: f32,
+}
+
+impl OrderFlowBiasConfig {
+    pub fn from_preset(preset: OrderFlowBiasPreset) -> Self {
+        match preset {
+            OrderFlowBiasPreset::Conservative => Self {
+                preset,
+                lookback: 20,
+                signal_threshold: 40.0,
+                absorption_delta: 0.75,
+                max_price_response: 0.35,
+                imbalance_ratio: 3.0,
+            },
+            OrderFlowBiasPreset::Balanced => Self {
+                preset,
+                lookback: 14,
+                signal_threshold: 30.0,
+                absorption_delta: 0.60,
+                max_price_response: 0.45,
+                imbalance_ratio: 2.5,
+            },
+            OrderFlowBiasPreset::Aggressive => Self {
+                preset,
+                lookback: 8,
+                signal_threshold: 20.0,
+                absorption_delta: 0.45,
+                max_price_response: 0.60,
+                imbalance_ratio: 2.0,
+            },
+            OrderFlowBiasPreset::Custom => Self {
+                preset,
+                ..Self::default()
+            },
+        }
+    }
+
+    pub fn custom(mut self) -> Self {
+        self.preset = OrderFlowBiasPreset::Custom;
+        self
+    }
+}
+
+impl Default for OrderFlowBiasConfig {
+    fn default() -> Self {
+        Self::from_preset(OrderFlowBiasPreset::Conservative)
+    }
+}
+
 #[derive(Default, Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 pub enum ClusterScaling {
     #[default]
@@ -1028,5 +1116,17 @@ mod tests {
         assert_eq!(rounded.format(1_256.0), "1.3k");
         assert_eq!(truncated.format(1_256.0), "1.2k");
         assert_eq!(truncated.format(-12.89), "-12.8");
+    }
+
+    #[test]
+    fn order_flow_bias_presets_increase_signal_sensitivity() {
+        let conservative = OrderFlowBiasConfig::default();
+        let balanced = OrderFlowBiasConfig::from_preset(OrderFlowBiasPreset::Balanced);
+        let aggressive = OrderFlowBiasConfig::from_preset(OrderFlowBiasPreset::Aggressive);
+
+        assert!(conservative.signal_threshold > balanced.signal_threshold);
+        assert!(balanced.signal_threshold > aggressive.signal_threshold);
+        assert!(conservative.lookback > balanced.lookback);
+        assert_eq!(aggressive.custom().preset, OrderFlowBiasPreset::Custom);
     }
 }

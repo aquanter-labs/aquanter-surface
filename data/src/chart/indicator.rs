@@ -27,6 +27,7 @@ pub enum KlineIndicator {
     OiFlowNet,
     OiWeightedDelta,
     LiquidationPressureIndex,
+    OrderFlowBias,
 }
 
 impl Indicator for KlineIndicator {
@@ -54,7 +55,7 @@ impl KlineIndicator {
     // Indicator togglers on UI menus depend on these arrays.
     // Every variant needs to be in either SPOT, PERPS or both.
     /// Indicators that can be used with spot market tickers
-    const FOR_SPOT: [KlineIndicator; 9] = [
+    const FOR_SPOT: [KlineIndicator; 10] = [
         KlineIndicator::Volume,
         KlineIndicator::BarAnalysis,
         KlineIndicator::CumulativeDelta,
@@ -64,9 +65,10 @@ impl KlineIndicator {
         KlineIndicator::Ema,
         KlineIndicator::VolumeProfile,
         KlineIndicator::FixedVolumeProfile,
+        KlineIndicator::OrderFlowBias,
     ];
     /// Indicators that can be used with perpetual swap market tickers
-    const FOR_PERPS: [KlineIndicator; 15] = [
+    const FOR_PERPS: [KlineIndicator; 16] = [
         KlineIndicator::Volume,
         KlineIndicator::BarAnalysis,
         KlineIndicator::CumulativeDelta,
@@ -82,6 +84,7 @@ impl KlineIndicator {
         KlineIndicator::OiFlowNet,
         KlineIndicator::OiWeightedDelta,
         KlineIndicator::LiquidationPressureIndex,
+        KlineIndicator::OrderFlowBias,
     ];
 }
 
@@ -105,6 +108,7 @@ impl Display for KlineIndicator {
             KlineIndicator::LiquidationPressureIndex => {
                 write!(f, "Liquidation Pressure Index")
             }
+            KlineIndicator::OrderFlowBias => write!(f, "Order Flow Bias"),
         }
     }
 }
