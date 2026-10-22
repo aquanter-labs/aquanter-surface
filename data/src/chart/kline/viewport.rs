@@ -14,6 +14,7 @@ pub const MAX_HORIZONTAL_SPACING_PX: f32 = 360.0;
 
 const BAR_CENTER_OFFSET_UNITS: f32 = 0.5;
 const RIGHT_EDGE_INSET_PX: f32 = 1.0;
+const LATEST_PRICE_ANCHOR_FRACTION: f32 = 0.65;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ChartStepMs(i64);
@@ -106,6 +107,32 @@ impl HorizontalWorld {
 
     pub fn with_offset(self, offset: f32) -> Self {
         Self { offset, ..self }
+    }
+
+    /// Move the latest bar so its center sits at `screen_x` inside `content_width`.
+    pub fn with_latest_at_screen(self, content_width: f32, screen_x: f32) -> Self {
+        let spacing = self.spacing().max(f32::EPSILON);
+        let width = content_width.max(1.0);
+        let min_screen = (spacing * 0.5).min(width);
+        let max_screen = (width - spacing * 0.5).max(min_screen);
+        let screen_x = if screen_x.is_finite() {
+            screen_x.clamp(min_screen, max_screen)
+        } else {
+            (width * LATEST_PRICE_ANCHOR_FRACTION).clamp(min_screen, max_screen)
+        };
+        let inset = width - screen_x;
+        let offset = ((inset - 1.0) / spacing - BAR_CENTER_OFFSET_UNITS).max(0.0);
+        self.with_offset(if offset.is_finite() {
+            offset
+        } else {
+            self.offset()
+        })
+    }
+
+    /// Keep the latest bar just right of center in the candle area.
+    pub fn with_latest_anchored(self, content_width: f32) -> Self {
+        let width = content_width.max(1.0);
+        self.with_latest_at_screen(width, width * LATEST_PRICE_ANCHOR_FRACTION)
     }
 
     pub fn axis_at_right_unit(self, right_unit: f32) -> WorldAxis {

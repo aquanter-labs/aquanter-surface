@@ -192,6 +192,22 @@ impl KlineChart {
                     return self
                         .apply_browser_action(ChartCommand::Study(StudyCommand::Toggle(study)));
                 }
+                indicator_browser::Message::TogglePro(name) => {
+                    let mut config = self.options.pro.clone();
+                    let enable = !config.is_enabled(name);
+                    if enable {
+                        config.enabled.push(name.to_owned());
+                    } else {
+                        config.enabled.retain(|entry| entry != name);
+                    }
+                    if name == "OrderBook" {
+                        config.show_footprint_orderbook = enable;
+                    }
+                    let _ = self.apply_command(ChartCommand::SetProConfig { config });
+                }
+                indicator_browser::Message::ConfigurePro(name) => {
+                    self.change_settings_target(|inspector| inspector.open_pro(name));
+                }
             },
             Message::OpenNetworkSettings => return Some(Action::OpenNetworkSettings),
             Message::Settings(message) => {
@@ -267,12 +283,24 @@ impl KlineChart {
                     KlineWidgetEvent::PanelInteraction(interaction) => match interaction {
                         PanelInteraction::YViewportChanged { panel_id, range } => {
                             let composition = &self.indicators.composition;
+                            if composition.primary_panel_id() == Some(panel_id)
+                                && self.viewport.footprint_rows_fitted
+                            {
+                                self.viewport.footprint_rows_fitted = false;
+                                self.render_invalidation.invalidate();
+                            }
                             if self.viewport.set_panel_range(composition, panel_id, range) {
                                 self.render_invalidation.invalidate();
                             }
                         }
                         PanelInteraction::YViewportReset { panel_id } => {
                             let composition = &self.indicators.composition;
+                            if composition.primary_panel_id() == Some(panel_id)
+                                && self.viewport.footprint_rows_fitted
+                            {
+                                self.viewport.footprint_rows_fitted = false;
+                                self.render_invalidation.invalidate();
+                            }
                             if self.viewport.reset_panel_range(composition, panel_id) {
                                 self.render_invalidation.invalidate();
                             }
@@ -311,6 +339,8 @@ impl KlineChart {
                         }
                     },
                     KlineWidgetEvent::HorizontalWorldChanged(world) => {
+                        self.viewport.footprint_rows_fitted = false;
+                        self.viewport.footprint_saved_horizontal = None;
                         self.viewport.horizontal_world = world;
                         self.render_invalidation.invalidate();
                     }
@@ -338,8 +368,35 @@ impl KlineChart {
                             .viewport
                             .toggle_primary_autoscale(&self.indicators.composition)
                         {
+                            if self.viewport.primary.is_auto() {
+                                self.viewport.footprint_rows_fitted = false;
+                                if let Some(saved) = self.viewport.footprint_saved_horizontal.take()
+                                {
+                                    self.viewport.horizontal_world = saved;
+                                }
+                            }
                             self.render_invalidation.invalidate();
                         }
+                    }
+                    KlineWidgetEvent::FootprintSizeFit(fit) => {
+                        let composition = &self.indicators.composition;
+                        let panel_id = composition.primary_panel_id()?;
+                        if let Some((range, horizontal)) = fit {
+                            if !self.viewport.footprint_rows_fitted {
+                                self.viewport.footprint_saved_horizontal =
+                                    Some(self.viewport.horizontal_world);
+                            }
+                            self.viewport.footprint_rows_fitted = true;
+                            self.viewport.horizontal_world = horizontal;
+                            let _ = self.viewport.set_panel_range(composition, panel_id, range);
+                        } else {
+                            self.viewport.footprint_rows_fitted = false;
+                            if let Some(saved) = self.viewport.footprint_saved_horizontal.take() {
+                                self.viewport.horizontal_world = saved;
+                            }
+                            let _ = self.viewport.reset_panel_range(composition, panel_id);
+                        }
+                        self.render_invalidation.invalidate();
                     }
                     KlineWidgetEvent::PrimaryScaleModeCycleRequested => {
                         self.drawings.finish_pending_edit();
@@ -441,6 +498,20 @@ impl KlineChart {
         None
     }
 
+    pub fn fetch_status_lines(&self) -> Vec<String> {
+        self.fetch
+            .pending_activity()
+            .into_iter()
+            .map(|activity| match activity {
+                fetch::FetchActivity::Kline => "Fetching Klines...".to_string(),
+                fetch::FetchActivity::Trades { fetched } => {
+                    format!("Fetching Trades... {fetched} fetched")
+                }
+                fetch::FetchActivity::OpenInterest => "Fetching Open Interest...".to_string(),
+            })
+            .collect()
+    }
+
     pub fn view<'a>(
         &'a self,
         timezone: data::UserTimezone,
@@ -473,6 +544,7 @@ impl KlineChart {
                 .with_drawing_snapshot(drawing_snapshot)
                 .with_pro_overlays(&self.pro.annotations, self.pro.trading.as_ref())
                 .with_pro_market(&self.options.pro, &self.pro.depth)
+                .with_pro_liquidations(self.liquidations())
                 .with_candlestick_config(self.options.candlestick)
                 .with_footprint_config(self.options.footprint)
                 .with_trade_data_enabled(trade_data_enabled);
@@ -490,6 +562,7 @@ impl KlineChart {
                 let chart: iced::Element<'_, Message> = chart
                     .with_coordinate_state(self.viewport.horizontal_world, pixel_ratio)
                     .with_primary_viewport(self.viewport.primary)
+                    .with_footprint_row_fit(self.viewport.footprint_rows_fitted)
                     .with_primary_scale_inverted(self.viewport.primary_scale_inverted)
                     .with_known_plot_width(self.viewport.plot_width)
                     .with_autoscale_plot_width_offset(self.autoscale_plot_width_offset())
@@ -511,51 +584,13 @@ impl KlineChart {
             };
 
         let chart = {
-            let chart_stack = iced::widget::Stack::new()
+            iced::widget::Stack::new()
                 .width(iced::Length::Fill)
                 .height(iced::Length::Fill)
                 .push(chart)
-                .push(self.drawings.view(theme_accents).map(Message::Drawing));
-
-            let fetch_activity = self.fetch.pending_activity();
-            let fetch_activity: Option<iced::Element<'_, Message>> = if fetch_activity.is_empty() {
-                None
-            } else {
-                let mut lines = iced::widget::column![].spacing(2);
-                for activity in fetch_activity {
-                    let line = match activity {
-                        fetch::FetchActivity::Kline => "Fetching Klines...".to_string(),
-                        fetch::FetchActivity::Trades { fetched } => {
-                            format!("Fetching Trades... {fetched} fetched")
-                        }
-                        fetch::FetchActivity::OpenInterest => {
-                            "Fetching Open Interest...".to_string()
-                        }
-                    };
-                    lines = lines.push(iced::widget::text(line).size(12));
-                }
-
-                Some(
-                    iced::widget::row![
-                        iced::widget::space::horizontal(),
-                        iced::widget::opaque(
-                            iced::widget::container(lines)
-                                .style(style::chart_info_tooltip)
-                                .padding([4, 8])
-                        ),
-                    ]
-                    .padding(8)
-                    .into(),
-                )
-            };
-
-            let chart_stack = if let Some(fetch_activity) = fetch_activity {
-                chart_stack.push(fetch_activity)
-            } else {
-                chart_stack
-            };
-
-            chart_stack.clip(true).into()
+                .push(self.drawings.view(theme_accents).map(Message::Drawing))
+                .clip(true)
+                .into()
         };
 
         let sidebar = if self.has_settings_target() {
@@ -1431,7 +1466,11 @@ impl KlineChart {
             ChartCommand::SetProConfig { config } => {
                 let changed = self.options.pro != config;
                 self.options.pro = config;
-                changed.then_some(UpdatePolicy::Redraw)
+                if self.ensure_pro_scripts() {
+                    Some(UpdatePolicy::ImmediateReconfigure)
+                } else {
+                    changed.then_some(UpdatePolicy::Redraw)
+                }
             }
             ChartCommand::ResetCandlestickSettings => {
                 let default_style = self.options.candlestick.with_default_style();
@@ -1648,6 +1687,7 @@ impl KlineChart {
         self.viewport.primary_scale_inverted = snapshot.primary_scale_inverted;
 
         self.options = snapshot.options.clone();
+        self.options.pro.adopt_order_book();
 
         self.studies.restore_settings(snapshot, self.basis);
 
@@ -1706,9 +1746,50 @@ impl KlineChart {
                 .set_series_stroke_style(ticker_info, series_config.stroke_style);
         }
 
+        if self.ensure_pro_scripts() {
+            self.indicators
+                .mark_rebuild_pending(layout::IndicatorRebuildReason::IndicatorStructureChanged);
+        }
         self.indicators.allow_partial_rebuilds();
         self.refresh_indicator_presentation();
         self.render_invalidation.invalidate();
+    }
+
+    fn ensure_pro_scripts(&mut self) -> bool {
+        let names = self.options.pro.enabled.clone();
+        let mut added = false;
+        for name in names {
+            let Some(id) = data::chart::kline::pro::ProConfig::scripted_indicator_id(&name) else {
+                continue;
+            };
+            let Ok(kind) = data::chart::kline::IndicatorId::parse(id) else {
+                continue;
+            };
+            if !kind.is_registered() {
+                continue;
+            }
+            if let Some(instance) = self
+                .indicators
+                .instances
+                .instances()
+                .iter()
+                .find(|instance| instance.kind == kind)
+            {
+                let instance_id = instance.id;
+                if !self.indicators.selected_indicators().contains(&instance_id)
+                    && self.indicators.composition.add_indicator(instance_id, kind)
+                {
+                    added = true;
+                }
+                continue;
+            }
+            let change = self.indicators.add_indicator(kind, self.basis, &self.data);
+            if !matches!(change, layout::IndicatorChange::Unchanged) {
+                let _ = change.apply(&mut self.indicators, &self.data);
+                added = true;
+            }
+        }
+        added
     }
 
     pub fn apply_settings_snapshot(&mut self, snapshot: &SettingsSnapshot) -> Option<Action> {
@@ -1720,6 +1801,10 @@ impl KlineChart {
         self.render_invalidation.invalidate();
 
         self.request_fetch_action(false).map(Action::RequestFetch)
+    }
+
+    pub(super) fn pro_config(&self) -> &data::chart::kline::pro::ProConfig {
+        &self.options.pro
     }
 
     pub fn trade_data_enabled(&self) -> bool {

@@ -8,12 +8,12 @@ use data::chart::kline::footprint::{ClusterKind, KlineTrades};
 use data::chart::kline::poc::{NPoc, PocFillAt};
 use data::chart::kline::series::KlineSeries;
 use data::chart::kline::viewport::{TickIndex, XAxis};
+use data::chart::kline::pro::QuantityFormat;
 use data::chart::kline::{
     CandlestickColorSlot, CandlestickConfig, FootprintConfig, FootprintPocColorSlot,
 };
 use data::config::theme::ACCENT_COUNT;
 use data::config::theme::{composite_color, contrast_ratio};
-use data::util::abbr_large_numbers;
 use exchange::UnixMs;
 use exchange::unit::{Price, PriceStep, Qty};
 use iced::theme::palette::Extended;
@@ -390,8 +390,9 @@ fn footprint_text_content_lengths(
     cluster_kind: ClusterKind,
     sell_qty: f64,
     buy_qty: f64,
+    quantity_format: QuantityFormat,
 ) -> [usize; 2] {
-    let formatted_length = |quantity| abbr_large_numbers(quantity).chars().count();
+    let formatted_length = |quantity| quantity_format.format(quantity).chars().count();
 
     match cluster_kind {
         ClusterKind::BidAsk => [
@@ -429,14 +430,17 @@ fn draw_footprint_bid_ask_row(
     buy_qty: f64,
     max_side_qty: f64,
     text_mode: FootprintTextMode,
+    quantity_format: QuantityFormat,
     palette: &Extended,
 ) {
     let row_height = row_height.max(min_row_height);
     let row_top = y - row_height * 0.5;
     let cell_height = (row_height - min_row_height).max(min_row_height);
     let text_size = text_mode.size();
-    let sell_text = (sell_qty > 0.0 && text_size.is_some()).then(|| abbr_large_numbers(sell_qty));
-    let buy_text = (buy_qty > 0.0 && text_size.is_some()).then(|| abbr_large_numbers(buy_qty));
+    let sell_text =
+        (sell_qty > 0.0 && text_size.is_some()).then(|| quantity_format.format(sell_qty));
+    let buy_text =
+        (buy_qty > 0.0 && text_size.is_some()).then(|| quantity_format.format(buy_qty));
     let text_y = y + text_size.unwrap_or_default() * 0.08;
     let sell_ratio = (sell_qty / max_side_qty).clamp(0.0, 1.0) as f32;
     let buy_ratio = (buy_qty / max_side_qty).clamp(0.0, 1.0) as f32;
@@ -503,6 +507,7 @@ fn draw_footprint_cluster_row(
     buy_qty: f64,
     max_cluster_qty: f64,
     text_mode: FootprintTextMode,
+    quantity_format: QuantityFormat,
     palette: &Extended,
     imbalance: Option<FootprintImbalance<'_>>,
 ) {
@@ -517,6 +522,7 @@ fn draw_footprint_cluster_row(
             buy_qty,
             max_cluster_qty,
             text_mode,
+            quantity_format,
             palette,
         ),
         ClusterKind::VolumeProfile => draw_footprint_volume_profile_row(
@@ -529,6 +535,7 @@ fn draw_footprint_cluster_row(
             buy_qty,
             max_cluster_qty,
             text_mode,
+            quantity_format,
             palette,
         ),
         ClusterKind::DeltaProfile => draw_footprint_delta_profile_row(
@@ -541,6 +548,7 @@ fn draw_footprint_cluster_row(
             buy_qty,
             max_cluster_qty,
             text_mode,
+            quantity_format,
             palette,
         ),
         ClusterKind::Table => draw_footprint_table_row(
@@ -553,6 +561,7 @@ fn draw_footprint_cluster_row(
             buy_qty,
             max_cluster_qty,
             text_mode,
+            quantity_format,
             palette,
         ),
     }
@@ -598,6 +607,7 @@ fn draw_footprint_volume_profile_row(
     buy_qty: f64,
     max_cluster_qty: f64,
     text_mode: FootprintTextMode,
+    quantity_format: QuantityFormat,
     palette: &Extended,
 ) {
     let row_height = row_height.max(min_row_height);
@@ -641,6 +651,7 @@ fn draw_footprint_volume_profile_row(
             y,
         ),
         text_size,
+        quantity_format,
         palette,
         iced::Alignment::Start,
     );
@@ -656,6 +667,7 @@ fn draw_footprint_delta_profile_row(
     buy_qty: f64,
     max_cluster_qty: f64,
     text_mode: FootprintTextMode,
+    quantity_format: QuantityFormat,
     palette: &Extended,
 ) {
     let row_height = row_height.max(min_row_height);
@@ -691,6 +703,7 @@ fn draw_footprint_delta_profile_row(
             y,
         ),
         text_size,
+        quantity_format,
         palette,
         iced::Alignment::Start,
     );
@@ -706,6 +719,7 @@ fn draw_footprint_table_row(
     buy_qty: f64,
     max_cluster_qty: f64,
     text_mode: FootprintTextMode,
+    quantity_format: QuantityFormat,
     palette: &Extended,
 ) {
     let row_height = row_height.max(min_row_height);
@@ -743,7 +757,7 @@ fn draw_footprint_table_row(
         let sell_text_color = footprint_table_text_color(sell_color, palette);
         draw_footprint_text(
             frame,
-            abbr_large_numbers(sell_qty),
+            quantity_format.format(sell_qty),
             Point::new(
                 layout.sell_cluster.right() - FOOTPRINT_TEXT_HORIZONTAL_INSET_PX,
                 text_y,
@@ -757,7 +771,7 @@ fn draw_footprint_table_row(
         let buy_text_color = footprint_table_text_color(buy_color, palette);
         draw_footprint_text(
             frame,
-            abbr_large_numbers(buy_qty),
+            quantity_format.format(buy_qty),
             Point::new(
                 layout.buy_cluster.left + FOOTPRINT_TEXT_HORIZONTAL_INSET_PX,
                 text_y,
@@ -825,6 +839,7 @@ fn draw_footprint_row_text(
     quantity: f64,
     position: Point,
     text_size: Option<f32>,
+    quantity_format: QuantityFormat,
     palette: &Extended,
     align_x: iced::Alignment,
 ) {
@@ -834,7 +849,7 @@ fn draw_footprint_row_text(
 
     draw_footprint_text(
         frame,
-        abbr_large_numbers(quantity),
+        quantity_format.format(quantity),
         position,
         text_size,
         palette.background.weakest.text,
@@ -928,6 +943,7 @@ pub(super) struct FootprintRenderer<'a> {
     pub(super) series: &'a [KlineSeries],
     pub(super) candlestick: &'a CandlestickConfig,
     pub(super) footprint: &'a FootprintConfig,
+    pub(super) quantity_format: QuantityFormat,
 }
 
 impl FootprintRenderer<'_> {
@@ -1068,6 +1084,7 @@ impl FootprintRenderer<'_> {
                         self.footprint.cluster_kind,
                         group.sell_qty.to_f64(),
                         group.buy_qty.to_f64(),
+                        self.quantity_format,
                     );
                     let row_max_chars = sell_chars.max(buy_chars);
                     if row_max_chars == 0 {
@@ -1142,6 +1159,7 @@ impl FootprintRenderer<'_> {
                                 buy.to_f64(),
                                 scale,
                                 FootprintTextMode::Hidden,
+                                self.quantity_format,
                                 palette,
                                 None,
                             );
@@ -1175,6 +1193,7 @@ impl FootprintRenderer<'_> {
                                 group.buy_qty.to_f64(),
                                 cluster_scale,
                                 text_mode,
+                                self.quantity_format,
                                 palette,
                                 imbalance.map(|(threshold_percent, ignore_zeros, color)| {
                                     FootprintImbalance::new(

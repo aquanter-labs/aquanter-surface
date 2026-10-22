@@ -466,6 +466,187 @@ impl DrawingView<'_> {
         Some((clip_bounds, x))
     }
 
+    fn price_overlay_y(&self, panel_id: PanelId, price: f64) -> Option<f32> {
+        let panel_index = self.context.coordinates.panel_index_for_id(panel_id)?;
+        let value_scale = self.context.coordinates.panel_value_scale(panel_index);
+        self.y_overlay_for_value(panel_id, value_scale.value_to_unit_f32(price as f32))
+    }
+
+    fn range_profile_times(
+        &self,
+        start: DrawingAnchor,
+        end: DrawingAnchor,
+    ) -> Option<(exchange::UnixMs, exchange::UnixMs)> {
+        if start.panel_id != end.panel_id {
+            return None;
+        }
+        let first = self.drawing_timestamp(start.x)?;
+        let second = self.drawing_timestamp(end.x)?;
+        if first <= second {
+            Some((first, second))
+        } else {
+            Some((second, first))
+        }
+    }
+
+    fn range_profile_box(
+        &self,
+        start: DrawingAnchor,
+        end: DrawingAnchor,
+    ) -> Option<(Rectangle, Rectangle)> {
+        let (earliest, latest) = self.range_profile_times(start, end)?;
+        let panel_index = self.context.coordinates.panel_index_for_id(start.panel_id)?;
+        let scene = self.context.scene;
+        if scene.layout.panel(panel_index)?.kind != KlinePanelKind::PrimaryChart {
+            return None;
+        }
+        let series = self.context.coordinates.series.first()?;
+        let mut low = f64::MAX;
+        let mut high = f64::MIN;
+        for index in series.time_index_range(earliest, latest) {
+            let Some(point) = series.point_at(index) else {
+                continue;
+            };
+            low = low.min(point.kline.low.to_f64());
+            high = high.max(point.kline.high.to_f64());
+        }
+        if !low.is_finite() || !high.is_finite() || high < low {
+            return None;
+        }
+        let clip = self.panel_plot_bounds_in_overlay(panel_index)?;
+        let x1 = self.x_overlay_for_anchor(start.x)?;
+        let x2 = self.x_overlay_for_anchor(end.x)?;
+        let y1 = self.price_overlay_y(start.panel_id, high)?;
+        let y2 = self.price_overlay_y(start.panel_id, low)?;
+        Some((
+            clip,
+            Rectangle {
+                x: x1.min(x2),
+                y: y1.min(y2),
+                width: (x2 - x1).abs().max(1.0),
+                height: (y2 - y1).abs().max(1.0),
+            },
+        ))
+    }
+
+    fn draw_range_volume_profile(
+        &self,
+        frame: &mut PaintInputs,
+        start: DrawingAnchor,
+        end: DrawingAnchor,
+        stroke: canvas::Stroke<'_>,
+        palette: &Extended,
+    ) {
+        let Some((clip, price_box)) = self.range_profile_box(start, end) else {
+            return;
+        };
+        let Some((earliest, latest)) = self.range_profile_times(start, end) else {
+            return;
+        };
+        let Some(series) = self.context.coordinates.series.first() else {
+            return;
+        };
+        let scene = self.context.scene;
+        let step = series.tick_size().to_f64_lossy().max(1e-8);
+        let row_low = (scene.primary_domain_value_range().0.to_f64() / step).floor() * step;
+        let mut buckets = std::collections::BTreeMap::<i64, (f64, f64)>::new();
+        for index in series.time_index_range(earliest, latest) {
+            let Some(point) = series.point_at(index) else {
+                continue;
+            };
+            if point.footprint.trades.is_empty() {
+                let (buy, sell) = point
+                    .kline
+                    .volume
+                    .buy_sell()
+                    .map(|(buy, sell)| (buy.to_f64(), sell.to_f64()))
+                    .unwrap_or_else(|| {
+                        let total = point.kline.volume.total().to_f64();
+                        if point.kline.close >= point.kline.open {
+                            (total, 0.0)
+                        } else {
+                            (0.0, total)
+                        }
+                    });
+                if buy + sell <= 0.0 {
+                    continue;
+                }
+                let first = ((point.kline.low.to_f64() - row_low) / step).floor() as i64;
+                let last = ((point.kline.high.to_f64() - row_low) / step).floor() as i64;
+                let (first, last) = (first.min(last), first.max(last));
+                let span = (last - first + 1) as f64;
+                for bucket in first..=last {
+                    let entry = buckets.entry(bucket).or_default();
+                    entry.0 += buy / span;
+                    entry.1 += sell / span;
+                }
+            } else {
+                for (price, group) in &point.footprint.trades {
+                    let price = price.to_f64();
+                    if !price.is_finite() {
+                        continue;
+                    }
+                    let bucket = ((price - row_low) / step).floor() as i64;
+                    let entry = buckets.entry(bucket).or_default();
+                    entry.0 += group.buy_qty.to_f64();
+                    entry.1 += group.sell_qty.to_f64();
+                }
+            }
+        }
+        let max = buckets
+            .values()
+            .map(|(buy, sell)| buy + sell)
+            .fold(0.0, f64::max);
+        let width = price_box.width;
+        let format = data::chart::kline::pro::QuantityFormat::default();
+        frame.with_clip(clip, |frame| {
+            if max > 0.0 {
+                for (index, (buy, sell)) in &buckets {
+                    let price = row_low + *index as f64 * step;
+                    let Some(y1) = self.price_overlay_y(start.panel_id, price) else {
+                        continue;
+                    };
+                    let Some(y2) = self.price_overlay_y(start.panel_id, price + step) else {
+                        continue;
+                    };
+                    let top = y1.min(y2);
+                    let height = (y2 - y1).abs();
+                    if height <= 0.0 || *buy + *sell <= 0.0 {
+                        continue;
+                    }
+                    let mut x = price_box.x;
+                    for (qty, color) in [
+                        (*sell, palette.danger.base.color),
+                        (*buy, palette.success.base.color),
+                    ] {
+                        let bar = (qty / max) as f32 * width;
+                        if bar > 0.0 {
+                            frame.fill_rectangle(
+                                Point::new(x, top),
+                                Size::new(bar, height),
+                                color.scale_alpha(0.68),
+                            );
+                            x += bar;
+                        }
+                    }
+                    if height >= 12.0 && width >= 28.0 {
+                        frame.fill_text(canvas::Text {
+                            content: format.format(*buy + *sell),
+                            position: Point::new(price_box.x + 3.0, top + height / 2.0),
+                            align_x: iced::alignment::Horizontal::Left.into(),
+                            align_y: iced::alignment::Vertical::Center.into(),
+                            size: (height.min(16.0) - 3.0).max(8.0).into(),
+                            color: palette.background.base.text,
+                            font: style::AZERET_MONO,
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+            frame.stroke_rectangle(Point::new(price_box.x, price_box.y), price_box.size(), stroke);
+        });
+    }
+
     fn draw_drawing_object(
         &self,
         frame: &mut PaintInputs,
@@ -582,6 +763,9 @@ impl DrawingView<'_> {
                     )
                 });
             }
+            DrawingObject::VolumeProfile { start, end } => {
+                self.draw_range_volume_profile(frame, *start, *end, stroke, palette);
+            }
         }
     }
 
@@ -650,6 +834,20 @@ impl DrawingView<'_> {
                 .map(|point| (DrawingHandleKind::HorizontalLineStart, point))
                 .collect(),
             DrawingObject::HorizontalLine { .. } | DrawingObject::VerticalLine { .. } => Vec::new(),
+            DrawingObject::VolumeProfile { start, end } => {
+                let Some((_, price_box)) = self.range_profile_box(*start, *end) else {
+                    return Vec::new();
+                };
+                let center_y = price_box.y + price_box.height / 2.0;
+                let mut points = Vec::new();
+                if let Some(x) = self.x_overlay_for_anchor(start.x) {
+                    points.push((DrawingHandleKind::TrendlineStart, Point::new(x, center_y)));
+                }
+                if let Some(x) = self.x_overlay_for_anchor(end.x) {
+                    points.push((DrawingHandleKind::TrendlineEnd, Point::new(x, center_y)));
+                }
+                points
+            }
         }
     }
 
@@ -1037,6 +1235,12 @@ impl DrawingView<'_> {
                 (point.x - x).abs() <= tolerance
                     && point.y >= (plot.y - tolerance)
                     && point.y <= (plot.y + plot.height + tolerance)
+            }
+            DrawingObject::VolumeProfile { start, end } => {
+                let Some((_, price_box)) = self.range_profile_box(*start, *end) else {
+                    return false;
+                };
+                contains_inclusive(price_box.expand(tolerance), point)
             }
         }
     }

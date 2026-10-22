@@ -1,6 +1,6 @@
 use super::layout::IndicatorState;
 #[path = "pro_indicators.rs"]
-mod pro_indicators;
+pub(super) mod pro_indicators;
 use super::studies::StudyState;
 use super::{ChartCommand, IndicatorInputCommand, IndicatorStyleCommand, Message as ChartMessage};
 use crate::widget::chart::kline::{IndicatorPresentationContext, ResolvedIndicatorStyleSlot};
@@ -319,6 +319,13 @@ impl InspectorState {
         self.set_target(SettingsTarget::Footprint);
     }
 
+    pub(super) fn open_pro(&mut self, name: &'static str) {
+        self.set_target(SettingsTarget::Pro {
+            name,
+            tab: inspector::InspectorTab::Inputs,
+        });
+    }
+
     pub(super) fn open_indicator(
         &mut self,
         instance_id: data::chart::kline::IndicatorInstanceId,
@@ -351,6 +358,7 @@ pub enum Message {
     ResetFootprintSettings,
     ResetSeriesSettings(TickerInfo),
     StudyTabSelected(inspector::InspectorTab),
+    ProTabSelected(inspector::InspectorTab),
     Study(KlineStudy),
     Indicator {
         instance_id: data::chart::kline::IndicatorInstanceId,
@@ -1631,6 +1639,10 @@ enum SettingsTarget {
     Candlestick,
     Series(TickerInfo),
     Footprint,
+    Pro {
+        name: &'static str,
+        tab: inspector::InspectorTab,
+    },
     Study(StudySettingsState),
 }
 
@@ -1661,6 +1673,7 @@ impl SettingsTarget {
                 };
                 Some(Message::Study(defaults))
             }
+            SettingsTarget::Pro { .. } => None,
         }
     }
 
@@ -1672,6 +1685,7 @@ impl SettingsTarget {
             | SettingsTarget::Candlestick
             | SettingsTarget::Series(_)
             | SettingsTarget::Footprint => inspector::InspectorTab::Inputs,
+            SettingsTarget::Pro { tab, .. } => *tab,
         }
     }
 
@@ -1686,6 +1700,11 @@ impl SettingsTarget {
                 .studies
                 .study(modal.study_id())
                 .map_or_else(|| "Study".to_owned(), |study| study.to_string()),
+            SettingsTarget::Pro { name, .. } => pro_indicators::ITEMS
+                .iter()
+                .find(|(id, _)| id == name)
+                .map(|(_, label)| (*label).to_owned())
+                .unwrap_or_else(|| "Pro".to_owned()),
         })
     }
 
@@ -1747,10 +1766,27 @@ impl SettingsTarget {
                 context.options.footprint,
                 context.trade_data_enabled,
                 theme_accents,
-            ), pro_indicators::view(&context.options.pro)].spacing(inspector::MODAL_SECTION_SPACING).into(),
+            ), pro_indicators::footprint_view(&context.options.pro)].spacing(inspector::MODAL_SECTION_SPACING).into(),
             SettingsTarget::Study(modal) => {
                 let study = context.studies.study(modal.study_id())?;
                 let (tab, content) = study_cfg_view(*modal, study, context.basis, theme_accents);
+                return Some((Some(tab), content.map(ChartMessage::Settings)));
+            }
+            SettingsTarget::Pro { name, tab } => {
+                let config = &context.options.pro;
+                let inputs = (*name != "LiquidationHeatmap")
+                    .then(|| pro_indicators::inputs(name, config));
+                let (tab, content) = inspector::tabbed_content(
+                    *tab,
+                    Message::ProTabSelected,
+                    [
+                        (inspector::InspectorTab::Inputs, inputs),
+                        (
+                            inspector::InspectorTab::Style,
+                            Some(pro_indicators::style(name, config)),
+                        ),
+                    ],
+                );
                 return Some((Some(tab), content.map(ChartMessage::Settings)));
             }
         };
@@ -1826,7 +1862,7 @@ impl InspectorState {
                 .is_none(),
             SettingsTarget::Study(modal) => context.studies.study(modal.study_id()).is_none(),
             SettingsTarget::Series(ticker) => context.series_style_entry(*ticker).is_none(),
-            SettingsTarget::Main | SettingsTarget::Candlestick | SettingsTarget::Footprint => false,
+            SettingsTarget::Main | SettingsTarget::Candlestick | SettingsTarget::Footprint | SettingsTarget::Pro { .. } => false,
         };
         if missing {
             self.target = SettingsTarget::Main;
@@ -2100,6 +2136,11 @@ impl InspectorState {
             Message::StudyTabSelected(tab) => {
                 if let SettingsTarget::Study(modal) = &mut self.target {
                     modal.select_tab(tab);
+                }
+            }
+            Message::ProTabSelected(tab) => {
+                if let SettingsTarget::Pro { tab: selected, .. } = &mut self.target {
+                    *selected = tab;
                 }
             }
             Message::CandlestickSettings(message) => {

@@ -138,6 +138,7 @@ impl PreparedPanelControls {
         bounds: Rectangle,
         palette: &Extended,
         primary_autoscale: bool,
+        footprint_row_fit: bool,
     ) -> Self {
         let mut buttons = Vec::new();
         for control in scene.chrome.corner_controls.iter().copied() {
@@ -147,7 +148,7 @@ impl PreparedPanelControls {
                 .corner_control_is_hovered(control.kind);
             let active = control
                 .kind
-                .is_active(scene.primary.mode, primary_autoscale);
+                .is_active(scene.primary.mode, primary_autoscale, footprint_row_fit);
             buttons.push(ControlPaint::new(
                 control.rect,
                 control.kind.label(scene.primary.mode).to_owned(),
@@ -270,6 +271,7 @@ pub(super) struct PanelControlHit {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CornerControlKind {
+    FootprintRowFit,
     PrimaryAutoscaleToggle,
     PrimaryScaleModeCycle,
 }
@@ -277,6 +279,7 @@ pub(super) enum CornerControlKind {
 impl CornerControlKind {
     fn label(self, primary_scale_mode: PanelScaleMode) -> &'static str {
         match self {
+            Self::FootprintRowFit => "S",
             Self::PrimaryAutoscaleToggle => "A",
             Self::PrimaryScaleModeCycle => match primary_scale_mode {
                 PanelScaleMode::PercentFromBase => "%",
@@ -285,8 +288,14 @@ impl CornerControlKind {
         }
     }
 
-    fn is_active(self, primary_scale_mode: PanelScaleMode, primary_autoscale: bool) -> bool {
+    fn is_active(
+        self,
+        primary_scale_mode: PanelScaleMode,
+        primary_autoscale: bool,
+        footprint_row_fit: bool,
+    ) -> bool {
         match self {
+            Self::FootprintRowFit => footprint_row_fit,
             Self::PrimaryAutoscaleToggle => primary_autoscale,
             Self::PrimaryScaleModeCycle => {
                 matches!(
@@ -299,6 +308,7 @@ impl CornerControlKind {
 
     pub(super) fn into_event(self) -> KlineWidgetEvent {
         match self {
+            Self::FootprintRowFit => KlineWidgetEvent::FootprintSizeFit(None),
             Self::PrimaryAutoscaleToggle => KlineWidgetEvent::PrimaryAutoscaleToggled,
             Self::PrimaryScaleModeCycle => KlineWidgetEvent::PrimaryScaleModeCycleRequested,
         }
@@ -320,8 +330,13 @@ pub(super) enum ChromeClick {
 pub(super) fn build_corner_control_hits(
     layout: &PanelLayoutTree,
     primary_scale_mode: PanelScaleMode,
+    footprint_visible: bool,
 ) -> Vec<CornerControlHit> {
-    let mut kinds = Vec::with_capacity(2);
+    let mut kinds = Vec::with_capacity(3);
+
+    if footprint_visible && !matches!(primary_scale_mode, PanelScaleMode::PercentFromBase) {
+        kinds.push(CornerControlKind::FootprintRowFit);
+    }
 
     if !matches!(primary_scale_mode, PanelScaleMode::PercentFromBase) {
         kinds.push(CornerControlKind::PrimaryAutoscaleToggle);

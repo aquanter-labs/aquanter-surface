@@ -568,10 +568,10 @@ pub(super) async fn fetch_historical_oi(
     Ok(open_interest)
 }
 
-async fn fetch_intraday_trades(
+async fn fetch_intraday_trades_until(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker_info: TickerInfo,
-    from: UnixMs,
+    until: UnixMs,
 ) -> Result<Vec<Trade>, AdapterError> {
     let ticker = ticker_info.ticker;
     let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
@@ -583,21 +583,9 @@ async fn fetch_intraday_trades(
     };
 
     let mut url = format!("{base_url}?symbol={symbol_str}&limit=1000");
-    url.push_str(&format!("&startTime={}", from.as_u64()));
+    url.push_str(&format!("&endTime={}", until.as_u64().saturating_sub(1)));
 
-    let mut de_trades: Vec<DeTrade> = hub.http_json_with_limiter(&url, weight, None, None).await?;
-    let mut needs_boundary = de_trades.len() == 1000;
-    while needs_boundary {
-        let from_id = de_trades
-            .last()
-            .unwrap()
-            .id
-            .checked_add(1)
-            .ok_or_else(|| AdapterError::ParseError("Trade ID overflow".into()))?;
-        let url = format!("{base_url}?symbol={symbol_str}&limit=1000&fromId={from_id}");
-        let page = hub.http_json_with_limiter(&url, weight, None, None).await?;
-        needs_boundary = append_trade_boundary(&mut de_trades, page)?;
-    }
+    let de_trades: Vec<DeTrade> = hub.http_json_with_limiter(&url, weight, None, None).await?;
 
     let qty_norm = QtyNormalization::with_raw_qty_unit(
         volume_size_unit() == SizeUnit::Quote,
@@ -753,9 +741,13 @@ fn parse_archive_bool(value: &str) -> Option<bool> {
 pub(super) async fn fetch_trades(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker_info: TickerInfo,
-    mut from_time: UnixMs,
+    from_time: UnixMs,
+    until: UnixMs,
     data_path: Option<PathBuf>,
 ) -> Result<Vec<Trade>, AdapterError> {
+    if until <= from_time {
+        return Ok(Vec::new());
+    }
     let Some(data_path) = data_path else {
         return Err(AdapterError::InvalidRequest(
             "Binance trades fetch requires data_path".to_string(),
@@ -770,41 +762,29 @@ pub(super) async fn fetch_trades(
         })?
         .and_utc();
 
-    loop {
-        let from_time_ms = i64::try_from(from_time.as_u64())
-            .map_err(|_| AdapterError::InvalidRequest("Timestamp exceeds i64 range".to_string()))?;
+    let until_ms = i64::try_from(until.as_u64())
+        .map_err(|_| AdapterError::InvalidRequest("Timestamp exceeds i64 range".to_string()))?;
 
-        if from_time_ms >= today_midnight.timestamp_millis() {
-            return fetch_intraday_trades(hub, ticker_info, from_time).await;
-        }
-
-        let from_date = chrono::DateTime::from_timestamp_millis(from_time_ms)
+    let mut trades = if until_ms >= today_midnight.timestamp_millis() {
+        fetch_intraday_trades_until(hub, ticker_info, until).await?
+    } else {
+        let until_date = chrono::DateTime::from_timestamp_millis(until_ms)
             .ok_or_else(|| AdapterError::ParseError("Invalid timestamp".into()))?
             .date_naive();
-
         let client = hub.client().clone();
-
-        match get_hist_trades_with_client(&client, ticker_info, from_date, data_path.clone()).await
-        {
-            Ok(mut trades) => {
-                trades.retain(|trade| trade.time >= from_time);
-                trades.sort_by_key(|trade| trade.time);
-                if !trades.is_empty() {
-                    return Ok(trades);
-                }
-                from_time = from_time
-                    .floor_to(crate::Timeframe::D1)
-                    .saturating_add(crate::Timeframe::D1.to_milliseconds());
-            }
-            Err(e) => {
+        match get_hist_trades_with_client(&client, ticker_info, until_date, data_path).await {
+            Ok(trades) => trades,
+            Err(error) => {
                 log::warn!(
-                    "Historical trades fetch failed: {}, falling back to intraday fetch",
-                    e
+                    "Historical trades fetch failed: {error}, falling back to intraday fetch"
                 );
-                return fetch_intraday_trades(hub, ticker_info, from_time).await;
+                fetch_intraday_trades_until(hub, ticker_info, until).await?
             }
         }
-    }
+    };
+    trades.retain(|trade| trade.time >= from_time && trade.time <= until);
+    trades.sort_by_key(|trade| trade.time);
+    Ok(trades)
 }
 
 #[cfg(test)]

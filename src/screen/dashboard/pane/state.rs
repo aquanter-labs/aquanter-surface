@@ -641,6 +641,11 @@ impl State {
                     .spacing(4);
 
                     top_left_buttons = top_left_buttons.push(modifiers);
+                    for line in chart.fetch_status_lines() {
+                        top_left_buttons = top_left_buttons.push(
+                            text(line).size(crate::style::text_size::SMALL),
+                        );
+                    }
 
                     chart
                         .view(timezone, pixel_ratio, theme, self.inspector.is_some())

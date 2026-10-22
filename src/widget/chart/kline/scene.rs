@@ -329,6 +329,7 @@ impl SceneInteraction {
 pub(super) struct SceneBase {
     pub(super) layout: PanelLayoutTree,
     pub(super) x: XViewport,
+    pub(super) x_right_inset: f32,
     pub(super) bar_units: Arc<[BarUnitWindow]>,
     pub(super) primary: PrimaryScale,
     pub(super) indicator_panels: Vec<IndicatorPanelScene>,
@@ -340,6 +341,7 @@ pub(super) struct SceneBase {
 pub(super) struct Scene {
     pub(super) layout: PanelLayoutTree,
     pub(super) x: XViewport,
+    pub(super) x_right_inset: f32,
     pub(super) bar_units: Arc<[BarUnitWindow]>,
     pub(super) primary: PrimaryScale,
     pub(super) indicator_panels: Vec<IndicatorPanelScene>,
@@ -352,6 +354,7 @@ impl Scene {
         Self {
             layout: base.layout.clone(),
             x: base.x,
+            x_right_inset: base.x_right_inset,
             bar_units: Arc::clone(&base.bar_units),
             primary: base.primary.clone(),
             indicator_panels: base.indicator_panels.clone(),
@@ -463,9 +466,10 @@ impl Scene {
     }
 
     pub(super) fn x_axis_plot_width(&self) -> f32 {
-        (self.layout.regions.x_axis.width - self.layout.regions.y_axis.width)
+        let full = (self.layout.regions.x_axis.width - self.layout.regions.y_axis.width)
             .max(1.0)
-            .min(self.primary_plot().width.max(1.0))
+            .min(self.primary_plot().width.max(1.0));
+        (full - self.x_right_inset).max(1.0)
     }
 
     pub(super) fn effective_right_x_unit(&self) -> f32 {

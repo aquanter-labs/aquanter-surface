@@ -838,8 +838,7 @@ fn advance_kline_page(
     Ok(page.next_from)
 }
 
-/// Fetch trades from the configured source using a single forward-paging
-/// loop (oldest → newest).
+/// Fetch trades newest-first so the latest price fills before older history.
 ///
 /// Returns `Ok(true)` when at least one trade was received, `Ok(false)`
 /// when the source confirmed the range has no data.
@@ -852,46 +851,69 @@ pub fn fetch_trades_paged(
     data_path: PathBuf,
 ) -> impl Straw<bool, Vec<Trade>, AdapterError> {
     sipper(async move |mut progress| {
-        let mut cursor = from_time;
+        let mut until = to_time;
         let mut had_data = false;
+        const SERVER_WINDOW_MS: u64 = 60_000;
 
-        while cursor < to_time {
-            let prev_cursor = cursor;
+        while until > from_time {
+            let prev_until = until;
 
             if let Some(ref client) = server {
+                let window_start = until
+                    .saturating_sub(SERVER_WINDOW_MS)
+                    .max(from_time);
                 let parsed = client
-                    .fetch_trades_arrow(ticker_info, cursor, to_time, ARROW_LIMIT)
+                    .fetch_trades_arrow(ticker_info, window_start, until, ARROW_LIMIT)
                     .await?;
-
-                let is_empty = parsed.raw_row_count == 0;
-                if !is_empty {
+                if parsed.raw_row_count == 0 {
+                    if window_start <= from_time {
+                        break;
+                    }
+                    until = window_start;
+                } else {
                     had_data = had_data || !parsed.trades.is_empty();
-                    cursor = parsed.last_ts.map_or(cursor, |t| t.saturating_add(1));
-                }
-                if !parsed.trades.is_empty() {
-                    progress.send(parsed.trades).await;
-                }
-                if is_empty {
-                    break;
+                    let reached_window_end = parsed
+                        .last_ts
+                        .is_some_and(|time| time.as_u64().saturating_add(1_000) >= until.as_u64())
+                        || parsed.raw_row_count < ARROW_LIMIT;
+                    if reached_window_end {
+                        until = window_start;
+                    } else if let Some(last) = parsed.last_ts {
+                        until = last.saturating_add(1);
+                        if until >= prev_until {
+                            until = window_start;
+                        }
+                    } else {
+                        until = window_start;
+                    }
+                    if !parsed.trades.is_empty() {
+                        progress.send(parsed.trades).await;
+                    }
                 }
             } else {
                 let batch = handles
-                    .fetch_trades(ticker_info, cursor, Some(data_path.clone()))
+                    .fetch_trades(ticker_info, from_time, until, Some(data_path.clone()))
                     .await?;
-
                 if batch.is_empty() {
-                    break;
+                    let day = until.floor_to(exchange::Timeframe::D1);
+                    if day <= from_time {
+                        break;
+                    }
+                    until = UnixMs::new(day.as_u64().saturating_sub(1));
+                } else {
+                    had_data = true;
+                    let oldest = batch.iter().map(|trade| trade.time).min().unwrap_or(until);
+                    progress.send(batch).await;
+                    if oldest <= from_time {
+                        break;
+                    }
+                    until = oldest.saturating_sub(1);
                 }
-
-                had_data = true;
-                cursor = batch.last().map_or(cursor, |t| t.time.saturating_add(1));
-                progress.send(batch).await;
             }
 
-            if cursor <= prev_cursor {
+            if until >= prev_until {
                 log::error!(
-                    "paging cursor did not advance past {prev_cursor:?} despite a non-empty response; \
-             aborting to avoid an infinite loop (source may be malformed)"
+                    "trade paging cursor did not move before {prev_until:?}; aborting to avoid an infinite loop"
                 );
                 return Err(AdapterError::ParseError(
                     "Source may be malformed. Check logs for details.".to_string(),

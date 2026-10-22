@@ -1318,6 +1318,7 @@ impl DrawingTools {
                 DrawingTool::HorizontalLine => style::Icon::HorizontalLine,
                 DrawingTool::VerticalLine => style::Icon::VerticalLine,
                 DrawingTool::Measure => style::Icon::Ruler,
+                DrawingTool::VolumeProfile => style::Icon::Layers,
             };
 
             let btn =
@@ -1730,6 +1731,15 @@ impl DrawingTools {
                     start: anchor,
                     current: anchor,
                     style: settings.style_defaults.style_for(DrawingTool::Trendline),
+                });
+                self.selected_drawings.clear();
+                true
+            }
+            DrawingTool::VolumeProfile => {
+                self.interaction = DrawingInteraction::Drafting(DrawingDraft::VolumeProfile {
+                    start: anchor,
+                    current: anchor,
+                    style: settings.style_defaults.style_for(DrawingTool::VolumeProfile),
                 });
                 self.selected_drawings.clear();
                 true

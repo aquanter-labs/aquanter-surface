@@ -79,11 +79,20 @@ impl MarkRenderer<'_> {
                     return;
                 }
 
-                let x_plot = scene.map_x_plot(x_unit);
                 let layer_count = output_layers.len();
                 let layer_width_phys = (indicator_width_phys / layer_count as i32).max(1);
                 let layer_width = pixels.logical_width_from_physical(layer_width_phys);
                 for (layer_index, layer) in output_layers.iter().enumerate() {
+                    let offset = self
+                        .indicators
+                        .indicator_output_spec(&layer.base_output)
+                        .map(|spec| i64::from(spec.offset_bars))
+                        .unwrap_or(0);
+                    let draw_unit = scene.x.axis.output_unit(x_unit, offset);
+                    if !in_visible_range(draw_unit) {
+                        continue;
+                    }
+                    let x_plot = scene.map_x_plot(draw_unit);
                     let Some(values) = self
                         .indicators
                         .indicator_layer_values_at(series, layer, bar_index)

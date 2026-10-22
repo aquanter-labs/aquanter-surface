@@ -2,7 +2,7 @@ use super::{KlineChart, drawing::{DrawingMessage, Event}};
 use crate::ai::{ChartAnnotation, DepthLevel, LiquidationSummary, MarketBar, MarketFeatures, MarketSnapshot};
 use data::chart::Basis;
 use exchange::{Liquidation, depth::Depth, unit::Price};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
 #[derive(Default)]
 pub(super) struct ProState {
@@ -10,7 +10,7 @@ pub(super) struct ProState {
     pub(super) trading: Option<crate::trading::PositionOverlay>,
     pub(super) depth: Depth,
     latency_ms: Option<u64>,
-    liquidations: VecDeque<Liquidation>,
+    liquidations: Vec<Liquidation>,
 }
 
 #[cfg(test)]
@@ -155,6 +155,10 @@ impl KlineChart {
             self.pro.depth.asks.keys().next().map(|p| p.to_f64()))
     }
 
+    pub(super) fn liquidations(&self) -> &[Liquidation] {
+        &self.pro.liquidations
+    }
+
     pub fn insert_depth(&mut self, depth: &Depth, latency_ms: Option<u64>) {
         self.pro.depth = depth.clone();
         self.pro.latency_ms = latency_ms;
@@ -163,7 +167,8 @@ impl KlineChart {
 
     pub fn insert_liquidations(&mut self, events: &[Liquidation]) {
         self.pro.liquidations.extend(events.iter().copied());
-        while self.pro.liquidations.len() > 20_000 { self.pro.liquidations.pop_front(); }
+        let extra = self.pro.liquidations.len().saturating_sub(20_000);
+        if extra > 0 { self.pro.liquidations.drain(0..extra); }
         self.render_invalidation.invalidate();
     }
 

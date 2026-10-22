@@ -8,7 +8,11 @@ pub fn rgba(color: iced_core::Color) -> u32 {
 
 pub fn migrate_legacy_chart(value: serde_json::Value, enabled: &[String]) -> Result<Config, serde_json::Error> {
     let mut pro: ProConfig = if value.is_null() { ProConfig::default() } else { serde_json::from_value(value)? };
-    pro.enabled = enabled.to_vec();
+    for name in enabled {
+        if !pro.is_enabled(name) {
+            pro.enabled.push(name.clone());
+        }
+    }
     let instances = pro.migrate_indicators(enabled);
     let mut composition = super::composition::ChartComposition::prototype_kline();
     for instance in &instances {
@@ -30,6 +34,28 @@ pub fn migrate_legacy_chart(value: serde_json::Value, enabled: &[String]) -> Res
 impl ProConfig {
     pub fn is_enabled(&self, name: &str) -> bool {
         self.enabled.iter().any(|enabled| enabled == name)
+    }
+
+    pub fn adopt_order_book(&mut self) {
+        if self.show_footprint_orderbook && !self.is_enabled("OrderBook") {
+            self.enabled.push("OrderBook".into());
+        }
+    }
+
+    pub fn scripted_indicator_id(name: &str) -> Option<&'static str> {
+        Some(match name {
+            "Ema" => "pro.ema",
+            "StochRsi" => "pro.stoch-rsi",
+            "CumulativeDelta" => "pro.pro-cvd",
+            "OpenInterest" => "pro.pro-open-interest",
+            "OiDeltaDivergence" => "pro.oi-delta-divergence",
+            "OiWeightedDelta" => "pro.oi-weighted-delta",
+            "OiFlowNet" => "pro.oi-flow-net",
+            "LiquidationPressureIndex" => "pro.liquidation-pressure",
+            "Volume" => "core.volume",
+            "BarAnalysis" => "core.bar-analysis",
+            _ => return None,
+        })
     }
 
     pub fn migrate_indicators(&self, enabled: &[String]) -> Vec<IndicatorInstance> {
@@ -54,8 +80,8 @@ impl ProConfig {
                     add("pro.stoch-rsi", json!({"rsi_length":c.rsi_length.max(2),"stochastic_length":c.stochastic_length.max(1),"k_smoothing":c.k_smoothing.max(1),"d_smoothing":c.d_smoothing.max(1),"k_color":rgba(c.k_color),"d_color":rgba(c.d_color)}), &[("k",c.line_width),("d",c.line_width)]);
                 },
                 "CumulativeDelta" | "OpenInterest" => {
-                    let (id,c) = if name == "OpenInterest" { ("pro.pro-open-interest",self.open_interest) } else { ("pro.pro-cvd",self.cumulative_delta) };
-                    add(id,json!({"candles":c.style == IndicatorPlotStyle::Candles,"line_color":rgba(c.line_color),"up_color":rgba(c.up_color),"down_color":rgba(c.down_color)}), &[("main",c.line_width)]);
+                    let (id, c) = if name == "OpenInterest" { ("pro.pro-open-interest", self.open_interest) } else { ("pro.pro-cvd", self.cumulative_delta) };
+                    add(id, json!({"candles": c.style == IndicatorPlotStyle::Candles, "line_color": rgba(c.line_color), "up_color": rgba(c.up_color), "down_color": rgba(c.down_color)}), &[("main", c.line_width)]);
                 },
                 "OiDeltaDivergence" => {
                     let c = self.oi_delta_divergence;

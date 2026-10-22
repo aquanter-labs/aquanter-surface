@@ -36,8 +36,25 @@ fn primary_bounds(scene: &Scene) -> Rectangle {
     Rectangle { x: scene.layout.regions.plot.x + panel.x, y: scene.layout.regions.plot.y + panel.y, ..*panel }
 }
 
+fn tick_row(scene: &Scene, price: exchange::unit::Price, tick: exchange::unit::PriceStep) -> Option<(f32, f32)> {
+    let anchor = scene.primary.anchor;
+    let center = scene.map_primary_plot_with_anchor_f32(price.to_f32_lossy(), anchor);
+    let height = super::footprint::row_height(scene, price, tick, anchor);
+    if !center.is_finite() || !height.is_finite() || height <= 0.0 {
+        return None;
+    }
+    Some((scene.layout.regions.plot.y + center - height * 0.5, height))
+}
+
 fn price_y(scene: &Scene, price: f64) -> Option<f32> {
     scene.map_primary_plot_with_anchor(price, scene.primary.anchor).map(|y| scene.layout.regions.plot.y + y)
+}
+
+#[cfg(test)]
+fn price_row_span(scene: &Scene, price: f64, tick: f64) -> Option<(f32, f32)> {
+    let price = exchange::unit::Price::from_f64(price);
+    let tick = exchange::unit::PriceStep { units: exchange::unit::Price::from_f64(tick).units };
+    tick_row(scene, price, tick)
 }
 
 fn price_at(scene: &Scene, position: Point) -> Option<f64> {
@@ -54,6 +71,11 @@ impl<'a> KlineWidget<'a> {
         self
     }
 
+    pub(crate) fn with_pro_liquidations(mut self, liquidations: &'a [exchange::Liquidation]) -> Self {
+        self.pro_liquidations = liquidations;
+        self
+    }
+
     pub(super) fn pro_main_bounds(&self, scene: &Scene) -> Rectangle {
         let bounds = primary_bounds(scene);
         let Some((config,_)) = self.pro_market else { return bounds; };
@@ -61,7 +83,7 @@ impl<'a> KlineWidget<'a> {
         let left = if config.enabled.iter().any(|s| s == "VolumeProfile") {
             bounds.width * f32::from(config.volume_profile.max_width_percent.min(50)) / 100.0
         } else { 0.0 };
-        let right = if config.show_footprint_orderbook { (bounds.width * 0.2).min(130.0) } else { 0.0 };
+        let right = if config.is_enabled("OrderBook") { super::order_book_strip_width(bounds.width) } else { 0.0 };
         Rectangle { x: bounds.x + left, width: (bounds.width-left-right).max(1.0), ..bounds }
     }
 
@@ -78,61 +100,141 @@ impl<'a> KlineWidget<'a> {
         let Some((config,depth)) = self.pro_market else { return; };
         let bounds = primary_bounds(scene);
         let main = self.pro_main_bounds(scene);
-        if self.footprint.visible && config.show_footprint_orderbook {
+        let tick = self.series.first().map(|series| series.tick_size()).unwrap_or(exchange::unit::PriceStep { units: 1 });
+        if self.footprint.visible && config.is_enabled("OrderBook") {
             let book = Rectangle { x: main.x + main.width, width: bounds.x+bounds.width-main.x-main.width, ..bounds };
-            let max = depth.bids.values().chain(depth.asks.values()).map(|q| q.to_f64()).fold(0.0,f64::max);
-            if max > 0.0 {
+            let mut bids = std::collections::BTreeMap::<exchange::unit::Price, f64>::new();
+            let mut asks = std::collections::BTreeMap::<exchange::unit::Price, f64>::new();
+            for (price, qty) in &depth.bids { *bids.entry(price.round_to_side_step(true, tick)).or_default() += qty.to_f64(); }
+            for (price, qty) in &depth.asks { *asks.entry(price.round_to_side_step(false, tick)).or_default() += qty.to_f64(); }
+            let mut keys = bids.keys().chain(asks.keys()).copied().collect::<Vec<_>>();
+            keys.sort_unstable();
+            keys.dedup();
+            let mut visible_qty = Vec::new();
+            for price in &keys {
+                let Some((top, height)) = tick_row(scene, *price, tick) else { continue; };
+                if top + height < book.y || top > book.y + book.height { continue; }
+                for qty in [bids.get(price).copied().unwrap_or(0.0), asks.get(price).copied().unwrap_or(0.0)] {
+                    if qty > 0.0 { visible_qty.push(qty); }
+                }
+            }
+            let scale = visible_qty.into_iter().fold(0.0_f64, f64::max);
+            if scale > 0.0 && book.width > 1.0 {
                 frame.with_clip(book, |frame| {
-                    for (orders,color) in [(&depth.bids,palette.success.base.color),(&depth.asks,palette.danger.base.color)] {
-                        for (price,qty) in orders {
-                            let Some(y) = price_y(scene,price.to_f64()).filter(|y| *y >= bounds.y && *y <= bounds.y+bounds.height) else { continue; };
-                            let height = (price_y(scene,price.to_f64()+self.series.first().map_or(0.0,|s| s.tick_size().to_f64_lossy())).unwrap_or(y-3.0)-y).abs().clamp(2.0,18.0);
-                            let width = (qty.to_f64()/max) as f32 * book.width;
-                            frame.fill_rectangle(Point::new(book.x+book.width-width,y-height/2.0),Size::new(width,height),color.scale_alpha(0.4));
-                            if height >= 10.0 { frame.fill_text(canvas::Text { content: config.quantity_format.format(qty.to_f64()), position:Point::new(book.x+book.width-3.0,y),align_x:iced::alignment::Horizontal::Right.into(),align_y:iced::alignment::Vertical::Center.into(),size:10.0.into(),color:palette.background.base.text,..Default::default() }); }
-                        }
+                    frame.fill_rectangle(Point::new(book.x, book.y), Size::new(book.width, book.height), palette.background.weakest.color);
+                    for price in keys {
+                        let Some((top, height)) = tick_row(scene, price, tick) else { continue; };
+                        if top + height < book.y || top > book.y + book.height { continue; }
+                        let bid = bids.get(&price).copied().unwrap_or(0.0);
+                        let ask = asks.get(&price).copied().unwrap_or(0.0);
+                        let mut paint = |qty: f64, color: iced::Color| {
+                            if qty <= 0.0 || height <= 0.0 { return; }
+                            let width = ((qty / scale) as f32 * (book.width - 4.0)).max(1.0);
+                            frame.fill_rectangle(Point::new(book.x + book.width - width, top), Size::new(width, height), color.scale_alpha(0.28));
+                            if height >= 10.0 {
+                                frame.fill_text(canvas::Text {
+                                    content: config.quantity_format.format(qty),
+                                    position: Point::new(book.x + book.width - 4.0, top + height / 2.0),
+                                    align_x: iced::alignment::Horizontal::Right.into(),
+                                    align_y: iced::alignment::Vertical::Center.into(),
+                                    size: (height.min(12.0) - 2.0).into(),
+                                    color,
+                                    font: style::AZERET_MONO,
+                                    ..Default::default()
+                                });
+                            }
+                        };
+                        if ask > 0.0 { paint(ask, palette.danger.base.color); }
+                        if bid > 0.0 { paint(bid, palette.success.base.color); }
                     }
                 });
             }
         }
-        if !config.enabled.iter().any(|s| s == "VolumeProfile") { return; }
+        if !config.enabled.iter().any(|name| name == "VolumeProfile") { return; }
         let Some(series) = self.series.first() else { return; };
         let profile = config.volume_profile;
-        let latest = series.latest_point().map_or(0,|p| p.kline.time.as_u64());
-        let visible_end = scene.time_for_x_unit(scene.x.max_unit).map_or(latest,|t| t.as_u64());
+        let latest = series.latest_point().map_or(0, |point| point.kline.time.as_u64());
+        let visible_end = scene.time_for_x_unit(scene.x.max_unit).map_or(latest, |time| time.as_u64());
         let end = match profile.past_duration_end { data::chart::kline::pro::VolumeProfilePastEnd::LatestData => latest, _ => visible_end };
         let start = match profile.range {
-            data::chart::kline::pro::VolumeProfileRange::Visible => scene.time_for_x_unit(scene.x.min_unit).map_or(0,|t| t.as_u64()),
+            data::chart::kline::pro::VolumeProfileRange::Visible => scene.time_for_x_unit(scene.x.min_unit).map_or(0, |time| time.as_u64()),
             data::chart::kline::pro::VolumeProfileRange::PastDuration => {
-                let step = match self.basis { Basis::Time(t) => t.to_milliseconds(), _ => 60_000 };
+                let step = match self.basis { Basis::Time(timeframe) => timeframe.to_milliseconds(), _ => 60_000 };
                 end.saturating_sub(step.saturating_mul(u64::from(profile.timeframe_multiplier.max(1))))
             }
         };
-        let (low,high) = scene.primary_domain_value_range();
-        let rows = usize::from(profile.rows.clamp(1,500));
-        let step = ((high.to_f64()-low.to_f64())/rows as f64).max(series.tick_size().to_f64_lossy());
-        let mut buckets = vec![(0.0,0.0);rows];
-        for point in series.points().filter(|p| p.kline.time.as_u64() >= start && p.kline.time.as_u64() <= end) {
-            for (price,group) in &point.footprint.trades {
-                let price = price.to_f64();
-                if price < low.to_f64() || price > high.to_f64() { continue; }
-                let i = (((price-low.to_f64())/step) as usize).min(rows-1);
-                buckets[i].0 += group.buy_qty.to_f64();
-                buckets[i].1 += group.sell_qty.to_f64();
+        let mut points = series.points().filter(|point| {
+            let time = point.kline.time.as_u64();
+            time >= start && time <= end
+        }).collect::<Vec<_>>();
+        if points.is_empty() {
+            points = series.points().collect();
+        }
+        let mut buckets = std::collections::BTreeMap::<exchange::unit::Price, (f64, f64)>::new();
+        for point in &points {
+            for (price, group) in &point.footprint.trades {
+                let entry = buckets.entry(price.floor_to_step(tick)).or_default();
+                entry.0 += group.buy_qty.to_f64();
+                entry.1 += group.sell_qty.to_f64();
             }
         }
-        let delta = matches!(profile.display,data::chart::kline::pro::VolumeProfileDisplay::Delta);
-        let value = |&(buy,sell): &(f64,f64)| if delta { buy-sell } else { buy+sell };
-        let max = buckets.iter().map(|b| value(b).abs()).fold(0.0,f64::max);
-        if max <= 0.0 { return; }
-        let width = if self.footprint.visible { main.x-bounds.x } else { bounds.width*f32::from(profile.max_width_percent.min(50))/100.0 };
-        frame.with_clip(Rectangle { width, ..bounds },|frame| {
-            for (i,bucket) in buckets.iter().enumerate() {
-                let price = low.to_f64()+i as f64*step;
-                let (Some(y1),Some(y2)) = (price_y(scene,price),price_y(scene,price+step)) else { continue; };
-                let v = value(bucket);
-                let color = if v < 0.0 { palette.danger.base.color } else { palette.success.base.color };
-                frame.fill_rectangle(Point::new(bounds.x,y1.min(y2)),Size::new((v.abs()/max) as f32*width,(y2-y1).abs().max(1.0)),color.scale_alpha(0.5));
+        if buckets.values().all(|(buy, sell)| *buy + *sell <= 0.0) {
+            for point in &points {
+                let (buy, sell) = point.kline.volume.buy_sell().map(|(buy, sell)| (buy.to_f64(), sell.to_f64())).unwrap_or_else(|| {
+                    let total = point.kline.volume.total().to_f64();
+                    if point.kline.close >= point.kline.open { (total, 0.0) } else { (0.0, total) }
+                });
+                if buy + sell <= 0.0 { continue; }
+                let mut price = exchange::unit::Price::from_f64(point.kline.low.to_f64()).floor_to_step(tick);
+                let end = exchange::unit::Price::from_f64(point.kline.high.to_f64()).floor_to_step(tick);
+                let mut count = 1u32;
+                let mut cursor = price;
+                while cursor < end {
+                    let Some(next) = cursor.checked_add_steps(1, tick) else { break; };
+                    cursor = next;
+                    count += 1;
+                    if count > 20_000 { break; }
+                }
+                let span = f64::from(count);
+                for _ in 0..count {
+                    let entry = buckets.entry(price).or_default();
+                    entry.0 += buy / span;
+                    entry.1 += sell / span;
+                    let Some(next) = price.checked_add_steps(1, tick) else { break; };
+                    price = next;
+                }
+            }
+        }
+        let delta = matches!(profile.display, data::chart::kline::pro::VolumeProfileDisplay::Delta);
+        let value = |&(buy, sell): &(f64, f64)| if delta { buy - sell } else { buy + sell };
+        let max = buckets.values().map(value).map(f64::abs).fold(0.0, f64::max);
+        let width = if self.footprint.visible { main.x - bounds.x } else { bounds.width * f32::from(profile.max_width_percent.min(50)) / 100.0 };
+        if width <= 0.0 { return; }
+        let column = Rectangle { width, ..bounds };
+        frame.with_clip(column, |frame| {
+            frame.fill_rectangle(Point::new(column.x, column.y), Size::new(column.width, column.height), palette.background.weakest.color);
+            frame.fill_rectangle(Point::new(column.x + column.width - 1.0, column.y), Size::new(1.0, column.height), palette.background.strong.color.scale_alpha(0.25));
+            if max <= 0.0 { return; }
+            for (price, bucket) in &buckets {
+                let Some((top, height)) = tick_row(scene, *price, tick) else { continue; };
+                let (buy, sell) = *bucket;
+                if delta {
+                    let signed = buy - sell;
+                    if signed.abs() <= f64::EPSILON { continue; }
+                    let color = if signed < 0.0 { palette.danger.base.color } else { palette.success.base.color };
+                    frame.fill_rectangle(Point::new(column.x, top), Size::new((signed.abs() / max) as f32 * width, height), color.scale_alpha(0.75));
+                    paint_profile_qty(frame, config, column.x, top, height, width, signed, palette.background.base.text);
+                } else {
+                    let mut x = column.x;
+                    for (qty, color) in [(sell, palette.danger.base.color), (buy, palette.success.base.color)] {
+                        let bar = (qty / max) as f32 * width;
+                        if bar > 0.0 {
+                            frame.fill_rectangle(Point::new(x, top), Size::new(bar, height), color.scale_alpha(0.75));
+                            x += bar;
+                        }
+                    }
+                    paint_profile_qty(frame, config, column.x, top, height, width, buy + sell, palette.background.base.text);
+                }
             }
         });
     }
@@ -168,8 +270,75 @@ impl<'a> KlineWidget<'a> {
         }).min_by(|a,b| a.2.total_cmp(&b.2)).map(|(id,price,_)| (id,price))
     }
 
+    fn paint_pro_studies(&self, frame: &mut PaintInputs, scene: &Scene, palette: &Extended) {
+        let Some((config, _)) = self.pro_market else { return; };
+        let Some(series) = self.series.first() else { return; };
+        let plot = self.pro_main_bounds(scene);
+        let points = series.points().collect::<Vec<_>>();
+        if points.is_empty() { return; }
+        frame.with_clip(plot, |frame| {
+            if config.is_enabled("SessionVwap") {
+                let mode = config.vwap_mode;
+                let hour = config.session_vwap.anchor_hour_utc;
+                let rolling = matches!(mode, Some(data::chart::kline::pro::VwapMode::Rolling { .. }));
+                if !rolling {
+                    paint_vwap_line(frame, scene, self, &points, config.session_vwap.color, config.session_vwap.line_width, config.session_vwap.deviation_bands, |time| Some(session_key(time, mode, hour)));
+                }
+            }
+            if config.is_enabled("AnchoredVwap") {
+                if let Some(anchor) = config.anchored_vwap.anchor.map(|time| time.as_u64()) {
+                    paint_vwap_line(frame, scene, self, &points, config.anchored_vwap.color, config.anchored_vwap.line_width, config.anchored_vwap.deviation_bands, |time| (time >= anchor).then_some(anchor));
+                }
+            }
+            if config.is_enabled("LiquidationHeatmap") && !self.pro_liquidations.is_empty() {
+                let max = self.pro_liquidations.iter().map(|event| event.qty.to_f64()).fold(0.0, f64::max);
+                let height = config.liquidation_heatmap.row_height.max(1.0);
+                if max > 0.0 {
+                    for event in self.pro_liquidations {
+                        let Some(x) = self.pro_time_x(scene, event.time.as_u64()) else { continue; };
+                        let Some(y) = price_y(scene, event.price.to_f64()) else { continue; };
+                        let color = if event.is_sell { config.liquidation_heatmap.long_color } else { config.liquidation_heatmap.short_color };
+                        let width = (event.qty.to_f64() / max).clamp(0.05, 1.0) as f32 * 28.0;
+                        frame.fill_rectangle(Point::new(x - width / 2.0, y - height / 2.0), Size::new(width, height), color.scale_alpha(config.liquidation_heatmap.opacity));
+                    }
+                }
+            }
+            if config.show_footprint_summary && self.footprint.visible {
+                for point in &points {
+                    let Some(summary) = point.footprint.trade_summary() else { continue; };
+                    let Some(x) = self.pro_time_x(scene, point.kline.time.as_u64()) else { continue; };
+                    let Some(y) = price_y(scene, point.kline.low.to_f64()) else { continue; };
+                    let delta = summary.buy_qty.to_f64() - summary.sell_qty.to_f64();
+                    // Sit a full caption-gap outside the wick, not on the tip.
+                    let outward = price_y(scene, point.kline.high.to_f64())
+                        .map(|high_y| if y >= high_y { 1.0 } else { -1.0 })
+                        .unwrap_or(1.0);
+                    let align_y = if outward > 0.0 {
+                        iced::alignment::Vertical::Top
+                    } else {
+                        iced::alignment::Vertical::Bottom
+                    };
+                    frame.fill_text(canvas::Text {
+                        content: config.quantity_format.format(delta),
+                        position: Point::new(x, y + outward * 16.0),
+                        align_x: iced::alignment::Horizontal::Center.into(),
+                        align_y: align_y.into(),
+                        size: 9.0.into(),
+                        color: if delta >= 0.0 { palette.success.base.color } else { palette.danger.base.color },
+                        font: style::AZERET_MONO,
+                        ..Default::default()
+                    });
+                }
+            }
+            if config.is_enabled("FixedVolumeProfile") {
+                paint_fixed_profiles(frame, scene, self, config, &points, palette);
+            }
+        });
+    }
+
     pub(super) fn paint_pro_overlays(&self, frame: &mut PaintInputs, scene: &Scene, palette: &Extended, drag: Option<(TradingLineId,f64)>) {
         self.paint_pro_market(frame,scene,palette);
+        self.paint_pro_studies(frame, scene, palette);
         let bounds = self.pro_main_bounds(scene);
         frame.with_clip(bounds, |frame| {
             let line = |frame: &mut PaintInputs, price: f64, label: &str, color: iced::Color, width: f32| {
@@ -252,6 +421,141 @@ impl<'a> KlineWidget<'a> {
     }
 }
 
+fn paint_profile_qty(frame: &mut PaintInputs, config: &data::chart::kline::pro::ProConfig, x: f32, top: f32, height: f32, width: f32, value: f64, color: iced::Color) {
+    if height < 12.0 || value.abs() <= f64::EPSILON || width < 28.0 { return; }
+    frame.fill_text(canvas::Text {
+        content: config.quantity_format.format(value),
+        position: Point::new(x + 3.0, top + height / 2.0),
+        align_x: iced::alignment::Horizontal::Left.into(),
+        align_y: iced::alignment::Vertical::Center.into(),
+        size: (height.min(16.0) - 3.0).max(8.0).into(),
+        color,
+        font: style::AZERET_MONO,
+        ..Default::default()
+    });
+}
+
+fn session_key(time: u64, mode: Option<data::chart::kline::pro::VwapMode>, hour: u8) -> u64 {
+    const DAY: u64 = 86_400_000;
+    let offset = u64::from(hour.min(23)) * 3_600_000;
+    match mode {
+        Some(data::chart::kline::pro::VwapMode::Week) => time / (DAY * 7),
+        Some(data::chart::kline::pro::VwapMode::Month) => time / (DAY * 30),
+        Some(data::chart::kline::pro::VwapMode::Visible { time_ms }) => time_ms,
+        Some(data::chart::kline::pro::VwapMode::Rolling { .. }) => 1,
+        _ => time.saturating_sub(offset) / DAY * DAY + offset,
+    }
+}
+
+fn paint_vwap_line(
+    frame: &mut PaintInputs,
+    scene: &Scene,
+    widget: &KlineWidget<'_>,
+    points: &[data::chart::kline::series::KlineSeriesPoint<'_>],
+    color: iced::Color,
+    width: f32,
+    bands: u8,
+    session_of: impl Fn(u64) -> Option<u64>,
+) {
+    let mut weight = 0.0;
+    let mut weighted = 0.0;
+    let mut weighted_sq = 0.0;
+    let mut session = None;
+    let mut previous: Option<(f32, f64, f64, u64)> = None;
+    let band_color = color.scale_alpha(0.45);
+    for point in points {
+        let time = point.kline.time.as_u64();
+        let Some(key) = session_of(time) else { continue; };
+        if session != Some(key) {
+            session = Some(key);
+            weight = 0.0;
+            weighted = 0.0;
+            weighted_sq = 0.0;
+            previous = None;
+        }
+        let price = (point.kline.high.to_f64() + point.kline.low.to_f64() + point.kline.close.to_f64()) / 3.0;
+        let volume = point.kline.volume.total().to_f64();
+        if volume <= 0.0 || !price.is_finite() { continue; }
+        weight += volume;
+        weighted += price * volume;
+        weighted_sq += price * price * volume;
+        let mean = weighted / weight;
+        let deviation = (weighted_sq / weight - mean * mean).max(0.0).sqrt();
+        let Some(x) = widget.pro_time_x(scene, time) else { continue; };
+        let Some(y) = price_y(scene, mean) else { continue; };
+        if let Some((px, prev_mean, prev_dev, pkey)) = previous && pkey == key {
+            if let Some(py) = price_y(scene, prev_mean) {
+                frame.stroke(&canvas::Path::line(Point::new(px, py), Point::new(x, y)), canvas::Stroke::default().with_color(color).with_width(width));
+            }
+            for band in 1..=i32::from(bands.min(6)) {
+                let scale = f64::from(band);
+                if let (Some(y0), Some(y1)) = (price_y(scene, prev_mean + prev_dev * scale), price_y(scene, mean + deviation * scale)) {
+                    frame.stroke(&canvas::Path::line(Point::new(px, y0), Point::new(x, y1)), canvas::Stroke::default().with_color(band_color).with_width(1.0));
+                }
+                if let (Some(y0), Some(y1)) = (price_y(scene, prev_mean - prev_dev * scale), price_y(scene, mean - deviation * scale)) {
+                    frame.stroke(&canvas::Path::line(Point::new(px, y0), Point::new(x, y1)), canvas::Stroke::default().with_color(band_color).with_width(1.0));
+                }
+            }
+        }
+        previous = Some((x, mean, deviation, key));
+    }
+}
+
+fn paint_fixed_profiles(
+    frame: &mut PaintInputs,
+    scene: &Scene,
+    widget: &KlineWidget<'_>,
+    config: &data::chart::kline::pro::ProConfig,
+    points: &[data::chart::kline::series::KlineSeriesPoint<'_>],
+    palette: &Extended,
+) {
+    let step_ms = match widget.basis { Basis::Time(timeframe) => timeframe.to_milliseconds(), _ => 60_000 };
+    let duration = step_ms.saturating_mul(u64::from(config.fixed_volume_profile.timeframe_multiplier.max(1))).max(step_ms);
+    let profile = config.fixed_volume_profile;
+    let Some(first) = points.first() else { return; };
+    let mut window = first.kline.time.as_u64() / duration * duration;
+    let end = points.last().map(|point| point.kline.time.as_u64()).unwrap_or(window);
+    let mut drawn = 0u32;
+    while window <= end && drawn < 48 {
+        drawn += 1;
+        let next = window.saturating_add(duration);
+        let samples = points.iter().filter(|point| {
+            let time = point.kline.time.as_u64();
+            time >= window && time < next
+        }).collect::<Vec<_>>();
+        if samples.len() >= 2 {
+            let low = samples.iter().map(|point| point.kline.low.to_f64()).fold(f64::MAX, f64::min);
+            let high = samples.iter().map(|point| point.kline.high.to_f64()).fold(f64::MIN, f64::max);
+            let rows = usize::from(profile.rows.clamp(8, 80));
+            let step = ((high - low) / rows as f64).max(f64::EPSILON);
+            let mut buckets = vec![(0.0, 0.0); rows];
+            for point in &samples {
+                let (buy, sell) = point.kline.volume.buy_sell().map(|(buy, sell)| (buy.to_f64(), sell.to_f64())).unwrap_or_else(|| {
+                    let total = point.kline.volume.total().to_f64();
+                    if point.kline.close >= point.kline.open { (total, 0.0) } else { (0.0, total) }
+                });
+                let index = (((point.kline.close.to_f64() - low) / step) as usize).min(rows - 1);
+                buckets[index].0 += buy;
+                buckets[index].1 += sell;
+            }
+            let max = buckets.iter().map(|(buy, sell)| buy + sell).fold(0.0, f64::max);
+            if let (Some(x0), Some(x1)) = (widget.pro_time_x(scene, window), widget.pro_time_x(scene, next.saturating_sub(1))) && max > 0.0 {
+                let left = x0.min(x1);
+                let span = (x1 - x0).abs().max(8.0);
+                for (index, (buy, sell)) in buckets.iter().enumerate() {
+                    let price = low + index as f64 * step;
+                    let Some(y) = price_y(scene, price) else { continue; };
+                    let bar = ((*buy + *sell) / max) as f32 * span;
+                    let color = if buy >= sell { palette.success.base.color } else { palette.danger.base.color };
+                    frame.fill_rectangle(Point::new(left, y), Size::new(bar, 2.0), color.scale_alpha(0.35));
+                }
+            }
+        }
+        if next <= window { break; }
+        window = next;
+    }
+}
+
 fn paint_marker(frame: &mut PaintInputs, point: Point, buy: bool, color: iced::Color) {
     let direction = if buy { 1.0 } else { -1.0 };
     let path = canvas::Path::new(|p| {
@@ -286,7 +590,7 @@ mod tests {
         Scene {
             layout, x:XViewport { axis:XAxis::Time { timeframe:exchange::Timeframe::M1,anchor:UnixMs::new(1_500_000) },world:HorizontalWorld::new(20.0,0.0).axis_at_right_unit(0.0),fractional_offset:0.0,min_unit:-20,max_unit:0 },
             bar_units:Arc::from([]), primary:PrimaryScale { panel_index:0,domain:PanelDomainState::new(YUnitRange::new(scale.value_to_unit(100.0),scale.value_to_unit(200.0))),display_domain_override:None,value_scale:scale,mark:MarkKind::Candle,mode,inverted,anchor:Some(100.0),value_step:Some(0.1),value_decimals:Some(1),series_percent_anchors:vec![] },
-            indicator_panels:vec![],chrome:ChromeScene::default(),interaction:SceneInteraction::default(),
+            indicator_panels:vec![],chrome:ChromeScene::default(),interaction:SceneInteraction::default(),x_right_inset:0.0,
         }
     }
 
@@ -313,7 +617,7 @@ mod tests {
         let theme = ThemeState::new(data::Theme(Theme::Dark));
         let mut config = ProConfig::default();
         config.enabled.push("VolumeProfile".into());
-        config.show_footprint_orderbook = true;
+        config.enabled.push("OrderBook".into());
         let depth = exchange::depth::Depth::default();
         let widget = KlineWidget::new(&[],&host,Basis::Time(exchange::Timeframe::M1),&composition,&instances,IndicatorPresentationContext::new(data::chart::kline::indicators::IndicatorInputCoverage::default(),Arc::from([])),&theme)
             .with_footprint_config(FootprintConfig { visible:true,..Default::default() }).with_pro_market(&config,&depth);
@@ -325,5 +629,16 @@ mod tests {
         assert_eq!(clips[1].width,lower.width);
         assert_eq!(clips[1].x,scene.layout.regions.plot.x+lower.x);
         let _ = ChartStepMs::from_u64(60_000);
+    }
+
+    #[test]
+    fn adjacent_order_rows_use_tick_height() {
+        let scene = scene(PanelScaleMode::Absolute, false);
+        let (top, height) = price_row_span(&scene, 120.0, 5.0).unwrap();
+        let (next_top, next_height) = price_row_span(&scene, 125.0, 5.0).unwrap();
+        assert!(height < 18.0, "row height {height} still uses the overlapping cap");
+        let overlap_start = top.max(next_top);
+        let overlap_end = (top + height).min(next_top + next_height);
+        assert!(overlap_start + 0.5 >= overlap_end, "rows overlap by {}", overlap_end - overlap_start);
     }
 }

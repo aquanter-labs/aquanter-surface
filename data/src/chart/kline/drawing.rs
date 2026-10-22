@@ -19,6 +19,7 @@ pub enum DrawingTool {
     VerticalLine,
     Box,
     Measure,
+    VolumeProfile,
 }
 
 impl DrawingTool {
@@ -29,7 +30,11 @@ impl DrawingTool {
     pub const fn supports_magnet(self) -> bool {
         matches!(
             self,
-            Self::Trendline | Self::Box | Self::HorizontalLine | Self::VerticalLine
+            Self::Trendline
+                | Self::Box
+                | Self::HorizontalLine
+                | Self::VerticalLine
+                | Self::VolumeProfile
         )
     }
 
@@ -41,6 +46,7 @@ impl DrawingTool {
             Self::VerticalLine,
             Self::Box,
             Self::Measure,
+            Self::VolumeProfile,
         ]
     }
 
@@ -52,6 +58,7 @@ impl DrawingTool {
             Self::HorizontalLine => "Horizontal line",
             Self::VerticalLine => "Vertical line",
             Self::Measure => "Measure",
+            Self::VolumeProfile => "Volume profile",
         }
     }
 
@@ -60,6 +67,10 @@ impl DrawingTool {
 
         match self {
             Self::Cursor | Self::Measure => {}
+            Self::VolumeProfile => {
+                style.stroke_color = DrawingColor::accent(ThemeAccent::One, 1.0);
+                style.stroke_width = 1.2;
+            }
             Self::Trendline => {
                 style.stroke_color = DrawingColor::accent(ThemeAccent::One, 1.0);
                 style.stroke_width = 1.2;
@@ -403,7 +414,9 @@ impl DrawingStyleDefaults {
             DrawingTool::Box => self.box_drawing,
             DrawingTool::HorizontalLine => self.horizontal_line,
             DrawingTool::VerticalLine => self.vertical_line,
-            DrawingTool::Cursor | DrawingTool::Measure => tool.default_style(),
+            DrawingTool::Cursor | DrawingTool::Measure | DrawingTool::VolumeProfile => {
+                tool.default_style()
+            }
         }
     }
 
@@ -413,7 +426,9 @@ impl DrawingStyleDefaults {
             DrawingTool::Box => &mut self.box_drawing,
             DrawingTool::HorizontalLine => &mut self.horizontal_line,
             DrawingTool::VerticalLine => &mut self.vertical_line,
-            DrawingTool::Cursor | DrawingTool::Measure => return false,
+            DrawingTool::Cursor | DrawingTool::Measure | DrawingTool::VolumeProfile => {
+                return false
+            }
         };
 
         if *stored_style == style {
@@ -458,6 +473,10 @@ pub enum DrawingObject {
         #[serde(rename = "time")]
         x: DrawingX,
     },
+    VolumeProfile {
+        start: DrawingAnchor,
+        end: DrawingAnchor,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -482,13 +501,19 @@ pub enum DrawingDraft {
         style: DrawingStyle,
         extend_right: bool,
     },
+    VolumeProfile {
+        start: DrawingAnchor,
+        current: DrawingAnchor,
+        style: DrawingStyle,
+    },
 }
 
 impl DrawingDraft {
     pub fn update_anchor(&mut self, anchor: DrawingAnchor) -> bool {
         match self {
             DrawingDraft::Trendline { start, current, .. }
-            | DrawingDraft::Box { start, current, .. } => {
+            | DrawingDraft::Box { start, current, .. }
+            | DrawingDraft::VolumeProfile { start, current, .. } => {
                 if anchor.panel_id != start.panel_id {
                     return false;
                 }
@@ -504,12 +529,15 @@ impl DrawingDraft {
         match self {
             Self::Trendline { .. } => DrawingTool::Trendline,
             Self::Box { .. } => DrawingTool::Box,
+            Self::VolumeProfile { .. } => DrawingTool::VolumeProfile,
         }
     }
 
     pub fn style(&self) -> DrawingStyle {
         match self {
-            Self::Trendline { style, .. } | Self::Box { style, .. } => *style,
+            Self::Trendline { style, .. }
+            | Self::Box { style, .. }
+            | Self::VolumeProfile { style, .. } => *style,
         }
     }
 
@@ -525,18 +553,26 @@ impl DrawingDraft {
                 extend_right,
                 ..
             } => DrawingObject::normalized_box(*start, *current, *extend_right),
+            Self::VolumeProfile { start, current, .. } => DrawingObject::VolumeProfile {
+                start: *start,
+                end: *current,
+            },
         }
     }
 
     pub fn panel_id(&self) -> PanelId {
         match self {
-            Self::Trendline { start, .. } | Self::Box { start, .. } => start.panel_id,
+            Self::Trendline { start, .. }
+            | Self::Box { start, .. }
+            | Self::VolumeProfile { start, .. } => start.panel_id,
         }
     }
 
     pub fn belongs_to_panel(&self, panel_id: PanelId) -> bool {
         match self {
-            Self::Trendline { start, current, .. } | Self::Box { start, current, .. } => {
+            Self::Trendline { start, current, .. }
+            | Self::Box { start, current, .. }
+            | Self::VolumeProfile { start, current, .. } => {
                 start.panel_id == panel_id || current.panel_id == panel_id
             }
         }
@@ -550,6 +586,12 @@ impl DrawingDraft {
                 }
 
                 Some((DrawingObject::Trendline { start, end }, style))
+            }
+            Self::VolumeProfile { start, style, .. } => {
+                if end.panel_id != start.panel_id || !start.x.compatible(end.x) {
+                    return None;
+                }
+                Some((DrawingObject::VolumeProfile { start, end }, style))
             }
             Self::Box {
                 start,
@@ -604,7 +646,9 @@ impl DrawingObject {
         let panel_exists = |panel_id: PanelId| composition.panel(panel_id).is_some();
 
         match self {
-            DrawingObject::Trendline { start, end } | DrawingObject::Box { start, end, .. } => {
+            DrawingObject::Trendline { start, end }
+            | DrawingObject::Box { start, end, .. }
+            | DrawingObject::VolumeProfile { start, end } => {
                 panel_exists(start.panel_id) && panel_exists(end.panel_id)
             }
             DrawingObject::HorizontalLine { panel_id, .. } => panel_exists(*panel_id),
@@ -634,6 +678,7 @@ impl DrawingObject {
             Self::Box { .. } => DrawingTool::Box,
             Self::HorizontalLine { .. } => DrawingTool::HorizontalLine,
             Self::VerticalLine { .. } => DrawingTool::VerticalLine,
+            Self::VolumeProfile { .. } => DrawingTool::VolumeProfile,
         }
     }
 
@@ -643,12 +688,15 @@ impl DrawingObject {
             Self::Trendline { .. } => "Trendline",
             Self::HorizontalLine { .. } => "Horizontal Line",
             Self::VerticalLine { .. } => "Vertical Line",
+            Self::VolumeProfile { .. } => "Volume Profile",
         }
     }
 
     pub fn panel_id(&self) -> Option<PanelId> {
         match self {
-            Self::Trendline { start, .. } | Self::Box { start, .. } => Some(start.panel_id),
+            Self::Trendline { start, .. }
+            | Self::Box { start, .. }
+            | Self::VolumeProfile { start, .. } => Some(start.panel_id),
             Self::HorizontalLine { panel_id, .. } => Some(*panel_id),
             Self::VerticalLine { .. } => None,
         }
@@ -656,7 +704,9 @@ impl DrawingObject {
 
     pub fn handle_panel_id(&self) -> Option<PanelId> {
         match self {
-            Self::Trendline { start, end } | Self::Box { start, end, .. } => {
+            Self::Trendline { start, end }
+            | Self::Box { start, end, .. }
+            | Self::VolumeProfile { start, end } => {
                 (start.panel_id == end.panel_id).then_some(start.panel_id)
             }
             Self::HorizontalLine { panel_id, .. } => Some(*panel_id),
@@ -725,12 +775,22 @@ impl DrawingObject {
                 anchors
             }
             Self::VerticalLine { x } => vec![AxisLabelAnchor::X { x: *x }],
+            Self::VolumeProfile { start, end } => vec![
+                AxisLabelAnchor::X {
+                    x: start.x.min(end.x),
+                },
+                AxisLabelAnchor::X {
+                    x: start.x.max(end.x),
+                },
+            ],
         }
     }
 
     pub fn belongs_to_panel(&self, panel_id: PanelId) -> bool {
         match self {
-            Self::Trendline { start, end } | Self::Box { start, end, .. } => {
+            Self::Trendline { start, end }
+            | Self::Box { start, end, .. }
+            | Self::VolumeProfile { start, end } => {
                 start.panel_id == panel_id || end.panel_id == panel_id
             }
             Self::HorizontalLine {
@@ -743,7 +803,9 @@ impl DrawingObject {
 
     pub fn coordinates_match(&self, x: DrawingX) -> bool {
         match self {
-            Self::Trendline { start, end } | Self::Box { start, end, .. } => {
+            Self::Trendline { start, end }
+            | Self::Box { start, end, .. }
+            | Self::VolumeProfile { start, end } => {
                 start.x.compatible(x) && end.x.compatible(x)
             }
             Self::HorizontalLine { x: origin, .. } | Self::VerticalLine { x: origin } => {
@@ -789,6 +851,10 @@ impl DrawingObject {
             Self::VerticalLine { x } => Self::VerticalLine {
                 x: x.translated(origin.x, current.x)?,
             },
+            Self::VolumeProfile { start, end } => Self::VolumeProfile {
+                start: shift(*start)?,
+                end: shift(*end)?,
+            },
         })
     }
 
@@ -805,6 +871,8 @@ impl DrawingObject {
             let x = match (self, handle) {
                 (Self::Trendline { start, .. }, DrawingHandleKind::TrendlineStart) => start.x,
                 (Self::Trendline { end, .. }, DrawingHandleKind::TrendlineEnd) => end.x,
+                (Self::VolumeProfile { start, .. }, DrawingHandleKind::TrendlineStart) => start.x,
+                (Self::VolumeProfile { end, .. }, DrawingHandleKind::TrendlineEnd) => end.x,
                 (Self::HorizontalLine { x, .. }, DrawingHandleKind::HorizontalLineStart) => *x,
                 (
                     Self::Box { start, end, .. },
@@ -830,6 +898,24 @@ impl DrawingObject {
             }
             (Self::Trendline { start, end }, DrawingHandleKind::TrendlineEnd) => {
                 Some(Self::Trendline {
+                    start: *start,
+                    end: DrawingAnchor {
+                        panel_id: end.panel_id,
+                        ..anchor
+                    },
+                })
+            }
+            (Self::VolumeProfile { start, end }, DrawingHandleKind::TrendlineStart) => {
+                Some(Self::VolumeProfile {
+                    start: DrawingAnchor {
+                        panel_id: start.panel_id,
+                        ..anchor
+                    },
+                    end: *end,
+                })
+            }
+            (Self::VolumeProfile { start, end }, DrawingHandleKind::TrendlineEnd) => {
+                Some(Self::VolumeProfile {
                     start: *start,
                     end: DrawingAnchor {
                         panel_id: end.panel_id,

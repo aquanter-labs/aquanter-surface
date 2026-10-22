@@ -45,18 +45,15 @@ impl PanelViewportView<'_> {
 
                 let log_scale_enabled = scene.can_use_log_primary_scale();
                 let (autoscale_min, autoscale_max) = scene.primary_autoscale_display_values();
-                let min_span = if matches!(scene.primary.mode, PanelScaleMode::Logarithmic) {
-                    1e-3
-                } else {
-                    self.coordinates
-                        .panel_value_scale(scene.primary.panel_index)
-                        .quantization_step_f32()
-                        .map(f64::from)
-                        .unwrap_or(1e-4)
-                        .abs()
-                        .max(1e-8)
-                        * 8.0
-                };
+                let tick = self
+                    .coordinates
+                    .panel_value_scale(scene.primary.panel_index)
+                    .quantization_step_f32()
+                    .map(f64::from)
+                    .unwrap_or(1e-4)
+                    .abs()
+                    .max(1e-8);
+                let min_span = primary_zoom_min_span(scene, tick);
                 let autoscale_span = (f64::from(autoscale_max) - f64::from(autoscale_min)).abs();
                 let autoscale_span = if autoscale_span.is_finite() {
                     autoscale_span.max(min_span)
@@ -324,4 +321,21 @@ impl PanelViewportView<'_> {
         let range = self.value_range_to_unit_range(panel_index, viewport)?;
         self.resolve_panel_viewport(scene, panel_index, range)
     }
+}
+
+/// Smallest price-axis span, in display units: one tick.
+fn primary_zoom_min_span(scene: &Scene, tick: f64) -> f64 {
+    let tick = tick.abs().max(1e-8);
+    if !matches!(scene.primary.mode, PanelScaleMode::Logarithmic) {
+        return tick;
+    }
+    let (min_display, max_display) = scene.primary_domain_display_values();
+    let mid = f64::from(min_display + max_display) * 0.5;
+    let price = f64::from(scene.primary_display_to_value(mid as f32))
+        .abs()
+        .max(tick);
+    let upper = (price + tick).max(price * (1.0 + 1e-9));
+    (upper.log10() - price.max(f64::MIN_POSITIVE).log10())
+        .abs()
+        .max(1e-12)
 }

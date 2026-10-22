@@ -226,6 +226,7 @@ pub enum KlineWidgetEvent {
     PrimaryAutoscaleDisabled,
     PrimaryAutoscaleToggled,
     PrimaryScaleModeCycleRequested,
+    FootprintSizeFit(Option<(YUnitRange, HorizontalWorld)>),
     PanelInteraction(PanelInteraction),
     Drawing(KlineWidgetDrawingEvent),
     Study(StudyObjectEvent),
@@ -253,10 +254,15 @@ impl From<KlineWidgetDrawingEvent> for KlineWidgetEvent {
     }
 }
 
+pub(crate) fn order_book_strip_width(plot_width: f32) -> f32 {
+    (plot_width.max(0.0) * 0.2).min(130.0)
+}
+
 pub struct KlineWidget<'a> {
     pro_annotations: &'a [crate::ai::ChartAnnotation],
     pro_trading: Option<&'a crate::trading::PositionOverlay>,
     pro_market: Option<(&'a data::chart::kline::pro::ProConfig, &'a exchange::depth::Depth)>,
+    pro_liquidations: &'a [exchange::Liquidation],
     series: &'a [KlineSeries],
     indicator_host: &'a IndicatorHost,
     composition: &'a ChartComposition,
@@ -274,6 +280,7 @@ pub struct KlineWidget<'a> {
     autoscale_plot_width_offset: f32,
     pixel_ratio: PixelRatio,
     primary_viewport: PrimaryViewportState,
+    footprint_row_fit: bool,
     primary_scale_inverted: bool,
     indicator_y_ranges: &'a [(PanelId, YUnitRange)],
     indicator_presentation: IndicatorPresentationContext,
@@ -297,6 +304,7 @@ impl<'a> KlineWidget<'a> {
             pro_annotations: &[],
             pro_trading: None,
             pro_market: None,
+            pro_liquidations: &[],
             series,
             indicator_host,
             composition,
@@ -321,6 +329,7 @@ impl<'a> KlineWidget<'a> {
             autoscale_plot_width_offset: 0.0,
             pixel_ratio: PixelRatio::default(),
             primary_viewport: PrimaryViewportState::Auto,
+            footprint_row_fit: false,
             primary_scale_inverted: false,
             indicator_y_ranges: &[],
             indicator_presentation,
@@ -376,6 +385,65 @@ impl<'a> KlineWidget<'a> {
         self
     }
 
+    pub fn with_footprint_row_fit(mut self, fitted: bool) -> Self {
+        self.footprint_row_fit = fitted;
+        self
+    }
+
+    fn order_book_inset_px(&self, plot_width: f32) -> f32 {
+        let Some((config, _)) = self.pro_market else {
+            return 0.0;
+        };
+        if self.footprint.visible && config.is_enabled("OrderBook") {
+            order_book_strip_width(plot_width)
+        } else {
+            0.0
+        }
+    }
+
+    fn latest_close(&self) -> Option<f64> {
+        let close = self.series.first()?.latest_point()?.kline.close.to_f64();
+        (close.is_finite() && close > 0.0).then_some(close)
+    }
+
+    fn y_window(&self, scene: &Scene, mid: f64, half: f64) -> Option<YUnitRange> {
+        if !mid.is_finite() || !half.is_finite() || half <= 0.0 {
+            return None;
+        }
+        let tick = self.series.first()?.tick_size().to_f64_lossy();
+        if !tick.is_finite() || tick <= 0.0 {
+            return None;
+        }
+        let min = (mid - half).max(tick);
+        let max = (mid + half).max(min + tick);
+        let scale = scene.primary.value_scale;
+        Some(YUnitRange::new(
+            scale.value_to_unit(min),
+            scale.value_to_unit(max),
+        ))
+    }
+
+    fn footprint_size_range(&self, scene: &Scene) -> Option<YUnitRange> {
+        let tick = self.series.first()?.tick_size().to_f64_lossy();
+        if !tick.is_finite() || tick <= 0.0 {
+            return None;
+        }
+        let rows = (scene.primary_plot().height.max(1.0) / 12.0).clamp(8.0, 120.0);
+        let half = f64::from(rows) * tick / 2.0;
+        let mid = self.latest_close().unwrap_or_else(|| {
+            let (low, high) = scene.primary_domain_value_range();
+            (low.to_f64() + high.to_f64()) / 2.0
+        });
+        self.y_window(scene, mid, half)
+    }
+
+    fn footprint_horizontal(&self, scene: &Scene) -> HorizontalWorld {
+        const READABLE_SPACING_PX: f32 = 72.0;
+        let width = scene.x_axis_plot_width().max(1.0);
+        let spacing = self.horizontal_world.spacing().max(READABLE_SPACING_PX);
+        HorizontalWorld::new(spacing, 0.0).with_latest_anchored(width)
+    }
+
     pub fn with_primary_scale_inverted(mut self, inverted: bool) -> Self {
         self.primary_scale_inverted = inverted;
         self
@@ -427,6 +495,10 @@ impl<'a> KlineWidget<'a> {
                 series: self.series,
                 candlestick: &self.candlestick,
                 footprint: &self.footprint,
+                quantity_format: self
+                    .pro_market
+                    .map(|(config, _)| config.quantity_format)
+                    .unwrap_or_default(),
             },
             study_objects: &self.study_objects,
             trade_data_enabled: self.trade_data_enabled,
@@ -550,6 +622,7 @@ impl<'a> KlineWidget<'a> {
             bounds,
             palette,
             self.primary_viewport.is_auto(),
+            self.footprint_row_fit,
         ));
 
         let generated_accents = self.theme.accents();
@@ -1409,7 +1482,9 @@ impl<'a> KlineWidget<'a> {
         let primary_scale_mode = self.resolved_panel_scale_mode(primary_panel);
         let primary_plot = panel_layout.panel(primary_panel)?.plot;
 
-        let x_axis_plot_width = panel_layout.primary_plot_width()?;
+        let full_plot_width = panel_layout.primary_plot_width()?;
+        let x_right_inset = self.order_book_inset_px(full_plot_width);
+        let x_axis_plot_width = (full_plot_width - x_right_inset).max(1.0);
         let horizontal_world = self.horizontal_world;
         let autoscale_plot_width = (x_axis_plot_width + self.autoscale_plot_width_offset).max(1.0);
 
@@ -1530,7 +1605,11 @@ impl<'a> KlineWidget<'a> {
 
         let panel_controls =
             chrome::build_panel_control_hits(self.coordinates(), &panel_layout, primary_panel);
-        let corner_controls = chrome::build_corner_control_hits(&panel_layout, primary_scale_mode);
+        let corner_controls = chrome::build_corner_control_hits(
+            &panel_layout,
+            primary_scale_mode,
+            self.footprint.visible,
+        );
         let primary_value_step = primary_value_scale.quantization_step_f32();
         let primary_value_decimals = primary_value_precision
             .and_then(|precision| precision.decimals(self.base_ticker_info()));
@@ -1543,6 +1622,7 @@ impl<'a> KlineWidget<'a> {
                 min_unit: min_x_unit,
                 max_unit: max_x_unit,
             },
+            x_right_inset,
             bar_units,
             primary: PrimaryScale {
                 panel_index: primary_panel,
@@ -2093,6 +2173,23 @@ where
                                 });
                         match chrome_click {
                             chrome::ChromeClick::Event(event) => {
+                                let event = match event {
+                                    KlineWidgetEvent::FootprintSizeFit(_) => {
+                                        let Some(scene) = scene.as_ref() else {
+                                            return;
+                                        };
+                                        KlineWidgetEvent::FootprintSizeFit(
+                                            (!self.footprint_row_fit)
+                                                .then(|| {
+                                                    self.footprint_size_range(scene).map(|range| {
+                                                        (range, self.footprint_horizontal(scene))
+                                                    })
+                                                })
+                                                .flatten(),
+                                        )
+                                    }
+                                    other => other,
+                                };
                                 shell.publish(M::from(event));
                                 state.scheduler.request(RenderRequest::All);
                                 shell.capture_event();

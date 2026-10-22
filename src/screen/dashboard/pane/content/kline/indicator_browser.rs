@@ -17,6 +17,8 @@ pub enum Message {
     SearchChanged(String),
     ToggleIndicator(IndicatorId),
     ToggleStudy(KlineStudy),
+    TogglePro(&'static str),
+    ConfigurePro(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -213,8 +215,6 @@ pub fn view<'a>(chart: &'a KlineChart, picker: &'a State) -> Element<'a, KlineMe
         .filter(|available| picker.matches_query(&available.study.to_string()))
         .collect();
 
-    let available_column = available_column(available_indicators, available_studies);
-
     let search = row![
         text_input("Search indicators and studies...", picker.search_query())
             .style(|theme, status| style::validated_text_input(theme, status, true))
@@ -227,7 +227,7 @@ pub fn view<'a>(chart: &'a KlineChart, picker: &'a State) -> Element<'a, KlineMe
     .spacing(6);
 
     let scrollable = scrollable::Scrollable::with_direction(
-        available_column,
+        available_column(chart, picker, available_indicators, available_studies),
         scrollable::Direction::Vertical(scrollable::Scrollbar::new().width(4).scroller_width(4)),
     )
     .id(picker.scroll_id())
@@ -240,36 +240,66 @@ pub fn view<'a>(chart: &'a KlineChart, picker: &'a State) -> Element<'a, KlineMe
         .into()
 }
 
+fn pro_group(id: &str) -> IndicatorInputGroup {
+    match id {
+        "SessionVwap" | "AnchoredVwap" | "VolumeProfile" | "FixedVolumeProfile" => {
+            IndicatorInputGroup::Candles
+        }
+        "OrderBook" | "LiquidationHeatmap" => IndicatorInputGroup::Trades,
+        _ => IndicatorInputGroup::NoExternalData,
+    }
+}
+
+fn pro_row(chart: &KlineChart, id: &'static str, label: &'static str) -> Element<'static, KlineMessage> {
+    let active = chart.pro_config().is_enabled(id);
+    let toggle = button(
+        row![
+            iced::widget::text(label).size(crate::style::text_size::BODY),
+            space::horizontal(),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .width(Length::Fill),
+    )
+    .width(Length::Fill)
+    .style(move |theme, status| style::button::indicator_row(theme, status, active))
+    .on_press(KlineMessage::IndicatorBrowser(Message::TogglePro(id)));
+    let mut row = row![toggle].spacing(2).width(Length::Fill);
+    if id != "OrderBook" {
+        let settings = button(icon_text(Icon::Cog, 12))
+            .style(move |theme, status| style::button::transparent(theme, status, false))
+            .on_press(KlineMessage::IndicatorBrowser(Message::ConfigurePro(id)));
+        row = row.push(settings);
+    }
+    row.into()
+}
+
 fn available_column(
+    chart: &KlineChart,
+    picker: &State,
     indicators: Vec<AvailableIndicator>,
     studies: Vec<AvailableStudy>,
 ) -> Element<'static, KlineMessage> {
-    let indicator_groups = indicator_group_views(indicators);
-    let study_groups = study_group_views(studies);
-
-    let mut sections = Vec::with_capacity(2);
-    if !indicator_groups.is_empty() {
-        sections.push(InspectorSection::new(
+    let groups = indicator_group_views(chart, picker, indicators, studies);
+    let sections = if groups.is_empty() {
+        Vec::new()
+    } else {
+        vec![InspectorSection::new(
             crate::widget::text::title("Indicators"),
-            iced::widget::Column::with_children(indicator_groups)
+            iced::widget::Column::with_children(groups)
                 .spacing(10)
                 .width(Length::Fill),
-        ));
-    }
-    if !study_groups.is_empty() {
-        sections.push(InspectorSection::new(
-            crate::widget::text::title("Studies"),
-            iced::widget::Column::with_children(study_groups)
-                .spacing(10)
-                .width(Length::Fill),
-        ));
-    }
+        )]
+    };
 
     InspectorContent::new(sections).into_element()
 }
 
 fn indicator_group_views(
+    chart: &KlineChart,
+    picker: &State,
     indicators: Vec<AvailableIndicator>,
+    studies: Vec<AvailableStudy>,
 ) -> Vec<Element<'static, KlineMessage>> {
     let mut grouped: Vec<(IndicatorInputGroup, Vec<AvailableIndicator>)> = IndicatorInputGroup::ALL
         .into_iter()
@@ -289,14 +319,10 @@ fn indicator_group_views(
     grouped
         .into_iter()
         .filter_map(|(group, mut indicators)| {
-            if indicators.is_empty() {
-                return None;
-            }
-
             indicators
                 .sort_by_cached_key(|available| available.indicator.to_string().to_lowercase());
 
-            let rows = indicators
+            let mut rows = indicators
                 .into_iter()
                 .map(|available| {
                     indicator_row(
@@ -307,59 +333,34 @@ fn indicator_group_views(
                 })
                 .collect::<Vec<_>>();
 
-            Some(
-                column![
-                    crate::widget::text::emphasis(group.label()),
-                    iced::widget::Column::with_children(rows)
-                        .spacing(2)
-                        .width(Length::Fill),
-                ]
-                .padding([0, 4])
-                .spacing(4)
-                .width(Length::Fill)
-                .into(),
-            )
-        })
-        .collect()
-}
-
-fn study_group_views(studies: Vec<AvailableStudy>) -> Vec<Element<'static, KlineMessage>> {
-    let mut grouped: Vec<(StudyDataSource, Vec<AvailableStudy>)> =
-        [StudyDataSource::Kline, StudyDataSource::Trades]
-            .into_iter()
-            .map(|source| (source, Vec::new()))
-            .collect();
-
-    for available in studies {
-        let source = available.study.source();
-        if let Some((_, entries)) = grouped
-            .iter_mut()
-            .find(|(candidate, _)| *candidate == source)
-        {
-            entries.push(available);
-        }
-    }
-
-    grouped
-        .into_iter()
-        .filter_map(|(source, mut studies)| {
-            if studies.is_empty() {
-                return None;
-            }
-
-            studies.sort_by_cached_key(|available| available.study.to_string().to_lowercase());
-
-            let rows = studies
-                .into_iter()
+            let mut study_rows = studies
+                .iter()
+                .filter(|available| {
+                    let study_group = match available.study.source() {
+                        StudyDataSource::Kline => IndicatorInputGroup::Candles,
+                        StudyDataSource::Trades => IndicatorInputGroup::Trades,
+                    };
+                    study_group == group
+                })
                 .map(|available| {
                     study_row(available.study, available.availability, available.active)
                 })
                 .collect::<Vec<_>>();
-            let label = source_label(source);
+            rows.append(&mut study_rows);
+
+            for (id, label) in super::settings::pro_indicators::ITEMS {
+                if pro_group(id) == group && picker.matches_query(label) {
+                    rows.push(pro_row(chart, id, label));
+                }
+            }
+
+            if rows.is_empty() {
+                return None;
+            }
 
             Some(
                 column![
-                    crate::widget::text::emphasis(label),
+                    crate::widget::text::emphasis(group.label()),
                     iced::widget::Column::with_children(rows)
                         .spacing(2)
                         .width(Length::Fill),

@@ -8,6 +8,8 @@ use data::chart::kline::{
 pub(super) struct ViewportState {
     pub(super) horizontal_world: HorizontalWorld,
     pub(super) primary: PrimaryViewportState,
+    pub(super) footprint_rows_fitted: bool,
+    pub(super) footprint_saved_horizontal: Option<HorizontalWorld>,
     pub(super) primary_scale_inverted: bool,
     pub(super) indicator_y_ranges: PanelViewportStore,
     pub(super) plot_width: Option<f32>,
@@ -65,6 +67,8 @@ impl Default for ViewportState {
                 DEFAULT_HORIZONTAL_OFFSET_UNITS,
             ),
             primary: PrimaryViewportState::Auto,
+            footprint_rows_fitted: false,
+            footprint_saved_horizontal: None,
             primary_scale_inverted: false,
             indicator_y_ranges: PanelViewportStore::default(),
             plot_width: None,

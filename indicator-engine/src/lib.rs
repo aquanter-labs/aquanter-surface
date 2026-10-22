@@ -3257,4 +3257,63 @@ plot(ta.pivothigh(chart.high, length, 2), id = "pivot")"#;
             Err(RuntimeError::ResourceLimitExceeded("collection nesting"))
         ));
     }
+
+    #[test]
+    fn pro_flow_indicators_emit_numeric_plots() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../data/indicators/sources");
+        for (file, plot_id) in [
+            ("oi-delta-divergence.ind", "value"),
+            ("oi-weighted-delta.ind", "value"),
+            ("liquidation-pressure.ind", "value"),
+        ] {
+            let path = format!("{root}/{file}");
+            let source = std::fs::read_to_string(&path).unwrap();
+            let compiled = compile(&source, &path).unwrap_or_else(|errors| {
+                panic!("{file} failed to compile: {errors:?}")
+            });
+            assert!(
+                !compiled.descriptor.presentation.layers.is_empty(),
+                "{file} view {:?} layers {:?}",
+                compiled.descriptor.presentation.view,
+                compiled
+                    .descriptor
+                    .presentation
+                    .layers
+                    .iter()
+                    .map(|layer| (
+                        layer.channel.as_str(),
+                        layer.data_kind,
+                        layer.mark,
+                        layer.pane
+                    ))
+                    .collect::<Vec<_>>()
+            );
+            let mut instance = compiled
+                .instantiate(IndicatorConfig::default())
+                .unwrap_or_else(|error| panic!("{file} failed to instantiate: {error}"));
+            let mut last = None;
+            for index in 0..40 {
+                let mut sample = frame(index, index as i64 * 60_000, 100.0 + (index as f64 % 7.0));
+                sample.chart.open = Some(100.0);
+                sample.chart.high = Some(102.0 + (index % 3) as f64);
+                sample.chart.low = Some(98.0 - (index % 2) as f64);
+                sample.chart.volume = Some(20.0);
+                sample.chart.directional_volume_available = true;
+                sample.chart.buy_qty = if index % 2 == 0 { 14.0 } else { 6.0 };
+                sample.chart.sell_qty = if index % 2 == 0 { 6.0 } else { 14.0 };
+                sample.open_interest = Some(1_000.0 - index as f64);
+                last = Some(
+                    instance
+                        .evaluate_closed(sample)
+                        .unwrap_or_else(|error| panic!("{file} bar {index}: {error}")),
+                );
+            }
+            let output = last.expect("evaluation produced a frame");
+            let value = plot_value(&output, plot_id);
+            assert!(
+                matches!(value, Value::Float(number) if number.is_finite()),
+                "{file} {plot_id} was {value:?}"
+            );
+        }
+    }
 }
