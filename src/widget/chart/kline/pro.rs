@@ -280,7 +280,10 @@ impl<'a> KlineWidget<'a> {
         if points.is_empty() { return; }
         frame.with_clip(plot, |frame| {
             if config.is_enabled("SessionVwap") {
-                let mode = config.vwap_mode.unwrap_or(VwapMode::Session { hour_utc: config.session_vwap.anchor_hour_utc });
+                let mode = match config.vwap_mode.unwrap_or(VwapMode::Session { hour_utc: config.session_vwap.anchor_hour_utc }) {
+                    VwapMode::Visible { .. } => VwapMode::Visible { time_ms: scene.time_for_x_unit(scene.x.min_unit).map_or(0, |time| time.as_u64()) },
+                    mode => mode,
+                };
                 if !matches!(mode, VwapMode::Rolling { .. }) {
                     let vwap = vwap_for_series(series.points(), mode);
                     paint_vwap_line(frame, scene, self, &vwap, config.session_vwap.color, config.session_vwap.line_width, config.session_vwap.deviation_bands);
@@ -335,7 +338,28 @@ impl<'a> KlineWidget<'a> {
             if config.is_enabled("FixedVolumeProfile") {
                 paint_fixed_profiles(frame, scene, self, config, &points, palette);
             }
+            self.paint_divergence_markers(frame, scene, series, &points, palette);
         });
+    }
+
+    fn paint_divergence_markers(&self, frame: &mut PaintInputs, scene: &Scene, series: &KlineSeries, points: &[data::chart::kline::series::KlineSeriesPoint<'_>], palette: &Extended) {
+        let accents = self.theme.accents();
+        let instances = self.indicator_instances.instances().iter().filter(|instance| instance.kind.id() == "pro.oi-delta-divergence");
+        for instance in instances {
+            let visible = self.composition.panels.iter().flat_map(|panel| &panel.layers).any(|layer| layer.visible
+                && matches!(&layer.source, data::chart::kline::composition::LayerSource::IndicatorOutput { output, .. } if output.instance_id == instance.id));
+            if !visible || self.indicator_is_unavailable(Some(instance.id)) { continue; }
+            for point in points {
+                let Some(source_index) = series.indicator_source_index_for_visual(point.index) else { continue; };
+                for (channel, bullish) in [("bullish", true), ("bearish", false)] {
+                    if self.indicator_host.output_value_for(instance.id, channel, source_index).and_then(data::chart::kline::OutputValue::as_boolean) != Some(true) { continue; }
+                    let price = if bullish { point.kline.low } else { point.kline.high };
+                    let (Some(x), Some(y)) = (self.pro_time_x(scene, point.kline.time.as_u64()), price_y(scene, price.to_f64())) else { continue; };
+                    let color = instance.configured_color(channel).map_or(palette.primary.base.color, |color| crate::widget::resolve_theme_color(color, palette, accents.as_array()));
+                    paint_marker(frame, Point::new(x, if bullish { y + 4.0 } else { y - 4.0 }), bullish, color);
+                }
+            }
+        }
     }
 
     pub(super) fn paint_pro_overlays(&self, frame: &mut PaintInputs, scene: &Scene, palette: &Extended, drag: Option<(TradingLineId,f64)>) {
@@ -497,31 +521,33 @@ fn paint_fixed_profiles(
             let time = point.kline.time.as_u64();
             time >= window && time < next
         }).collect::<Vec<_>>();
-        if samples.len() >= 2 {
-            let low = samples.iter().map(|point| point.kline.low.to_f64()).fold(f64::MAX, f64::min);
-            let high = samples.iter().map(|point| point.kline.high.to_f64()).fold(f64::MIN, f64::max);
-            let rows = usize::from(profile.rows.clamp(8, 80));
-            let step = ((high - low) / rows as f64).max(f64::EPSILON);
-            let mut buckets = vec![(0.0, 0.0); rows];
-            for point in &samples {
-                let (buy, sell) = point.kline.volume.buy_sell().map(|(buy, sell)| (buy.to_f64(), sell.to_f64())).unwrap_or_else(|| {
-                    let total = point.kline.volume.total().to_f64();
-                    if point.kline.close >= point.kline.open { (total, 0.0) } else { (0.0, total) }
-                });
-                let index = (((point.kline.close.to_f64() - low) / step) as usize).min(rows - 1);
-                buckets[index].0 += buy;
-                buckets[index].1 += sell;
-            }
-            let max = buckets.iter().map(|(buy, sell)| buy + sell).fold(0.0, f64::max);
-            if let (Some(x0), Some(x1)) = (widget.pro_time_x(scene, window), widget.pro_time_x(scene, next.saturating_sub(1))) && max > 0.0 {
-                let left = x0.min(x1);
-                let span = (x1 - x0).abs().max(8.0);
-                for (index, (buy, sell)) in buckets.iter().enumerate() {
-                    let price = low + index as f64 * step;
-                    let Some(y) = price_y(scene, price) else { continue; };
-                    let bar = ((*buy + *sell) / max) as f32 * span;
-                    let color = if buy >= sell { palette.success.base.color } else { palette.danger.base.color };
-                    frame.fill_rectangle(Point::new(left, y), Size::new(bar, 2.0), color.scale_alpha(0.35));
+        let samples = samples.iter().flat_map(|point| profile_samples(point)).collect::<Vec<_>>();
+        let delta = matches!(profile.display, data::chart::kline::pro::VolumeProfileDisplay::Delta);
+        if let Some((low, step, bins)) = profile_bins(&samples, usize::from(profile.rows.clamp(16, 400)))
+            && let (Some(x0), Some(x1)) = (widget.pro_time_x(scene, window), widget.pro_time_x(scene, next.saturating_sub(1)))
+        {
+            let value = |bin: &ProfileBin| if delta { bin.buy - bin.sell } else { bin.buy + bin.sell + bin.neutral };
+            let max = bins.iter().map(value).map(f64::abs).fold(0.0, f64::max);
+            let left = x0.min(x1);
+            let width = (x1 - x0).abs().max(8.0) * f32::from(profile.max_width_percent.clamp(5, 100)) / 100.0;
+            for (index, bin) in bins.iter().enumerate() {
+                let signed = value(bin);
+                if max <= 0.0 || signed.abs() <= f64::EPSILON { continue; }
+                let price = low + index as f64 * step;
+                let (Some(y0), Some(y1)) = (price_y(scene, price), price_y(scene, price + step)) else { continue; };
+                let (top, height) = (y0.min(y1), (y1 - y0).abs().max(1.0));
+                if delta {
+                    let color = if signed < 0.0 { palette.danger.base.color } else { palette.success.base.color };
+                    frame.fill_rectangle(Point::new(left, top), Size::new((signed.abs() / max) as f32 * width, height), color.scale_alpha(0.35));
+                } else {
+                    let mut x = left;
+                    for (qty, color) in [(bin.sell, palette.danger.base.color), (bin.neutral, palette.secondary.base.color), (bin.buy, palette.success.base.color)] {
+                        let bar = (qty / max) as f32 * width;
+                        if bar > 0.0 {
+                            frame.fill_rectangle(Point::new(x, top), Size::new(bar, height), color.scale_alpha(0.35));
+                            x += bar;
+                        }
+                    }
                 }
             }
         }
@@ -541,6 +567,76 @@ fn fixed_profile_windows(first: u64, last: u64, visible: (u64, u64), duration: u
     let last_window = end / duration * duration;
     let earliest = last_window.saturating_sub((MAX_FIXED_PROFILES - 1).saturating_mul(duration));
     Some(((start / duration * duration).max(earliest), last_window))
+}
+
+#[derive(Clone, Copy)]
+enum ProfileSample {
+    Price { price: f64, buy: f64, sell: f64 },
+    Range { low: f64, high: f64, buy: f64, sell: f64, neutral: f64 },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct ProfileBin {
+    buy: f64,
+    sell: f64,
+    neutral: f64,
+}
+
+/// Footprint trades when loaded; otherwise the bar volume spread over its
+/// range, kept neutral when the venue does not report direction.
+fn profile_samples(point: &data::chart::kline::series::KlineSeriesPoint<'_>) -> Vec<ProfileSample> {
+    if !point.footprint.trades.is_empty() {
+        return point.footprint.trades.iter().map(|(price, group)| ProfileSample::Price {
+            price: price.to_f64(),
+            buy: group.buy_qty.to_f64(),
+            sell: group.sell_qty.to_f64(),
+        }).collect();
+    }
+    let (buy, sell, neutral) = point.kline.volume.buy_sell()
+        .map_or_else(|| (0.0, 0.0, point.kline.volume.total().to_f64()), |(buy, sell)| (buy.to_f64(), sell.to_f64(), 0.0));
+    vec![ProfileSample::Range { low: point.kline.low.to_f64(), high: point.kline.high.to_f64(), buy, sell, neutral }]
+}
+
+fn profile_bins(samples: &[ProfileSample], rows: usize) -> Option<(f64, f64, Vec<ProfileBin>)> {
+    let bounds = |sample: &ProfileSample| match *sample {
+        ProfileSample::Price { price, .. } => (price, price),
+        ProfileSample::Range { low, high, .. } => (low, high),
+    };
+    let low = samples.iter().map(|sample| bounds(sample).0).min_by(f64::total_cmp)?;
+    let high = samples.iter().map(|sample| bounds(sample).1).max_by(f64::total_cmp)?;
+    let rows = rows.max(1);
+    let step = ((high - low) / rows as f64).max(f64::EPSILON);
+    let index = |price: f64| (((price - low) / step) as usize).min(rows - 1);
+    let mut bins = vec![ProfileBin::default(); rows];
+    for sample in samples {
+        match *sample {
+            ProfileSample::Price { price, buy, sell } => {
+                bins[index(price)].buy += buy;
+                bins[index(price)].sell += sell;
+            }
+            ProfileSample::Range { low: range_low, high: range_high, buy, sell, neutral } => {
+                let range = range_high - range_low;
+                if range <= f64::EPSILON {
+                    let bin = &mut bins[index(range_low)];
+                    bin.buy += buy;
+                    bin.sell += sell;
+                    bin.neutral += neutral;
+                    continue;
+                }
+                for (row, bin) in bins.iter_mut().enumerate() {
+                    let bin_low = low + row as f64 * step;
+                    let overlap = range_high.min(bin_low + step) - range_low.max(bin_low);
+                    if overlap > 0.0 {
+                        let ratio = overlap / range;
+                        bin.buy += buy * ratio;
+                        bin.sell += sell * ratio;
+                        bin.neutral += neutral * ratio;
+                    }
+                }
+            }
+        }
+    }
+    Some((low, step, bins))
 }
 
 fn paint_marker(frame: &mut PaintInputs, point: Point, buy: bool, color: iced::Color) {
@@ -567,6 +663,22 @@ mod tests {
         assert_eq!(fixed_profile_windows(first, last, (900 * HOUR + 5, 910 * HOUR), HOUR), Some((900 * HOUR, 910 * HOUR)));
         assert_eq!(fixed_profile_windows(first, last, (0, 500 * HOUR), HOUR), Some((453 * HOUR, 500 * HOUR)));
         assert_eq!(fixed_profile_windows(first, last, (2_000 * HOUR, 2_010 * HOUR), HOUR), None);
+    }
+
+    #[test]
+    fn fixed_profile_bins_trades_at_their_prices() {
+        let samples = [
+            ProfileSample::Price { price: 100.0, buy: 8.0, sell: 2.0 },
+            ProfileSample::Price { price: 101.0, buy: 0.0, sell: 1.0 },
+        ];
+        let (low, step, bins) = profile_bins(&samples, 2).unwrap();
+        assert_eq!((low, step), (100.0, 0.5));
+        assert_eq!(bins[0], ProfileBin { buy: 8.0, sell: 2.0, neutral: 0.0 });
+        assert_eq!(bins[1], ProfileBin { buy: 0.0, sell: 1.0, neutral: 0.0 });
+
+        let undirected = [ProfileSample::Range { low: 100.0, high: 102.0, buy: 0.0, sell: 0.0, neutral: 4.0 }];
+        let (_, _, bins) = profile_bins(&undirected, 2).unwrap();
+        assert_eq!(bins, vec![ProfileBin { neutral: 2.0, ..ProfileBin::default() }; 2]);
     }
 
 

@@ -1,9 +1,27 @@
 use serde::{Deserialize, Serialize};
 use super::{Config, IndicatorConfig, IndicatorId, IndicatorInstance, IndicatorInstanceId};
 
-pub fn rgba(color: iced_core::Color) -> u32 {
-    let channel = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
-    channel(color.r) << 24 | channel(color.g) << 16 | channel(color.b) << 8 | channel(color.a)
+/// Legacy studies stored free RGB colors while indicator styles are theme
+/// colors, so each maps to the closest base theme color of the default theme.
+fn nearest_theme_color(color: iced_core::Color) -> crate::config::theme::ThemeColor {
+    use crate::config::theme::{ThemeAccent, ThemeColor, ThemeColorRole, ThemeColorShade, default_theme, generated_theme_accents};
+    let theme = iced_core::Theme::Custom(default_theme().into());
+    let palette = theme.extended_palette();
+    let accents = generated_theme_accents(palette);
+    let roles = [
+        (ThemeColorRole::Neutral, palette.background.base.text),
+        (ThemeColorRole::Secondary, palette.secondary.strong.color),
+        (ThemeColorRole::Primary, palette.primary.base.color),
+        (ThemeColorRole::Success, palette.success.base.color),
+        (ThemeColorRole::Danger, palette.danger.base.color),
+        (ThemeColorRole::Warning, palette.warning.base.color),
+    ];
+    let distance = |other: iced_core::Color| (other.r - color.r).powi(2) + (other.g - color.g).powi(2) + (other.b - color.b).powi(2);
+    roles.into_iter().map(|(role, rgb)| (ThemeColor::new(role, ThemeColorShade::Base), rgb))
+        .chain(ThemeAccent::ALL.into_iter().map(|accent| (ThemeColor::with_accent(ThemeColorRole::Neutral, Some(accent), ThemeColorShade::Base), accents[accent.index()])))
+        .min_by(|a, b| distance(a.1).total_cmp(&distance(b.1)))
+        .map(|(theme_color, _)| theme_color)
+        .unwrap_or_default()
 }
 
 pub fn migrate_legacy_chart(value: serde_json::Value, enabled: &[String]) -> Result<Config, serde_json::Error> {
@@ -14,6 +32,7 @@ pub fn migrate_legacy_chart(value: serde_json::Value, enabled: &[String]) -> Res
         }
     }
     let instances = pro.migrate_indicators(enabled);
+    pro.enabled.retain(|name| ProConfig::scripted_indicator_id(name).is_none());
     let mut composition = super::composition::ChartComposition::prototype_kline();
     for instance in &instances {
         if instance.kind.is_registered() {
@@ -62,48 +81,46 @@ impl ProConfig {
     pub fn migrate_indicators(&self, enabled: &[String]) -> Vec<IndicatorInstance> {
         use serde_json::json;
         let mut result = Vec::new();
-        let mut add = |id: &str, config: serde_json::Value, widths: &[(&str, f32)]| {
+        let mut add = |id: &str, config: serde_json::Value, widths: &[(&str, f32)], colors: &[(&str, iced_core::Color)]| {
             let kind = IndicatorId::parse(id).expect("static Pro indicator ID");
             let mut instance = IndicatorInstance::new(IndicatorInstanceId::new(result.len() as u64 + 1), kind);
             instance.config = IndicatorConfig::from_value(config);
             for &(slot, width) in widths { instance.style_overrides.set_precise_line_width(slot, width); }
+            for &(slot, color) in colors { instance.style_overrides.set_color(slot, nearest_theme_color(color)); }
             result.push(instance);
         };
         for name in enabled {
             match name.as_str() {
-                "Volume" => add("core.volume", json!({}), &[]),
-                "BarAnalysis" => add("core.bar-analysis", json!({}), &[]),
+                "Volume" => add("core.volume", json!({}), &[], &[]),
+                "BarAnalysis" => add("core.bar-analysis", json!({}), &[], &[]),
                 "Ema" => for config in &self.ema {
-                    add("pro.ema", json!({"period":config.period.max(1),"color":rgba(config.color)}), &[("main",config.line_width)]);
+                    add("pro.ema", json!({"period":config.period.max(1)}), &[("main",config.line_width)], &[("main",config.color)]);
                 },
                 "StochRsi" => {
                     let c = self.stoch_rsi;
-                    add("pro.stoch-rsi", json!({"rsi_length":c.rsi_length.max(2),"stochastic_length":c.stochastic_length.max(1),"k_smoothing":c.k_smoothing.max(1),"d_smoothing":c.d_smoothing.max(1),"k_color":rgba(c.k_color),"d_color":rgba(c.d_color)}), &[("k",c.line_width),("d",c.line_width)]);
+                    add("pro.stoch-rsi", json!({"rsi_length":c.rsi_length.max(2),"stochastic_length":c.stochastic_length.max(1),"k_smoothing":c.k_smoothing.max(1),"d_smoothing":c.d_smoothing.max(1)}), &[("k",c.line_width),("d",c.line_width)], &[("k",c.k_color),("d",c.d_color)]);
                 },
                 "CumulativeDelta" | "OpenInterest" => {
                     let (id, c) = if name == "OpenInterest" { ("pro.pro-open-interest", self.open_interest) } else { ("pro.pro-cvd", self.cumulative_delta) };
-                    add(id, json!({"candles": c.style == IndicatorPlotStyle::Candles, "line_color": rgba(c.line_color), "up_color": rgba(c.up_color), "down_color": rgba(c.down_color)}), &[("main", c.line_width)]);
+                    add(id, json!({"candles": c.style == IndicatorPlotStyle::Candles}), &[("main", c.line_width)], &[("main",c.line_color),("up",c.up_color),("down",c.down_color)]);
                 },
                 "OiDeltaDivergence" => {
                     let c = self.oi_delta_divergence;
-                    add("pro.oi-delta-divergence",json!({"lookback":c.lookback.max(2),"rsi_period":c.rsi_period.max(2),"marker_size":c.marker_size,"bullish_color":rgba(c.bullish_color),"bearish_color":rgba(c.bearish_color),"cvd_color":rgba(c.cvd_color),"oi_color":rgba(c.oi_color)}), &[("cvd",c.line_width),("oi",c.line_width)]);
+                    add("pro.oi-delta-divergence",json!({"lookback":c.lookback.max(2),"rsi_period":c.rsi_period.max(2)}), &[("cvd",c.line_width),("oi",c.line_width)], &[("bullish",c.bullish_color),("bearish",c.bearish_color),("cvd",c.cvd_color),("oi",c.oi_color)]);
                 },
                 "OiWeightedDelta" => {
                     let c = self.oi_weighted_delta;
-                    add("pro.oi-weighted-delta",json!({"sensitivity":c.sensitivity,"max_weight":c.max_weight.max(1.0),"positive_color":rgba(c.positive_color),"negative_color":rgba(c.negative_color)}), &[]);
+                    add("pro.oi-weighted-delta",json!({"sensitivity":c.sensitivity,"max_weight":c.max_weight.max(1.0)}), &[], &[("positive",c.positive_color),("negative",c.negative_color)]);
                 },
                 "OiFlowNet" => {
                     let c = self.oi_flow_net;
-                    add("pro.oi-flow-net",json!({"basis_length":c.basis_length.max(2),"burst_sensitivity":c.burst_sensitivity.clamp(1,5),"static_color":c.static_color,"show_price_line":c.show_price_line,"long_color":rgba(c.long_color),"short_color":rgba(c.short_color),"buy_outflow_color":rgba(c.buy_outflow_color),"sell_outflow_color":rgba(c.sell_outflow_color),"extreme_band_color":rgba(c.extreme_band_color)}), &[]);
+                    add("pro.oi-flow-net",json!({"basis_length":c.basis_length.max(2),"burst_sensitivity":c.burst_sensitivity.clamp(1,5),"show_price_line":c.show_price_line}), &[], &[("positive",c.long_color),("negative",c.short_color)]);
                 },
                 "LiquidationPressureIndex" => {
                     let c = self.liquidation_pressure;
-                    add("pro.liquidation-pressure",json!({"lookback":c.lookback.max(2),"oi_drop_threshold":c.oi_drop_threshold.max(0.01),"delta_zscore":c.delta_zscore.max(0.0),"positive_color":rgba(c.positive_color),"negative_color":rgba(c.negative_color)}), &[]);
+                    add("pro.liquidation-pressure",json!({"lookback":c.lookback.max(2),"oi_drop_threshold":c.oi_drop_threshold.max(0.01),"delta_zscore":c.delta_zscore.max(0.0)}), &[], &[("positive",c.positive_color),("negative",c.negative_color)]);
                 },
-                "OrderFlowBias" => {
-                    let c = self.order_flow_bias;
-                    add("pro.order-flow-bias",json!({"lookback":c.lookback.clamp(2,100),"signal_threshold":c.signal_threshold.clamp(5.0,100.0),"absorption_delta":c.absorption_delta.clamp(0.1,0.95),"max_price_response":c.max_price_response.clamp(0.05,1.0),"imbalance_ratio":c.imbalance_ratio.clamp(1.1,10.0)}), &[]);
-                },
+                "OrderFlowBias" => add("pro.order-flow-bias", self.order_flow_bias.script_config(), &[], &[]),
                 _ => {},
             }
         }
@@ -654,10 +671,38 @@ impl OrderFlowBiasConfig {
         }
     }
 
-    pub fn custom(mut self) -> Self {
-        self.preset = OrderFlowBiasPreset::Custom;
-        self
+    fn script_config(self) -> serde_json::Value {
+        serde_json::json!({
+            "preset": self.preset,
+            "lookback": self.lookback.clamp(2, 100),
+            "signal_threshold": self.signal_threshold.clamp(5.0, 100.0),
+            "absorption_delta": self.absorption_delta.clamp(0.1, 0.95),
+            "max_price_response": self.max_price_response.clamp(0.05, 1.0),
+            "imbalance_ratio": self.imbalance_ratio.clamp(1.1, 10.0),
+        })
     }
+}
+
+/// Keeps the Bias script's preset choice and its parameters consistent:
+/// picking a preset loads its values, editing a parameter switches to Custom.
+pub fn sync_order_flow_bias_preset(indicator: &IndicatorId, changed: &str, config: IndicatorConfig) -> IndicatorConfig {
+    if indicator.id() != "pro.order-flow-bias" {
+        return config;
+    }
+    let mut value = config.into_value();
+    if let Some(object) = value.as_object_mut() {
+        if changed == "preset" {
+            let preset = object.get("preset").cloned().and_then(|preset| serde_json::from_value(preset).ok());
+            if let Some(preset) = preset.filter(|preset| *preset != OrderFlowBiasPreset::Custom)
+                && let serde_json::Value::Object(values) = OrderFlowBiasConfig::from_preset(preset).script_config()
+            {
+                object.extend(values);
+            }
+        } else {
+            object.insert("preset".into(), serde_json::json!(OrderFlowBiasPreset::Custom));
+        }
+    }
+    IndicatorConfig::from_value(value)
 }
 
 impl Default for OrderFlowBiasConfig {
@@ -687,13 +732,49 @@ mod migration_tests {
         for (key, value) in migrated {
             let input = compiled.descriptor.inputs.iter().find(|input| &input.id == key)
                 .unwrap_or_else(|| panic!("{key} is not a bias input"));
-            let value = value.as_f64().expect("numeric input");
+            let Some(value) = value.as_f64() else { continue; };
             assert!(input.min.is_none_or(|min| value >= min) && input.max.is_none_or(|max| value <= max), "{key} out of range");
         }
         assert_eq!(migrated.len(), compiled.descriptor.inputs.len());
+        assert_eq!(config["preset"], "Aggressive");
         assert_eq!(config["lookback"], 8);
         assert_eq!(config["signal_threshold"], 15.0);
         assert_eq!(config["imbalance_ratio"], 2.0);
+    }
+
+    #[test]
+    fn bias_preset_loads_values_and_manual_edits_switch_to_custom() {
+        let kind = IndicatorId::parse("pro.order-flow-bias").unwrap();
+        let mut config = OrderFlowBiasConfig::default().script_config();
+        config["preset"] = serde_json::json!("Balanced");
+        let balanced = sync_order_flow_bias_preset(&kind, "preset", IndicatorConfig::from_value(config)).into_value();
+        assert_eq!(balanced["lookback"], 14);
+        assert_eq!(balanced["signal_threshold"], 25.0);
+
+        let mut edited = balanced;
+        edited["lookback"] = serde_json::json!(30);
+        let edited = sync_order_flow_bias_preset(&kind, "lookback", IndicatorConfig::from_value(edited)).into_value();
+        assert_eq!(edited["preset"], "Custom");
+        assert_eq!(edited["lookback"], 30);
+    }
+
+    #[test]
+    fn legacy_colors_become_style_overrides() {
+        let pro = ProConfig {
+            ema: vec![EmaConfig { color: iced_core::Color::from_rgb(1.0, 0.0, 0.0), ..EmaConfig::default() }],
+            ..ProConfig::default()
+        };
+        let instances = pro.migrate_indicators(&["Ema".to_owned()]);
+        let color = instances[0].style_overrides.color("main").expect("EMA color migrated");
+        assert_eq!(color, crate::config::theme::ThemeColor::new(crate::config::theme::ThemeColorRole::Danger, crate::config::theme::ThemeColorShade::Base));
+        assert!(instances[0].config.value().get("color").is_none());
+    }
+
+    #[test]
+    fn legacy_migration_runs_once() {
+        let config = migrate_legacy_chart(serde_json::Value::Null, &["Ema".to_owned(), "VolumeProfile".to_owned()]).unwrap();
+        assert_eq!(config.settings.indicator_instances.len(), 1);
+        assert_eq!(config.settings.options.pro.enabled, vec!["VolumeProfile".to_owned()]);
     }
 }
 

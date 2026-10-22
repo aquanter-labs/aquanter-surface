@@ -871,18 +871,12 @@ pub fn fetch_trades_paged(
                     let mut parsed = client
                         .fetch_trades_arrow(ticker_info, cursor, end, ARROW_LIMIT)
                         .await?;
-                    parsed.trades.retain(|trade| trade.time < end);
+                    let next = server_trade_page(&mut parsed.trades, cursor, end, parsed.raw_row_count, parsed.last_ts)?;
                     if !parsed.trades.is_empty() {
                         had_data = true;
                         progress.send(parsed.trades).await;
                     }
-                    if parsed.raw_row_count < ARROW_LIMIT {
-                        break;
-                    }
-                    let next = parsed.last_ts.map_or(cursor, |t| t.saturating_add(1));
-                    if next <= cursor {
-                        return Err(malformed_trade_source(cursor));
-                    }
+                    let Some(next) = next else { break; };
                     cursor = next;
                 }
             } else {
@@ -925,6 +919,33 @@ fn direct_trade_window_start(from: UnixMs, end: UnixMs, today: UnixMs, span: u64
     start.max(from)
 }
 
+/// Keeps the complete part of a server page and returns where the next page
+/// starts. The server has no trade cursor, so a full page may stop inside its
+/// last millisecond: that millisecond is dropped here and refetched whole.
+fn server_trade_page(
+    trades: &mut Vec<Trade>,
+    cursor: UnixMs,
+    end: UnixMs,
+    raw_row_count: usize,
+    last_ts: Option<UnixMs>,
+) -> Result<Option<UnixMs>, AdapterError> {
+    trades.retain(|trade| trade.time < end);
+    if raw_row_count < ARROW_LIMIT {
+        return Ok(None);
+    }
+    let boundary = last_ts.unwrap_or(cursor);
+    if boundary <= cursor {
+        log::error!(
+            "trade page at {cursor:?} is filled by a single millisecond; the server needs a trade-id cursor to page it"
+        );
+        return Err(AdapterError::ParseError(
+            "Trade page limit reached within one millisecond".to_string(),
+        ));
+    }
+    trades.retain(|trade| trade.time < boundary);
+    Ok(Some(boundary))
+}
+
 fn malformed_trade_source(at: UnixMs) -> AdapterError {
     log::error!(
         "trade paging did not advance at {at:?}; aborting to avoid an infinite loop (source may be malformed)"
@@ -934,8 +955,36 @@ fn malformed_trade_source(at: UnixMs) -> AdapterError {
 
 #[cfg(test)]
 mod trade_window_tests {
-    use super::{TRADE_WINDOW_MIN_MS, direct_trade_window_start};
-    use exchange::UnixMs;
+    use super::{ARROW_LIMIT, TRADE_WINDOW_MIN_MS, direct_trade_window_start, server_trade_page};
+    use exchange::{Trade, UnixMs, unit::Price, unit::Qty};
+
+    fn trades(times: &[u64]) -> Vec<Trade> {
+        times
+            .iter()
+            .map(|&time| Trade {
+                time: UnixMs::new(time),
+                is_sell: false,
+                price: Price::from_f64(1.0),
+                qty: Qty::ZERO,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn full_server_page_refetches_its_last_millisecond() {
+        let mut page = trades(&[10, 11, 12, 12]);
+        let next = server_trade_page(&mut page, UnixMs::new(10), UnixMs::new(100), ARROW_LIMIT, Some(UnixMs::new(12))).unwrap();
+        assert_eq!(next, Some(UnixMs::new(12)));
+        assert!(page.iter().all(|trade| trade.time < UnixMs::new(12)));
+        assert_eq!(page.len(), 2);
+
+        let mut last = trades(&[12, 12, 13, 100]);
+        assert_eq!(server_trade_page(&mut last, UnixMs::new(12), UnixMs::new(100), 4, Some(UnixMs::new(100))).unwrap(), None);
+        assert_eq!(last.len(), 3);
+
+        let mut stuck = trades(&[12, 12]);
+        assert!(server_trade_page(&mut stuck, UnixMs::new(12), UnixMs::new(100), ARROW_LIMIT, Some(UnixMs::new(12))).is_err());
+    }
 
     const DAY: u64 = 86_400_000;
 

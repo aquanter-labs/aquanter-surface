@@ -287,6 +287,34 @@ mod tests {
                 close(plot(index + 1, "win_rate"), rate, "win rate");
             }
         }
+
+        let confirmed = plot(outputs.len() - 1, "win_rate");
+        let last = &bars[bars.len() - 1];
+        for live_close in [last.close + 1_000.0, last.close - 1_000.0] {
+            let open = IndicatorFrame {
+                index: bars.len(),
+                time: bars.len() as i64 * 60_000,
+                basis: TimeOrTick::Time,
+                instrument: InstrumentContext { min_tick: Some(0.01) },
+                chart: ChartFrame {
+                    open: Some(last.close), high: Some(live_close.max(last.close)), low: Some(live_close.min(last.close)), close: Some(live_close),
+                    volume: Some(100.0),
+                    directional_volume_available: true,
+                    buy_qty: 60.0,
+                    sell_qty: 40.0,
+                    trade: None,
+                    footprint_levels: Vec::new().into(),
+                },
+                open_interest: None,
+                series_inputs: Vec::new().into(),
+            };
+            let preview = instance.preview_open(open).expect("bias previews");
+            let rate = preview.plots.iter().find(|plot| plot.id == "win_rate").and_then(|plot| match plot.value {
+                Value::Float(value) => Some(value),
+                _ => None,
+            });
+            assert_eq!(rate, confirmed, "open bar must not move the win rate");
+        }
     }
 }
 
