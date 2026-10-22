@@ -52,6 +52,7 @@ impl ProConfig {
             "OiWeightedDelta" => "pro.oi-weighted-delta",
             "OiFlowNet" => "pro.oi-flow-net",
             "LiquidationPressureIndex" => "pro.liquidation-pressure",
+            "OrderFlowBias" => "pro.order-flow-bias",
             "Volume" => "core.volume",
             "BarAnalysis" => "core.bar-analysis",
             _ => return None,
@@ -98,6 +99,10 @@ impl ProConfig {
                 "LiquidationPressureIndex" => {
                     let c = self.liquidation_pressure;
                     add("pro.liquidation-pressure",json!({"lookback":c.lookback.max(2),"oi_drop_threshold":c.oi_drop_threshold.max(0.01),"delta_zscore":c.delta_zscore.max(0.0),"positive_color":rgba(c.positive_color),"negative_color":rgba(c.negative_color)}), &[]);
+                },
+                "OrderFlowBias" => {
+                    let c = self.order_flow_bias;
+                    add("pro.order-flow-bias",json!({"lookback":c.lookback.clamp(2,100),"signal_threshold":c.signal_threshold.clamp(5.0,100.0),"absorption_delta":c.absorption_delta.clamp(0.1,0.95),"max_price_response":c.max_price_response.clamp(0.05,1.0),"imbalance_ratio":c.imbalance_ratio.clamp(1.1,10.0)}), &[]);
                 },
                 _ => {},
             }
@@ -658,6 +663,37 @@ impl OrderFlowBiasConfig {
 impl Default for OrderFlowBiasConfig {
     fn default() -> Self {
         Self::from_preset(OrderFlowBiasPreset::Conservative)
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_order_flow_bias_migrates_with_its_parameters() {
+        let pro = ProConfig {
+            order_flow_bias: OrderFlowBiasConfig::from_preset(OrderFlowBiasPreset::Aggressive),
+            ..ProConfig::default()
+        };
+        assert_eq!(ProConfig::scripted_indicator_id("OrderFlowBias"), Some("pro.order-flow-bias"));
+        let instances = pro.migrate_indicators(&["OrderFlowBias".to_owned()]);
+        let [instance] = instances.as_slice() else { panic!("expected one migrated instance") };
+        assert_eq!(instance.kind.id(), "pro.order-flow-bias");
+        let source = include_str!("../../../indicators/sources/order-flow-bias.ind");
+        let compiled = indicator_engine::compile(source, "order-flow-bias.ind").expect("bias script compiles");
+        let config = instance.config.value();
+        let migrated = config.as_object().expect("object config");
+        for (key, value) in migrated {
+            let input = compiled.descriptor.inputs.iter().find(|input| &input.id == key)
+                .unwrap_or_else(|| panic!("{key} is not a bias input"));
+            let value = value.as_f64().expect("numeric input");
+            assert!(input.min.is_none_or(|min| value >= min) && input.max.is_none_or(|max| value <= max), "{key} out of range");
+        }
+        assert_eq!(migrated.len(), compiled.descriptor.inputs.len());
+        assert_eq!(config["lookback"], 8);
+        assert_eq!(config["signal_threshold"], 15.0);
+        assert_eq!(config["imbalance_ratio"], 2.0);
     }
 }
 

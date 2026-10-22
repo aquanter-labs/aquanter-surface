@@ -108,6 +108,21 @@ pub(crate) fn migrate_legacy_pane(value: &mut serde_json::Value) -> Result<(), s
         if let Some(scaling) = footprint.get("scaling") {
             config.settings.options.footprint.cluster_scaling = serde_json::from_value(scaling.clone())?;
         }
+        let studies = footprint.get("studies").and_then(serde_json::Value::as_array);
+        for study in studies.into_iter().flatten() {
+            let options = &mut config.settings.options.footprint;
+            if study.get("NPoC").is_some() {
+                options.poc.show_npoc = true;
+            } else if let Some(imbalance) = study.get("Imbalance") {
+                options.imbalance.show = true;
+                if let Some(threshold) = imbalance.get("threshold").and_then(serde_json::Value::as_u64) {
+                    options.imbalance.threshold_percent = threshold as usize;
+                }
+                if let Some(ignore_zeros) = imbalance.get("ignore_zeros").and_then(serde_json::Value::as_bool) {
+                    options.imbalance.ignore_zeros = ignore_zeros;
+                }
+            }
+        }
     }
     chart["layout"] = serde_json::to_value(config)?;
     if let Some(settings) = chart.get_mut("settings").and_then(serde_json::Value::as_object_mut) {
@@ -156,6 +171,27 @@ mod pro_tests {
         let once = pane.clone();
         migrate_legacy_pane(&mut pane).unwrap();
         assert_eq!(pane, once);
+    }
+
+    #[test]
+    fn legacy_footprint_studies_survive_migration() {
+        let mut pane = serde_json::json!({"KlineChart": {
+            "kind": {"Footprint": {"clusters": "BidAsk", "scaling": "VisibleRange", "studies": [
+                {"NPoC": {"lookback": 80}},
+                {"Imbalance": {"threshold": 350, "color_scale": 400, "ignore_zeros": false}}
+            ]}},
+            "indicators": [],
+            "settings": {"visual_config": {"Kline": {}}},
+            "stream_type": []
+        }});
+        migrate_legacy_pane(&mut pane).unwrap();
+        let decoded: Pane = serde_json::from_value(pane).unwrap();
+        let Pane::KlineChart { layout: Some(config), .. } = decoded else { panic!("missing migrated chart") };
+        let footprint = config.settings.options.footprint;
+        assert!(footprint.poc.show_npoc);
+        assert!(footprint.imbalance.show);
+        assert_eq!(footprint.imbalance.threshold_percent, 350);
+        assert!(!footprint.imbalance.ignore_zeros);
     }
 }
 

@@ -463,6 +463,7 @@ impl LoweringContext {
             "chart.trade.buy_count" => Some((FrameField::ChartTradeBuyCount, ValueType::Int)),
             "chart.trade.sell_count" => Some((FrameField::ChartTradeSellCount, ValueType::Int)),
             "chart.trade.count" => Some((FrameField::ChartTradeCount, ValueType::Int)),
+            "chart.trade.poc" => Some((FrameField::ChartTradePoc, ValueType::Float)),
             "instrument.min_tick" => Some((FrameField::InstrumentMinTick, ValueType::Float)),
             "open_interest" => Some((FrameField::OpenInterest, ValueType::Float)),
             _ => None,
@@ -489,7 +490,8 @@ impl LoweringContext {
                 | FrameField::ChartTradeSellQty
                 | FrameField::ChartTradeBuyCount
                 | FrameField::ChartTradeSellCount
-                | FrameField::ChartTradeCount => {
+                | FrameField::ChartTradeCount
+                | FrameField::ChartTradePoc => {
                     self.declarations.requirements.trades = true;
                 }
                 FrameField::ChartDirectionalVolumeAvailable
@@ -780,6 +782,9 @@ impl LoweringContext {
             self.error(call.span, format!("unknown intrinsic {name}"));
             return self.push_constant(Value::Na, Type::series(ValueType::Any));
         };
+        if name.starts_with("footprint.") {
+            self.declarations.requirements.trades = true;
+        }
         if definition.effects.stateful
             && let Some(function) = self.function.current
         {

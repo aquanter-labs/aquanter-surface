@@ -29,25 +29,31 @@ pub struct VwapPoint {
     pub session: i64,
 }
 
-pub fn vwap_for_series(points: KlineSeriesPoints<'_>, mode: VwapMode) -> Vec<VwapPoint> {
+/// VWAP reset key for a bar: UTC sessions, Monday-start weeks, calendar months.
+/// `None` skips the bar (before the anchor).
+fn vwap_session(time_ms: u64, mode: VwapMode) -> Option<i64> {
     use chrono::Datelike;
+    let time = time_ms.min(i64::MAX as u64) as i64;
+    Some(match mode {
+        VwapMode::Session { hour_utc } => (time-i64::from(hour_utc.min(23))*3_600_000).div_euclid(86_400_000),
+        VwapMode::Week => (time+3*86_400_000).div_euclid(7*86_400_000),
+        VwapMode::Month => {
+            let date = chrono::DateTime::from_timestamp_millis(time)?;
+            i64::from(date.year())*12+i64::from(date.month())
+        },
+        VwapMode::Anchor { time_ms: anchor } | VwapMode::Visible { time_ms: anchor } => { if time_ms < anchor { return None; } 0 },
+        VwapMode::Rolling { .. } => 0,
+    })
+}
+
+pub fn vwap_for_series(points: KlineSeriesPoints<'_>, mode: VwapMode) -> Vec<VwapPoint> {
     let mut output = Vec::new();
     let mut window = std::collections::VecDeque::new();
     let (mut weight,mut price_sum,mut square_sum) = (0.0,0.0,0.0);
     let mut previous_session = None;
     for point in points {
         let k = point.kline;
-        let time = k.time.as_u64().min(i64::MAX as u64) as i64;
-        let session = match mode {
-            VwapMode::Session { hour_utc } => (time-i64::from(hour_utc.min(23))*3_600_000).div_euclid(86_400_000),
-            VwapMode::Week => (time+3*86_400_000).div_euclid(7*86_400_000),
-            VwapMode::Month => {
-                let Some(date) = chrono::DateTime::from_timestamp_millis(time) else { continue; };
-                i64::from(date.year())*12+i64::from(date.month())
-            },
-            VwapMode::Anchor { time_ms } | VwapMode::Visible { time_ms } => { if k.time.as_u64() < time_ms { continue; } 0 },
-            VwapMode::Rolling { .. } => 0,
-        };
+        let Some(session) = vwap_session(k.time.as_u64(), mode) else { continue; };
         if previous_session != Some(session) {
             weight=0.0; price_sum=0.0; square_sum=0.0; window.clear();
         }
@@ -173,5 +179,114 @@ pub fn order_flow_bias(bars: &[BiasBar], config: OrderFlowBiasConfig) -> BTreeMa
         );
     }
     points
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indicator_engine::{ChartFrame, IndicatorFrame, InstrumentContext, TimeOrTick, TradeAggregate, Value};
+
+    fn imbalance(levels: &[(f64, f64)], ratio: f64) -> f64 {
+        let (buy, sell) = levels.iter().fold((0_u32, 0_u32), |(buy, sell), &(b, s)| {
+            if b > 0.0 && b >= s * ratio { (buy + 1, sell) }
+            else if s > 0.0 && s >= b * ratio { (buy, sell + 1) } else { (buy, sell) }
+        });
+        if buy + sell == 0 { 0.0 } else { (f64::from(buy) - f64::from(sell)) / f64::from(buy + sell) }
+    }
+
+    #[test]
+    fn vwap_sessions_reset_on_calendar_boundaries() {
+        use chrono::TimeZone;
+        let ms = |y, m, d, h| chrono::Utc.with_ymd_and_hms(y, m, d, h, 0, 0).unwrap().timestamp_millis() as u64;
+        let week = |time| vwap_session(time, VwapMode::Week);
+        // 2026-10-19 is a Monday; 2026-10-22 a Thursday.
+        assert_ne!(week(ms(2026, 10, 19, 0) - 1), week(ms(2026, 10, 19, 0)));
+        assert_eq!(week(ms(2026, 10, 19, 0)), week(ms(2026, 10, 22, 12)));
+        assert_eq!(week(ms(2026, 10, 22, 0) - 1), week(ms(2026, 10, 22, 0)));
+        let month = |time| vwap_session(time, VwapMode::Month);
+        assert_eq!(month(ms(2026, 10, 1, 0)), month(ms(2026, 10, 4, 12)));
+        assert_eq!(month(ms(2026, 10, 1, 0)), month(ms(2026, 10, 31, 23)));
+        assert_ne!(month(ms(2026, 9, 30, 23)), month(ms(2026, 10, 1, 0)));
+        let session = |time| vwap_session(time, VwapMode::Session { hour_utc: 8 });
+        assert_ne!(session(ms(2026, 10, 22, 7)), session(ms(2026, 10, 22, 8)));
+        assert_eq!(vwap_session(5, VwapMode::Anchor { time_ms: 10 }), None);
+    }
+
+    #[test]
+    fn script_matches_the_original_order_flow_bias() {
+        let config = OrderFlowBiasConfig::default();
+        let source = include_str!("../../../../indicators/sources/order-flow-bias.ind");
+        let compiled = indicator_engine::compile(source, "order-flow-bias.ind").expect("bias script compiles");
+        let mut instance = compiled.instantiate(Default::default()).expect("default inputs bind");
+
+        let mut bars = Vec::new();
+        let mut outputs = Vec::new();
+        for index in 0..160_usize {
+            let t = index as f64;
+            let open = 100.0 + (t * 0.37).sin() * 4.0;
+            let close = open + (t * 1.3).cos() * 1.5;
+            let high = open.max(close) + 0.5 + (t * 0.7).sin().abs();
+            let low = open.min(close) - 0.5 - (t * 0.9).cos().abs();
+            let buy = 50.0 + (t * 0.51).sin() * 40.0;
+            let sell = 50.0 + (t * 0.23).cos() * 40.0;
+            let levels = vec![(buy * 0.6, sell * 0.1), (buy * 0.3, sell * 0.5), (buy * 0.1, sell * 0.4)];
+            let poc = (index % 7 != 0).then_some(low + (high - low) * ((t * 0.3).sin() * 0.5 + 0.5));
+            bars.push(BiasBar {
+                time: UnixMs::new(index as u64 * 60_000),
+                open, high, low, close,
+                delta: buy - sell,
+                directional: true,
+                poc,
+                imbalance: imbalance(&levels, f64::from(config.imbalance_ratio)),
+            });
+            let frame = IndicatorFrame {
+                index,
+                time: index as i64 * 60_000,
+                basis: TimeOrTick::Time,
+                instrument: InstrumentContext { min_tick: Some(0.01) },
+                chart: ChartFrame {
+                    open: Some(open), high: Some(high), low: Some(low), close: Some(close),
+                    volume: Some(buy + sell),
+                    directional_volume_available: true,
+                    buy_qty: buy,
+                    sell_qty: sell,
+                    trade: Some(TradeAggregate { buy_qty: buy, sell_qty: sell, buy_count: 1, sell_count: 1, poc }),
+                    footprint_levels: levels.into(),
+                },
+                open_interest: None,
+                series_inputs: Vec::new().into(),
+            };
+            outputs.push(instance.evaluate_closed(frame).expect("bias evaluates"));
+        }
+
+        let plot = |index: usize, id: &str| {
+            outputs[index].plots.iter().find(|plot| plot.id == id).and_then(|plot| match plot.value {
+                Value::Float(value) => Some(value),
+                _ => None,
+            })
+        };
+        let expected = order_flow_bias(&bars, config);
+        assert!(expected.values().any(|point| point.correct.is_some()));
+        for (index, bar) in bars.iter().enumerate().take(bars.len() - 1) {
+            let Some(point) = expected.get(&bar.time) else {
+                assert_eq!(plot(index, "value"), None, "bar {index} should have no score");
+                continue;
+            };
+            // The original reads its parameters as f32; the script uses f64.
+            let close = |a: Option<f64>, b: f64, what: &str| {
+                let a = a.unwrap_or_else(|| panic!("bar {index} {what} missing"));
+                assert!((a - b).abs() < 1e-5, "bar {index} {what}: script {a} vs original {b}");
+            };
+            close(plot(index, "value"), point.score, "score");
+            close(plot(index, "absorption"), point.absorption, "absorption");
+            close(plot(index, "divergence"), point.divergence, "divergence");
+            close(plot(index, "poc_rejection"), point.poc_rejection, "poc rejection");
+            close(plot(index, "imbalance"), point.imbalance, "imbalance");
+            if point.correct.is_some() {
+                let rate = f64::from(point.wins) / f64::from(point.total) * 100.0;
+                close(plot(index + 1, "win_rate"), rate, "win rate");
+            }
+        }
+    }
 }
 

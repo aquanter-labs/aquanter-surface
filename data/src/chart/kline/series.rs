@@ -877,6 +877,16 @@ impl KlineSeries {
             .and_then(|(kline, _)| kline.volume.buy_sell())
             .map(|(buy, sell)| (buy.to_f64(), sell.to_f64(), true))
             .unwrap_or((trade_buy_qty, trade_sell_qty, trade.is_some()));
+        let footprint_levels = footprint
+            .filter(|_| trade.is_some())
+            .map(|footprint| {
+                footprint
+                    .trades
+                    .values()
+                    .map(|level| (level.buy_qty.to_f64(), level.sell_qty.to_f64()))
+                    .collect()
+            })
+            .unwrap_or_default();
         ChartFrame {
             open: point.as_ref().map(|(kline, _)| kline.open.to_f64()),
             high: point.as_ref().map(|(kline, _)| kline.high.to_f64()),
@@ -889,6 +899,7 @@ impl KlineSeries {
             buy_qty,
             sell_qty,
             trade,
+            footprint_levels,
         }
     }
 
@@ -906,6 +917,7 @@ impl KlineSeries {
             sell_qty: summary.sell_qty.to_f64(),
             buy_count: summary.buy_count,
             sell_count: summary.sell_count,
+            poc: footprint?.poc_price().map(|price| price.to_f64()),
         })
     }
 

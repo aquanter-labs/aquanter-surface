@@ -220,6 +220,7 @@ pub struct IntrinsicEvalContext<'a> {
     pub states: &'a mut BTreeMap<CallSiteId, IntrinsicState>,
     pub executed_work: &'a mut usize,
     pub max_work: usize,
+    pub footprint_levels: &'a [(f64, f64)],
 }
 
 impl IntrinsicEvalContext<'_> {
@@ -363,6 +364,16 @@ impl IntrinsicRegistry {
             eval_anchored_vwap,
         );
         registry.register("nz", nz_signature(), IntrinsicEffects::PURE, eval_nz);
+        registry.register(
+            "footprint.imbalance",
+            signature(
+                vec![number("ratio", Qualifier::Series)],
+                Type::series(ValueType::Float),
+                false,
+            ),
+            IntrinsicEffects::PURE,
+            eval_footprint_imbalance,
+        );
         registry.register(
             "na",
             signature(
@@ -778,6 +789,41 @@ fn color_rgb_signature() -> IntrinsicSignature {
         true,
     )
     .at_least(3)
+}
+
+/// `(buy-dominant − sell-dominant) / dominant` footprint levels, where a side
+/// dominates a level when its quantity is at least `ratio` times the other's.
+fn eval_footprint_imbalance(
+    context: &mut IntrinsicEvalContext<'_>,
+    _site: CallSiteId,
+    args: &[Value],
+) -> Result<Value, IntrinsicError> {
+    let Some(ratio) = args.first().and_then(Value::as_float) else {
+        return Ok(Value::Na);
+    };
+    if context.footprint_levels.is_empty() {
+        return Ok(Value::Na);
+    }
+    context.charge(context.footprint_levels.len())?;
+    let ratio = ratio.clamp(1.1, 10.0);
+    let (buy, sell) = context
+        .footprint_levels
+        .iter()
+        .fold((0_u32, 0_u32), |(buy, sell), &(buy_qty, sell_qty)| {
+            if buy_qty > 0.0 && buy_qty >= sell_qty * ratio {
+                (buy + 1, sell)
+            } else if sell_qty > 0.0 && sell_qty >= buy_qty * ratio {
+                (buy, sell + 1)
+            } else {
+                (buy, sell)
+            }
+        });
+    let total = buy + sell;
+    Ok(Value::Float(if total == 0 {
+        0.0
+    } else {
+        (f64::from(buy) - f64::from(sell)) / f64::from(total)
+    }))
 }
 
 fn eval_abs(

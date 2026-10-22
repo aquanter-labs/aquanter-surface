@@ -17,6 +17,8 @@ pub struct TradeAggregate {
     pub sell_qty: f64,
     pub buy_count: u64,
     pub sell_count: u64,
+    /// Price level with the most traded volume in the bar.
+    pub poc: Option<f64>,
 }
 
 impl TradeAggregate {
@@ -42,6 +44,8 @@ pub struct ChartFrame {
     pub buy_qty: f64,
     pub sell_qty: f64,
     pub trade: Option<TradeAggregate>,
+    /// Footprint `(buy_qty, sell_qty)` per traded price level; empty without trades.
+    pub footprint_levels: Arc<[(f64, f64)]>,
 }
 
 impl ChartFrame {
@@ -91,6 +95,7 @@ pub enum FrameField {
     ChartTradeBuyCount,
     ChartTradeSellCount,
     ChartTradeCount,
+    ChartTradePoc,
     InstrumentMinTick,
     OpenInterest,
     Chart,
@@ -242,6 +247,7 @@ impl IndicatorFrame {
                 trade_int(self.chart.trade, |trade| trade.sell_count)
             }
             FrameField::ChartTradeCount => trade_int(self.chart.trade, TradeAggregate::trade_count),
+            FrameField::ChartTradePoc => trade_poc(self.chart.trade),
             FrameField::InstrumentMinTick => optional_float(self.instrument.min_tick),
             FrameField::OpenInterest => optional_float(self.open_interest),
             FrameField::Chart => self.chart.to_value(),
@@ -365,6 +371,10 @@ fn trade_float(trade: Option<TradeAggregate>, value: impl FnOnce(TradeAggregate)
 
 fn trade_int(trade: Option<TradeAggregate>, value: impl FnOnce(TradeAggregate) -> u64) -> Value {
     trade.map_or(Value::Na, |trade| Value::Int(value(trade) as i64))
+}
+
+fn trade_poc(trade: Option<TradeAggregate>) -> Value {
+    trade.and_then(|trade| trade.poc).map_or(Value::Na, Value::Float)
 }
 
 fn trade_value(trade: Option<TradeAggregate>) -> Value {

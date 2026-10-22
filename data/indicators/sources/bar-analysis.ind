@@ -1,9 +1,9 @@
 language(1)
-indicator("Bar Analysis", id = "core.bar-analysis", author = "Niketion", author_url = "https://github.com/niketion", sourceable = false, optional_trades = true, max_bars_back = 1)
+indicator("Bar Analysis", id = "core.bar-analysis", author = "Niketion", author_url = "https://github.com/niketion", sourceable = false, max_bars_back = 1)
 display(view = "table")
 has_directional_volume = chart.directional_volume_available
-buy = select(has_directional_volume, chart.buy_qty, select(chart.close >= chart.open, chart.volume, 0.0))
-sell = select(has_directional_volume, chart.sell_qty, select(chart.close < chart.open, chart.volume, 0.0))
+buy = select(has_directional_volume, chart.buy_qty, na)
+sell = select(has_directional_volume, chart.sell_qty, na)
 total = buy + sell
 delta = buy - sell
 delta_pct = select(total == 0, 0, delta / total * 100)

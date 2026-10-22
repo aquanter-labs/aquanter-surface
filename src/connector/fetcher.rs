@@ -851,76 +851,109 @@ pub fn fetch_trades_paged(
     data_path: PathBuf,
 ) -> impl Straw<bool, Vec<Trade>, AdapterError> {
     sipper(async move |mut progress| {
-        let mut until = to_time;
+        // Windows are half-open `[start, end)` and walk newest → oldest; each
+        // window is paged oldest → newest until complete before moving on.
+        let mut end = to_time.saturating_add(1);
+        let mut span = TRADE_WINDOW_MIN_MS;
         let mut had_data = false;
-        const SERVER_WINDOW_MS: u64 = 60_000;
 
-        while until > from_time {
-            let prev_until = until;
+        while end > from_time {
+            let today = UnixMs::now().floor_to(Timeframe::D1);
+            let start = if server.is_some() {
+                end.saturating_sub(TRADE_WINDOW_MIN_MS).max(from_time)
+            } else {
+                direct_trade_window_start(from_time, end, today, span)
+            };
 
             if let Some(ref client) = server {
-                let window_start = until
-                    .saturating_sub(SERVER_WINDOW_MS)
-                    .max(from_time);
-                let parsed = client
-                    .fetch_trades_arrow(ticker_info, window_start, until, ARROW_LIMIT)
-                    .await?;
-                if parsed.raw_row_count == 0 {
-                    if window_start <= from_time {
-                        break;
-                    }
-                    until = window_start;
-                } else {
-                    had_data = had_data || !parsed.trades.is_empty();
-                    let reached_window_end = parsed
-                        .last_ts
-                        .is_some_and(|time| time.as_u64().saturating_add(1_000) >= until.as_u64())
-                        || parsed.raw_row_count < ARROW_LIMIT;
-                    if reached_window_end {
-                        until = window_start;
-                    } else if let Some(last) = parsed.last_ts {
-                        until = last.saturating_add(1);
-                        if until >= prev_until {
-                            until = window_start;
-                        }
-                    } else {
-                        until = window_start;
-                    }
+                let mut cursor = start;
+                while cursor < end {
+                    let mut parsed = client
+                        .fetch_trades_arrow(ticker_info, cursor, end, ARROW_LIMIT)
+                        .await?;
+                    parsed.trades.retain(|trade| trade.time < end);
                     if !parsed.trades.is_empty() {
+                        had_data = true;
                         progress.send(parsed.trades).await;
                     }
+                    if parsed.raw_row_count < ARROW_LIMIT {
+                        break;
+                    }
+                    let next = parsed.last_ts.map_or(cursor, |t| t.saturating_add(1));
+                    if next <= cursor {
+                        return Err(malformed_trade_source(cursor));
+                    }
+                    cursor = next;
                 }
             } else {
                 let batch = handles
-                    .fetch_trades(ticker_info, from_time, until, Some(data_path.clone()))
+                    .fetch_trades(ticker_info, start, end, Some(data_path.clone()))
                     .await?;
-                if batch.is_empty() {
-                    let day = until.floor_to(exchange::Timeframe::D1);
-                    if day <= from_time {
-                        break;
-                    }
-                    until = UnixMs::new(day.as_u64().saturating_sub(1));
+                span = if batch.len() < 1000 {
+                    (span * 2).min(TRADE_WINDOW_MAX_MS)
                 } else {
+                    TRADE_WINDOW_MIN_MS
+                };
+                if !batch.is_empty() {
                     had_data = true;
-                    let oldest = batch.iter().map(|trade| trade.time).min().unwrap_or(until);
                     progress.send(batch).await;
-                    if oldest <= from_time {
-                        break;
-                    }
-                    until = oldest.saturating_sub(1);
                 }
             }
 
-            if until >= prev_until {
-                log::error!(
-                    "trade paging cursor did not move before {prev_until:?}; aborting to avoid an infinite loop"
-                );
-                return Err(AdapterError::ParseError(
-                    "Source may be malformed. Check logs for details.".to_string(),
-                ));
+            if start >= end {
+                return Err(malformed_trade_source(end));
             }
+            end = start;
         }
 
         Ok(had_data)
     })
+}
+
+const TRADE_WINDOW_MIN_MS: u64 = 60_000;
+const TRADE_WINDOW_MAX_MS: u64 = 60 * 60_000;
+
+/// Start of the next direct-fetch window ending at `end`. Today's data is
+/// fetched in short windows so the latest trades arrive first; earlier days
+/// are fetched as whole UTC days, matching Binance's daily archives.
+fn direct_trade_window_start(from: UnixMs, end: UnixMs, today: UnixMs, span: u64) -> UnixMs {
+    let start = if end > today {
+        end.saturating_sub(span).max(today)
+    } else {
+        end.saturating_sub(1).floor_to(Timeframe::D1)
+    };
+    start.max(from)
+}
+
+fn malformed_trade_source(at: UnixMs) -> AdapterError {
+    log::error!(
+        "trade paging did not advance at {at:?}; aborting to avoid an infinite loop (source may be malformed)"
+    );
+    AdapterError::ParseError("Source may be malformed. Check logs for details.".to_string())
+}
+
+#[cfg(test)]
+mod trade_window_tests {
+    use super::{TRADE_WINDOW_MIN_MS, direct_trade_window_start};
+    use exchange::UnixMs;
+
+    const DAY: u64 = 86_400_000;
+
+    #[test]
+    fn direct_windows_tile_the_range_without_gaps() {
+        let today = UnixMs::new(10 * DAY);
+        let from = UnixMs::new(8 * DAY + 5);
+        let mut end = UnixMs::new(10 * DAY + 150_000);
+        let mut starts = Vec::new();
+        while end > from {
+            let start = direct_trade_window_start(from, end, today, TRADE_WINDOW_MIN_MS);
+            assert!(start < end);
+            starts.push(start.as_u64());
+            end = start;
+        }
+        assert_eq!(
+            starts,
+            vec![10 * DAY + 90_000, 10 * DAY + 30_000, 10 * DAY, 9 * DAY, 8 * DAY + 5]
+        );
+    }
 }

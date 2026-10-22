@@ -1,9 +1,9 @@
 language(1)
-indicator("CVD Pro", id = "pro.pro-cvd", sourceable = true, optional_trades = true, max_bars_back = 2)
+indicator("CVD Pro", id = "pro.pro-cvd", sourceable = true, max_bars_back = 2)
 display(view = "plot", attachment = "panel", layer_name = "CVD Pro")
 format(precision = "base_ticker_min_qty", axis_labels = "abbreviated")
 candles = input.bool(false, "Candles")
-delta = select(chart.directional_volume_available, chart.buy_qty - chart.sell_qty, select(chart.close >= chart.open, chart.volume, -chart.volume))
+delta = select(chart.directional_volume_available, chart.buy_qty - chart.sell_qty, na)
 value = ta.cum(delta)
 opening = value - delta
 up = delta >= 0.0

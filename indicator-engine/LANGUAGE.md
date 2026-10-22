@@ -165,6 +165,7 @@ presentation-only.
 | `chart.directional_volume_available`, `chart.buy_qty`, `chart.sell_qty` | Candle directional volume |
 | `chart.trade.available`, `chart.trade.buy_qty`, `chart.trade.sell_qty` | Trade coverage and quantities |
 | `chart.trade.buy_count`, `chart.trade.sell_count`, `chart.trade.count` | Trade counts |
+| `chart.trade.poc` | Footprint point-of-control price; `na` without trades |
 | `open_interest` | Latest finite sample at or before the bar timestamp; `na` before the first sample |
 | `instrument.min_tick` | Minimum price increment; simple metadata, `na` if unavailable |
 
@@ -519,6 +520,7 @@ state; other non-finite numeric results also become `na`.
 | `math.min(left, right, ...)` / `math.max(left, right, ...)` | At least two numeric arguments; `na` if any argument is missing |
 | `na(value)` | Boolean missingness test for any kind |
 | `nz(source, replacement)` | Numeric source or replacement when missing; replacement is simple and required |
+| `footprint.imbalance(ratio)` | `(buy − sell) / total` count of footprint levels where one side is at least `ratio` (1.1–10) times the other; `0` without dominant levels, `na` without trades; requires trades |
 | `coalesce(source, fallback)` | Source or lazily evaluated fallback when source is missing; compatible result kinds |
 | `select(condition, when_true, when_false)` | Lazily evaluates one result; false or missing condition chooses `when_false`; compatible result kinds |
 

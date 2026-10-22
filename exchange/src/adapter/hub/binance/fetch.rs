@@ -568,9 +568,12 @@ pub(super) async fn fetch_historical_oi(
     Ok(open_interest)
 }
 
-async fn fetch_intraday_trades_until(
+/// Every aggTrade in `[from, until)`, paged forward by trade ID so trades that
+/// share a millisecond across page boundaries are not dropped.
+async fn fetch_intraday_trades(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker_info: TickerInfo,
+    from: UnixMs,
     until: UnixMs,
 ) -> Result<Vec<Trade>, AdapterError> {
     let ticker = ticker_info.ticker;
@@ -582,10 +585,19 @@ async fn fetch_intraday_trades_until(
         MarketKind::InversePerps => (format!("{INVERSE_PERP_DOMAIN}/dapi/v1/aggTrades"), 20),
     };
 
-    let mut url = format!("{base_url}?symbol={symbol_str}&limit=1000");
-    url.push_str(&format!("&endTime={}", until.as_u64().saturating_sub(1)));
-
-    let de_trades: Vec<DeTrade> = hub.http_json_with_limiter(&url, weight, None, None).await?;
+    let until_ms = until.as_u64();
+    let mut url = format!(
+        "{base_url}?symbol={symbol_str}&limit=1000&startTime={}",
+        from.as_u64()
+    );
+    let mut de_trades: Vec<DeTrade> = Vec::new();
+    loop {
+        let page: Vec<DeTrade> = hub.http_json_with_limiter(&url, weight, None, None).await?;
+        let Some(from_id) = append_trade_page(&mut de_trades, page, until_ms)? else {
+            break;
+        };
+        url = format!("{base_url}?symbol={symbol_str}&limit=1000&fromId={from_id}");
+    }
 
     let qty_norm = QtyNormalization::with_raw_qty_unit(
         volume_size_unit() == SizeUnit::Quote,
@@ -606,20 +618,32 @@ async fn fetch_intraday_trades_until(
     Ok(trades)
 }
 
-fn append_trade_boundary(
+/// Appends the part of `page` before `until_ms`; returns the `fromId` of the
+/// next page while the range is not exhausted.
+fn append_trade_page(
     trades: &mut Vec<DeTrade>,
     page: Vec<DeTrade>,
-) -> Result<bool, AdapterError> {
-    let boundary = trades.last().unwrap().time;
-    let last_id = trades.last().unwrap().id;
-    if page.first().is_some_and(|trade| trade.id <= last_id) {
+    until_ms: u64,
+) -> Result<Option<u64>, AdapterError> {
+    let (Some(first), Some(last)) = (page.first(), page.last()) else {
+        return Ok(None);
+    };
+    if trades.last().is_some_and(|prev| first.id <= prev.id) {
         return Err(AdapterError::ParseError(
             "Trade ID paging did not advance".into(),
         ));
     }
-    let needs_more = page.len() == 1000 && page.iter().all(|trade| trade.time == boundary);
-    trades.extend(page.into_iter().filter(|trade| trade.time == boundary));
-    Ok(needs_more)
+    let next_id = if page.len() == 1000 && last.time < until_ms {
+        Some(
+            last.id
+                .checked_add(1)
+                .ok_or_else(|| AdapterError::ParseError("Trade ID overflow".into()))?,
+        )
+    } else {
+        None
+    };
+    trades.extend(page.into_iter().filter(|trade| trade.time < until_ms));
+    Ok(next_id)
 }
 
 async fn get_hist_trades_with_client(
@@ -762,34 +786,34 @@ pub(super) async fn fetch_trades(
         })?
         .and_utc();
 
-    let until_ms = i64::try_from(until.as_u64())
+    let from_ms = i64::try_from(from_time.as_u64())
         .map_err(|_| AdapterError::InvalidRequest("Timestamp exceeds i64 range".to_string()))?;
 
-    let mut trades = if until_ms >= today_midnight.timestamp_millis() {
-        fetch_intraday_trades_until(hub, ticker_info, until).await?
-    } else {
-        let until_date = chrono::DateTime::from_timestamp_millis(until_ms)
-            .ok_or_else(|| AdapterError::ParseError("Invalid timestamp".into()))?
-            .date_naive();
-        let client = hub.client().clone();
-        match get_hist_trades_with_client(&client, ticker_info, until_date, data_path).await {
-            Ok(trades) => trades,
-            Err(error) => {
-                log::warn!(
-                    "Historical trades fetch failed: {error}, falling back to intraday fetch"
-                );
-                fetch_intraday_trades_until(hub, ticker_info, until).await?
-            }
+    if from_ms >= today_midnight.timestamp_millis() {
+        return fetch_intraday_trades(hub, ticker_info, from_time, until).await;
+    }
+
+    // Callers keep a historical range within one UTC day: one archive per call.
+    let from_date = chrono::DateTime::from_timestamp_millis(from_ms)
+        .ok_or_else(|| AdapterError::ParseError("Invalid timestamp".into()))?
+        .date_naive();
+    let client = hub.client().clone();
+    match get_hist_trades_with_client(&client, ticker_info, from_date, data_path).await {
+        Ok(mut trades) => {
+            trades.retain(|trade| trade.time >= from_time && trade.time < until);
+            trades.sort_by_key(|trade| trade.time);
+            Ok(trades)
         }
-    };
-    trades.retain(|trade| trade.time >= from_time && trade.time <= until);
-    trades.sort_by_key(|trade| trade.time);
-    Ok(trades)
+        Err(error) => {
+            log::warn!("Historical trades fetch failed: {error}, falling back to intraday fetch");
+            fetch_intraday_trades(hub, ticker_info, from_time, until).await
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{DeTrade, append_trade_boundary, normalize_archive_timestamp, parse_archive_bool};
+    use super::{DeTrade, append_trade_page, normalize_archive_timestamp, parse_archive_bool};
 
     fn trade(id: u64, time: u64) -> DeTrade {
         DeTrade {
@@ -803,18 +827,24 @@ mod tests {
 
     #[test]
     fn full_trade_pages_do_not_skip_the_last_millisecond() {
-        let mut trades = (0..1000).map(|id| trade(id, 42)).collect::<Vec<_>>();
-        assert!(
-            append_trade_boundary(&mut trades, (1000..2000).map(|id| trade(id, 42)).collect())
-                .unwrap()
-        );
-        assert!(
-            !append_trade_boundary(&mut trades, vec![trade(2000, 42), trade(2001, 43)]).unwrap()
-        );
-        assert_eq!(trades.len(), 2001);
-        assert_eq!(trades.last().unwrap().id, 2000);
-        assert!(trades.iter().all(|trade| trade.time == 42));
-        assert!(append_trade_boundary(&mut trades, vec![trade(2000, 42)]).is_err());
+        let mut trades = Vec::new();
+        let page = (0..1000).map(|id| trade(id, 42)).collect();
+        assert_eq!(append_trade_page(&mut trades, page, 50).unwrap(), Some(1000));
+        let page = (1000..2000).map(|id| trade(id, 42)).collect();
+        assert_eq!(append_trade_page(&mut trades, page, 50).unwrap(), Some(2000));
+        let page = vec![trade(2000, 42), trade(2001, 49), trade(2002, 50)];
+        assert_eq!(append_trade_page(&mut trades, page, 50).unwrap(), None);
+        assert_eq!(trades.len(), 2002);
+        assert_eq!(trades.last().unwrap().id, 2001);
+        assert!(append_trade_page(&mut trades, vec![trade(2001, 49)], 50).is_err());
+    }
+
+    #[test]
+    fn full_trade_page_past_the_range_end_stops_paging() {
+        let mut trades = Vec::new();
+        let page = (0..1000).map(|id| trade(id, 40 + id / 100)).collect();
+        assert_eq!(append_trade_page(&mut trades, page, 45).unwrap(), None);
+        assert_eq!(trades.len(), 500);
     }
 
     #[test]

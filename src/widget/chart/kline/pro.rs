@@ -1,6 +1,8 @@
 use super::*;
 use crate::ai::{ChartAnnotation, ChartSignal};
 use crate::trading::{PositionOverlay, TradingLineId};
+use data::chart::kline::indicators::pro::{VwapPoint, vwap_for_series};
+use data::chart::kline::pro::VwapMode;
 use exchange::UnixMs;
 
 struct TradingLine {
@@ -278,16 +280,16 @@ impl<'a> KlineWidget<'a> {
         if points.is_empty() { return; }
         frame.with_clip(plot, |frame| {
             if config.is_enabled("SessionVwap") {
-                let mode = config.vwap_mode;
-                let hour = config.session_vwap.anchor_hour_utc;
-                let rolling = matches!(mode, Some(data::chart::kline::pro::VwapMode::Rolling { .. }));
-                if !rolling {
-                    paint_vwap_line(frame, scene, self, &points, config.session_vwap.color, config.session_vwap.line_width, config.session_vwap.deviation_bands, |time| Some(session_key(time, mode, hour)));
+                let mode = config.vwap_mode.unwrap_or(VwapMode::Session { hour_utc: config.session_vwap.anchor_hour_utc });
+                if !matches!(mode, VwapMode::Rolling { .. }) {
+                    let vwap = vwap_for_series(series.points(), mode);
+                    paint_vwap_line(frame, scene, self, &vwap, config.session_vwap.color, config.session_vwap.line_width, config.session_vwap.deviation_bands);
                 }
             }
             if config.is_enabled("AnchoredVwap") {
                 if let Some(anchor) = config.anchored_vwap.anchor.map(|time| time.as_u64()) {
-                    paint_vwap_line(frame, scene, self, &points, config.anchored_vwap.color, config.anchored_vwap.line_width, config.anchored_vwap.deviation_bands, |time| (time >= anchor).then_some(anchor));
+                    let vwap = vwap_for_series(series.points(), VwapMode::Anchor { time_ms: anchor });
+                    paint_vwap_line(frame, scene, self, &vwap, config.anchored_vwap.color, config.anchored_vwap.line_width, config.anchored_vwap.deviation_bands);
                 }
             }
             if config.is_enabled("LiquidationHeatmap") && !self.pro_liquidations.is_empty() {
@@ -435,53 +437,23 @@ fn paint_profile_qty(frame: &mut PaintInputs, config: &data::chart::kline::pro::
     });
 }
 
-fn session_key(time: u64, mode: Option<data::chart::kline::pro::VwapMode>, hour: u8) -> u64 {
-    const DAY: u64 = 86_400_000;
-    let offset = u64::from(hour.min(23)) * 3_600_000;
-    match mode {
-        Some(data::chart::kline::pro::VwapMode::Week) => time / (DAY * 7),
-        Some(data::chart::kline::pro::VwapMode::Month) => time / (DAY * 30),
-        Some(data::chart::kline::pro::VwapMode::Visible { time_ms }) => time_ms,
-        Some(data::chart::kline::pro::VwapMode::Rolling { .. }) => 1,
-        _ => time.saturating_sub(offset) / DAY * DAY + offset,
-    }
-}
-
 fn paint_vwap_line(
     frame: &mut PaintInputs,
     scene: &Scene,
     widget: &KlineWidget<'_>,
-    points: &[data::chart::kline::series::KlineSeriesPoint<'_>],
+    vwap: &[VwapPoint],
     color: iced::Color,
     width: f32,
     bands: u8,
-    session_of: impl Fn(u64) -> Option<u64>,
 ) {
-    let mut weight = 0.0;
-    let mut weighted = 0.0;
-    let mut weighted_sq = 0.0;
-    let mut session = None;
-    let mut previous: Option<(f32, f64, f64, u64)> = None;
+    let mut previous: Option<(f32, f64, f64, i64)> = None;
     let band_color = color.scale_alpha(0.45);
-    for point in points {
-        let time = point.kline.time.as_u64();
-        let Some(key) = session_of(time) else { continue; };
-        if session != Some(key) {
-            session = Some(key);
-            weight = 0.0;
-            weighted = 0.0;
-            weighted_sq = 0.0;
+    for point in vwap {
+        let (mean, deviation, key) = (point.value, point.deviation, point.session);
+        if previous.is_some_and(|(.., pkey)| pkey != key) {
             previous = None;
         }
-        let price = (point.kline.high.to_f64() + point.kline.low.to_f64() + point.kline.close.to_f64()) / 3.0;
-        let volume = point.kline.volume.total().to_f64();
-        if volume <= 0.0 || !price.is_finite() { continue; }
-        weight += volume;
-        weighted += price * volume;
-        weighted_sq += price * price * volume;
-        let mean = weighted / weight;
-        let deviation = (weighted_sq / weight - mean * mean).max(0.0).sqrt();
-        let Some(x) = widget.pro_time_x(scene, time) else { continue; };
+        let Some(x) = widget.pro_time_x(scene, point.time.as_u64()) else { continue; };
         let Some(y) = price_y(scene, mean) else { continue; };
         if let Some((px, prev_mean, prev_dev, pkey)) = previous && pkey == key {
             if let Some(py) = price_y(scene, prev_mean) {
@@ -512,12 +484,14 @@ fn paint_fixed_profiles(
     let step_ms = match widget.basis { Basis::Time(timeframe) => timeframe.to_milliseconds(), _ => 60_000 };
     let duration = step_ms.saturating_mul(u64::from(config.fixed_volume_profile.timeframe_multiplier.max(1))).max(step_ms);
     let profile = config.fixed_volume_profile;
-    let Some(first) = points.first() else { return; };
-    let mut window = first.kline.time.as_u64() / duration * duration;
-    let end = points.last().map(|point| point.kline.time.as_u64()).unwrap_or(window);
-    let mut drawn = 0u32;
-    while window <= end && drawn < 48 {
-        drawn += 1;
+    let (Some(first), Some(last)) = (points.first(), points.last()) else { return; };
+    let (first, last) = (first.kline.time.as_u64(), last.kline.time.as_u64());
+    let visible = (
+        scene.time_for_x_unit(scene.x.min_unit).map_or(first, |time| time.as_u64()),
+        scene.time_for_x_unit(scene.x.max_unit).map_or(last, |time| time.as_u64()),
+    );
+    let Some((mut window, end)) = fixed_profile_windows(first, last, visible, duration) else { return; };
+    while window <= end {
         let next = window.saturating_add(duration);
         let samples = points.iter().filter(|point| {
             let time = point.kline.time.as_u64();
@@ -556,6 +530,19 @@ fn paint_fixed_profiles(
     }
 }
 
+const MAX_FIXED_PROFILES: u64 = 48;
+
+/// First and last window starts to draw: the windows overlapping the visible
+/// time range, keeping the most recent ones when more than the cap are visible.
+fn fixed_profile_windows(first: u64, last: u64, visible: (u64, u64), duration: u64) -> Option<(u64, u64)> {
+    let start = visible.0.min(visible.1).max(first);
+    let end = visible.0.max(visible.1).min(last);
+    if start > end { return None; }
+    let last_window = end / duration * duration;
+    let earliest = last_window.saturating_sub((MAX_FIXED_PROFILES - 1).saturating_mul(duration));
+    Some(((start / duration * duration).max(earliest), last_window))
+}
+
 fn paint_marker(frame: &mut PaintInputs, point: Point, buy: bool, color: iced::Color) {
     let direction = if buy { 1.0 } else { -1.0 };
     let path = canvas::Path::new(|p| {
@@ -572,6 +559,16 @@ mod tests {
     use super::*;
     use super::super::scene::{ChromeScene, SceneInteraction};
     use data::chart::kline::{ChartStepMs, pro::ProConfig};
+
+    #[test]
+    fn fixed_profiles_follow_the_visible_range() {
+        const HOUR: u64 = 3_600_000;
+        let (first, last) = (0, 1_000 * HOUR);
+        assert_eq!(fixed_profile_windows(first, last, (900 * HOUR + 5, 910 * HOUR), HOUR), Some((900 * HOUR, 910 * HOUR)));
+        assert_eq!(fixed_profile_windows(first, last, (0, 500 * HOUR), HOUR), Some((453 * HOUR, 500 * HOUR)));
+        assert_eq!(fixed_profile_windows(first, last, (2_000 * HOUR, 2_010 * HOUR), HOUR), None);
+    }
+
 
     fn scene(mode: PanelScaleMode, inverted: bool) -> Scene {
         let mut composition = ChartComposition::prototype_kline();

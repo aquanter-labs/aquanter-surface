@@ -1664,6 +1664,7 @@ mod tests {
                 buy_qty: 1.0,
                 sell_qty: 0.0,
                 trade: None,
+                footprint_levels: std::sync::Arc::from([]),
             },
             open_interest: None,
             series_inputs: Vec::new().into(),

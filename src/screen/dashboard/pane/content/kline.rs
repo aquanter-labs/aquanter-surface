@@ -103,6 +103,7 @@ pub struct KlineChart {
     settings_reconfigure_pending: bool,
     render_invalidation: RenderInvalidation,
     last_maintenance_at: Instant,
+    tick_step_automatic: bool,
 }
 
 impl KlineChart {
@@ -130,6 +131,7 @@ impl KlineChart {
             last_maintenance_at: Instant::now(),
             render_invalidation: RenderInvalidation::new(),
             settings_reconfigure_pending: false,
+            tick_step_automatic: true,
         };
 
         let _ = chart.data.add_ticker(base_ticker, chart.basis);
@@ -1341,6 +1343,44 @@ impl KlineChart {
         }
     }
 
+    fn align_automatic_tick_step(&mut self, update: &DataUpdate<'_>) {
+        if !self.tick_step_automatic {
+            return;
+        }
+        let price = match update {
+            DataUpdate::HistoricalKlines {
+                klines,
+                ticker_info,
+                ..
+            } if *ticker_info == self.data.base_ticker() => {
+                klines.last().map(|kline| kline.close.to_f64())
+            }
+            DataUpdate::LiveKline {
+                ticker_info, kline, ..
+            } if **ticker_info == self.data.base_ticker() => Some(kline.close.to_f64()),
+            _ => None,
+        };
+        let Some(price) = price.filter(|price| price.is_finite() && *price > 0.0) else {
+            return;
+        };
+        let next = TickMultiplier::matching_price(
+            self.data.base_ticker().min_ticksize.as_f64(),
+            price,
+        );
+        let had_points = self
+            .data
+            .base_series()
+            .is_some_and(|series| series.point_count() > 0);
+        if !self.data.set_tick_multiplier(next) {
+            return;
+        }
+        if had_points {
+            self.settings_reconfigure_pending = true;
+            self.flush_settings_update();
+        }
+        self.render_invalidation.invalidate();
+    }
+
     pub fn apply_data(&mut self, update: DataUpdate<'_>) {
         if let Some(timeframe) = update.kline_timeframe()
             && self.basis != Basis::Time(timeframe)
@@ -1349,6 +1389,7 @@ impl KlineChart {
             return;
         }
 
+        self.align_automatic_tick_step(&update);
         let trade_data_enabled = self.trade_data_enabled();
         let effect = update.apply(
             self.basis,
@@ -1522,10 +1563,12 @@ impl KlineChart {
                 self.options.footprint = default_options;
                 changed.then_some(UpdatePolicy::Redraw)
             }
-            ChartCommand::SetTickMultiplier { multiplier } => self
-                .data
-                .set_tick_multiplier(multiplier)
-                .then_some(UpdatePolicy::ImmediateReconfigure),
+            ChartCommand::SetTickMultiplier { multiplier } => {
+                self.tick_step_automatic = false;
+                self.data
+                    .set_tick_multiplier(multiplier)
+                    .then_some(UpdatePolicy::ImmediateReconfigure)
+            }
             ChartCommand::AddIndicator(kind) => {
                 let change = self.indicators.add_indicator(kind, self.basis, &self.data);
                 let (policy, fetch) = change.apply(&mut self.indicators, &self.data);

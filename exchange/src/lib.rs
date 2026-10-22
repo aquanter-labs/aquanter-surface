@@ -778,4 +778,45 @@ impl TickMultiplier {
         let min_step: PriceStep = ticker_info.min_ticksize.into();
         self.multiply_step(min_step)
     }
+
+    /// Multiplier that lands spot and perp of the same price on one 1-2-5 step.
+    ///
+    /// A flat 25× makes BTC spot (`0.01`) a `$0.25` row and BTC perp (`0.1`) a
+    /// `$2.50` row. This targets about 0.001% of price instead.
+    pub fn matching_price(min_tick: f64, price: f64) -> Self {
+        let min_tick = min_tick.abs().max(1e-12);
+        let price = price.abs().max(min_tick);
+        let target = nice_price_step((price * 1e-5).max(min_tick));
+        let multiplier = (target / min_tick).round().clamp(1.0, 2000.0) as u16;
+        Self(multiplier.max(1))
+    }
+}
+
+fn nice_price_step(value: f64) -> f64 {
+    let exp = value.log10().floor();
+    let base = 10f64.powf(exp);
+    let mantissa = value / base;
+    let nice = if mantissa < 1.5 {
+        1.0
+    } else if mantissa < 3.5 {
+        2.0
+    } else if mantissa < 7.5 {
+        5.0
+    } else {
+        10.0
+    };
+    nice * base
+}
+
+#[cfg(test)]
+mod tick_multiplier_tests {
+    use super::TickMultiplier;
+
+    #[test]
+    fn btc_spot_and_perp_share_a_price_step() {
+        let price = 100_000.0;
+        let spot = TickMultiplier::matching_price(0.01, price);
+        let perp = TickMultiplier::matching_price(0.1, price);
+        assert_eq!(0.01 * f64::from(spot.0), 0.1 * f64::from(perp.0));
+    }
 }

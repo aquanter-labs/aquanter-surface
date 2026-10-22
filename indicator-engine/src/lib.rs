@@ -323,6 +323,7 @@ mod tests {
                 buy_qty: 0.0,
                 sell_qty: 0.0,
                 trade: None,
+                footprint_levels: Arc::from([]),
             },
             open_interest: None,
             series_inputs: Vec::new().into(),
@@ -2013,6 +2014,7 @@ mod tests {
             sell_qty: 0.0,
             buy_count: 2,
             sell_count: 0,
+            poc: None,
         });
         let output = instance
             .evaluate_closed(flow_frame)
@@ -2049,6 +2051,7 @@ mod tests {
             sell_qty: 3.0,
             buy_count: 3,
             sell_count: 1,
+            poc: None,
         };
         let mut populated = frame(0, 1, 10.0);
         populated.chart.directional_volume_available = true;

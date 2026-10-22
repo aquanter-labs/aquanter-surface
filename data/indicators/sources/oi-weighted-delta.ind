@@ -1,10 +1,10 @@
 language(1)
-indicator("OI-Weighted Delta Pro", id = "pro.oi-weighted-delta", sourceable = true, optional_trades = true, max_bars_back = 512, bases = ["time"])
+indicator("OI-Weighted Delta Pro", id = "pro.oi-weighted-delta", sourceable = true, max_bars_back = 512, bases = ["time"])
 display(view = "plot", attachment = "panel", layer_name = "OI-Weighted Delta Pro")
 format(precision = "base_ticker_min_qty", scale = "fit_visible_include_zero")
 sensitivity = input.float(10.0, "Sensitivity", min = 0.0, max = 1000.0)
 max_weight = input.float(2.0, "Maximum weight", min = 1.0, max = 100.0)
-delta = select(chart.directional_volume_available, chart.buy_qty - chart.sell_qty, select(chart.close >= chart.open, chart.volume, -chart.volume))
+delta = select(chart.directional_volume_available, chart.buy_qty - chart.sell_qty, na)
 previous = open_interest[1]
 change = select(previous > 0.0, (open_interest - previous) / previous, 0.0)
 weight = math.min(max_weight, math.max(0.0, 1.0 + change * sensitivity))

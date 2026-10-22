@@ -1764,6 +1764,10 @@ impl IndicatorInstance {
                         states: Arc::make_mut(&mut self.working.intrinsics),
                         executed_work: &mut self.executed_work,
                         max_work: self.limits.max_evaluated_nodes,
+                        footprint_levels: self
+                            .current_frame
+                            .as_ref()
+                            .map_or(&[], |frame| &frame.chart.footprint_levels),
                     };
                     let result = evaluator(&mut context, state_call_site, &values);
                     context
