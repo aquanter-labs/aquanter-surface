@@ -3,20 +3,13 @@ use iced::{
     widget::{container, mouse_area, opaque},
 };
 
-pub mod drawings;
-pub mod indicators;
 pub mod mini_tickers_list;
-pub mod settings;
 pub mod stream;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Modal {
     StreamModifier(super::stream::Modifier),
     MiniTickersList(mini_tickers_list::MiniPanel),
-    Settings,
-    Indicators,
-    DrawingTools,
-    IndicatorSettings(data::chart::indicator::KlineIndicator),
     LinkGroup,
     Controls,
 }

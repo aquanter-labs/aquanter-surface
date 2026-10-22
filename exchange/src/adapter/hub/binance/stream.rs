@@ -530,7 +530,12 @@ impl WsAdapter for LiquidationAdapter {
             return Err(format!("Ticker info not found for liquidation: {ticker}"));
         };
         let order = liquidation.order;
-        if order.average_price <= 0.0 || order.filled_qty <= 0.0 {
+        if !order.average_price.is_finite()
+            || !order.filled_qty.is_finite()
+            || order.average_price <= 0.0
+            || order.filled_qty <= 0.0
+            || !matches!(order.side.as_str(), "SELL" | "BUY")
+        {
             return Ok(Vec::new());
         }
         let item = crate::Liquidation {
@@ -1009,6 +1014,45 @@ pub fn connect_kline_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn liquidation_events_keep_symbol_scope_side_and_contract_quantity() {
+        let ticker = Ticker::new("BTCUSD_PERP", crate::adapter::Exchange::BinanceInverse);
+        let info = TickerInfo::new(ticker, 0.1, 1.0, Some(100.0));
+        let norm = QtyNormalization::with_raw_qty_unit(
+            false,
+            info,
+            raw_qty_unit_from_market_type(MarketKind::InversePerps),
+        );
+        let mut adapter = LiquidationAdapter {
+            market: MarketKind::InversePerps,
+            ticker_info_map: HashMap::from([(ticker, (info, norm))]),
+            stream: String::new(),
+            proxy_cfg: None,
+        };
+        let payload = br#"{"stream":"btcusd_perp@forceOrder","data":{"o":{"S":"SELL","T":1234,"ap":"20000","z":"2"}}}"#;
+        let events = adapter.on_text(payload).await.unwrap();
+        let [Event::LiquidationsReceived(StreamKind::Liquidations { ticker_info }, items)] =
+            events.as_slice()
+        else {
+            panic!("expected scoped liquidation event");
+        };
+        assert_eq!(*ticker_info, info);
+        assert_eq!(items.len(), 1);
+        assert!(items[0].is_sell);
+        assert_eq!(items[0].time.as_u64(), 1234);
+        assert_eq!(items[0].qty.to_f64(), 200.0);
+        let invalid = String::from_utf8(payload.to_vec())
+            .unwrap()
+            .replace("SELL", "UNKNOWN");
+        assert!(
+            adapter
+                .on_text(invalid.as_bytes())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn parses_force_order_payload() {

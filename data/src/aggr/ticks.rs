@@ -1,10 +1,9 @@
 use crate::aggr;
-use crate::chart::kline::{ClusterKind, KlineTrades, NPoc};
+use crate::chart::kline::footprint::{ClusterKind, KlineTrades};
+use crate::chart::kline::poc::NPoc;
 use exchange::unit::Qty;
 use exchange::unit::price::{Price, PriceStep};
 use exchange::{Kline, Trade, Volume};
-
-use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct TickAccumulation {
@@ -69,26 +68,9 @@ impl TickAccumulation {
     pub fn calculate_poc(&mut self) {
         self.footprint.calculate_poc();
     }
-
-    pub fn volume_delta(&self) -> Qty {
-        if self.kline.volume.is_directional() {
-            self.kline.volume.delta()
-        } else if !self.footprint.trades.is_empty() {
-            self.footprint
-                .trades
-                .values()
-                .fold(Qty::ZERO, |acc, group| acc + group.delta_qty())
-        } else {
-            Qty::ZERO
-        }
-    }
-
-    /// Whether this tick accumulation has directional (buy vs sell) data.
-    pub fn is_directional(&self) -> bool {
-        !self.footprint.trades.is_empty() || self.kline.volume.is_directional()
-    }
 }
 
+#[derive(Debug, Clone)]
 pub struct TickAggr {
     pub datapoints: Vec<TickAccumulation>,
     pub interval: aggr::TickCount,
@@ -110,182 +92,38 @@ impl TickAggr {
         tick_aggr
     }
 
-    pub fn change_tick_size(&mut self, tick_size: PriceStep, raw_trades: &[Trade]) {
+    pub fn change_tick_size(&mut self, tick_size: PriceStep) {
         self.tick_size = tick_size;
-
-        self.datapoints.clear();
-
-        if !raw_trades.is_empty() {
-            self.insert_trades(raw_trades);
+        for point in &mut self.datapoints {
+            point.footprint.regroup(tick_size);
         }
     }
 
-    /// return latest data point and its index
-    pub fn latest_dp(&self) -> Option<(&TickAccumulation, usize)> {
-        self.datapoints
-            .last()
-            .map(|dp| (dp, self.datapoints.len() - 1))
-    }
-
-    pub fn volume_data(&self) -> BTreeMap<u64, exchange::Volume> {
-        self.into()
-    }
-
-    pub fn insert_trades(&mut self, buffer: &[Trade]) {
-        let mut updated_indices = Vec::new();
+    pub fn insert_trades(&mut self, buffer: &[Trade]) -> Option<usize> {
+        if buffer.is_empty() {
+            return None;
+        }
+        let first_updated = match self.datapoints.last() {
+            Some(last) if !last.is_full(self.interval) => self.datapoints.len() - 1,
+            _ => self.datapoints.len(),
+        };
 
         for trade in buffer {
-            if self.datapoints.is_empty() {
+            if let Some(last) = self
+                .datapoints
+                .last_mut()
+                .filter(|last| !last.is_full(self.interval))
+            {
+                last.update_with_trade(trade, self.tick_size);
+            } else {
                 self.datapoints
                     .push(TickAccumulation::new(trade, self.tick_size));
-                updated_indices.push(0);
-            } else {
-                let last_idx = self.datapoints.len() - 1;
-
-                if self.datapoints[last_idx].is_full(self.interval) {
-                    self.datapoints
-                        .push(TickAccumulation::new(trade, self.tick_size));
-                    updated_indices.push(self.datapoints.len() - 1);
-                } else {
-                    self.datapoints[last_idx].update_with_trade(trade, self.tick_size);
-                    if !updated_indices.contains(&last_idx) {
-                        updated_indices.push(last_idx);
-                    }
-                }
             }
         }
-
-        for idx in updated_indices {
-            if idx < self.datapoints.len() {
-                self.datapoints[idx].calculate_poc();
-            }
+        for point in &mut self.datapoints[first_updated..] {
+            point.calculate_poc();
         }
-
-        self.update_poc_status();
-    }
-
-    pub fn update_poc_status(&mut self) {
-        let updates = self
-            .datapoints
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, dp)| dp.poc_price().map(|price| (idx, price)))
-            .collect::<Vec<_>>();
-
-        let total_points = self.datapoints.len();
-
-        for (current_idx, poc_price) in updates {
-            let mut npoc = NPoc::default();
-
-            for next_idx in (current_idx + 1)..total_points {
-                let next_dp = &self.datapoints[next_idx];
-
-                let next_dp_low = next_dp.kline.low.round_to_side_step(true, self.tick_size);
-                let next_dp_high = next_dp.kline.high.round_to_side_step(false, self.tick_size);
-
-                if next_dp_low <= poc_price && next_dp_high >= poc_price {
-                    // on render we reverse the order of the points
-                    // as it is easier to just take the idx=0 as latest candle for coords
-                    let reversed_idx = (total_points - 1) - next_idx;
-                    npoc.filled(reversed_idx as u64);
-                    break;
-                } else {
-                    npoc.unfilled();
-                }
-            }
-
-            if current_idx < total_points {
-                let data_point = &mut self.datapoints[current_idx];
-                data_point.set_poc_status(npoc);
-            }
-        }
-    }
-
-    pub fn min_max_price_in_range_prices(
-        &self,
-        earliest: usize,
-        latest: usize,
-    ) -> Option<(Price, Price)> {
-        if earliest > latest {
-            return None;
-        }
-
-        let mut min_p: Option<Price> = None;
-        let mut max_p: Option<Price> = None;
-
-        self.datapoints
-            .iter()
-            .rev()
-            .enumerate()
-            .filter(|(idx, _)| *idx >= earliest && *idx <= latest)
-            .for_each(|(_, dp)| {
-                let low = dp.kline.low;
-                let high = dp.kline.high;
-
-                min_p = Some(match min_p {
-                    Some(value) => value.min(low),
-                    None => low,
-                });
-                max_p = Some(match max_p {
-                    Some(value) => value.max(high),
-                    None => high,
-                });
-            });
-
-        match (min_p, max_p) {
-            (Some(low), Some(high)) => Some((low, high)),
-            _ => None,
-        }
-    }
-
-    pub fn min_max_price_in_range(&self, earliest: usize, latest: usize) -> Option<(f32, f32)> {
-        self.min_max_price_in_range_prices(earliest, latest)
-            .map(|(min_p, max_p)| (min_p.to_f32_lossy(), max_p.to_f32_lossy()))
-    }
-
-    pub fn min_max_footprint_price_in_range(
-        &self,
-        earliest: usize,
-        latest: usize,
-    ) -> Option<(Price, Price)> {
-        if earliest > latest {
-            return None;
-        }
-
-        let mut min_p: Option<Price> = None;
-        let mut max_p: Option<Price> = None;
-
-        self.datapoints
-            .iter()
-            .rev()
-            .enumerate()
-            .filter(|(idx, _)| *idx >= earliest && *idx <= latest)
-            .for_each(|(_, dp)| {
-                min_p = Some(match min_p {
-                    Some(value) => value.min(dp.kline.low),
-                    None => dp.kline.low,
-                });
-                max_p = Some(match max_p {
-                    Some(value) => value.max(dp.kline.high),
-                    None => dp.kline.high,
-                });
-
-                for price in dp.footprint.trades.keys() {
-                    min_p = Some(match min_p {
-                        Some(value) => value.min(*price),
-                        None => *price,
-                    });
-                    max_p = Some(match max_p {
-                        Some(value) => value.max(*price),
-                        None => *price,
-                    });
-                }
-            });
-
-        match (min_p, max_p) {
-            (Some(low), Some(high)) => Some((low, high)),
-            _ => None,
-        }
+        Some(first_updated)
     }
 
     pub fn max_qty_idx_range(
@@ -309,17 +147,5 @@ impl TickAggr {
             });
 
         max_cluster_qty
-    }
-}
-
-impl From<&TickAggr> for BTreeMap<u64, exchange::Volume> {
-    /// Converts datapoints into a map of timestamps and volume data
-    fn from(tick_aggr: &TickAggr) -> Self {
-        tick_aggr
-            .datapoints
-            .iter()
-            .enumerate()
-            .map(|(idx, dp)| (idx as u64, dp.kline.volume))
-            .collect()
     }
 }

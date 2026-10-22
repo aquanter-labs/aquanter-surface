@@ -1,0 +1,14 @@
+language(1)
+indicator("OI-Weighted Delta", id = "pro.oi-weighted-delta", sourceable = true, max_bars_back = 2, bases = ["time"])
+format(precision = "base_ticker_min_qty", scale = "fit_visible_include_zero")
+sensitivity = input.float(10.0, "Sensitivity", min = 0.0, max = 1000.0)
+max_weight = input.float(2.0, "Maximum weight", min = 1.0, max = 100.0)
+positive_color = input.color(color.rgb(89, 173, 128), "Positive")
+negative_color = input.color(color.rgb(194, 102, 107), "Negative")
+delta = select(chart.directional_volume_available, chart.buy_qty - chart.sell_qty, na)
+previous = open_interest[1]
+change = select(previous > 0.0, (open_interest - previous) / previous, 0.0)
+weight = math.min(max_weight, math.max(0.0, 1.0 + change * sensitivity))
+value = delta * weight
+plot(value, id = "value", title = "OI-Weighted Delta", style = "histogram", color_slot = "main", color = select(value >= 0.0, positive_color, negative_color))
+style("main", title = "Delta")

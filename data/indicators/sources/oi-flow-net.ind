@@ -1,0 +1,52 @@
+language(1)
+indicator("OI Flow Net", id = "pro.oi-flow-net", sourceable = true, max_bars_back = 11, bases = ["time"])
+format(precision = "fixed_step:0.01", scale = "fit_visible_include_zero")
+basis_length = input.int(10, "Basis length", min = 2, max = 65535)
+burst_sensitivity = input.int(3, "Burst sensitivity", min = 1, max = 5)
+static_color = input.bool(false, "Static color")
+show_price_line = input.bool(false, "Show price line")
+long_color = input.color(color.rgb(89, 173, 128), "Buy inflow")
+short_color = input.color(color.rgb(194, 102, 107), "Sell inflow")
+buy_outflow_color = input.color(color.rgb(71, 163, 163), "Buy outflow")
+sell_outflow_color = input.color(color.rgb(140, 77, 92), "Sell outflow")
+extreme_band_color = input.color(color.rgb(184, 189, 196), "Extreme band")
+
+fn relative(source) {
+    average = ta.sma(source, basis_length)
+    spread = select(math.abs(average) > 0.000000001, (source / average - 1.0) * 100.0, na)
+    high = ta.pivothigh(spread, 5, 5)
+    low = ta.pivotlow(spread, 5, 5)
+    var highs = array.new()
+    var lows = array.new()
+    if !na(high) && high > 0.0 {
+        next = array.new()
+        for index = select(array.size(highs) > 19, array.size(highs) - 19, 0) to array.size(highs) - 1 {
+            next := array.push(next, array.get(highs, index))
+        }
+        highs := array.push(next, high)
+    } else if !na(low) && low < 0.0 {
+        next = array.new()
+        for index = select(array.size(lows) > 19, array.size(lows) - 19, 0) to array.size(lows) - 1 {
+            next := array.push(next, array.get(lows, index))
+        }
+        lows := array.push(next, low)
+    }
+    samples = select(spread >= 0.0, highs, lows)
+    total = 0.0
+    for sample in samples {
+        total := total + sample
+    }
+    mean = select(array.size(samples) > 0, total / array.size(samples), na)
+    return select(math.abs(mean) > 0.000000001, select(spread >= 0.0, spread / mean, -(spread / mean)), na)
+}
+relative_oi = relative(open_interest)
+relative_price = relative(chart.close)
+gain = 1.0 + burst_sensitivity * 0.1
+position = 0.7 + burst_sensitivity * 0.1
+burst = (relative_oi > relative_oi[1] * gain && relative_oi > position) || (relative_oi < relative_oi[1] * gain && relative_oi < -position)
+state_color = select(relative_price >= 0.0, select(relative_oi >= 0.0, long_color, sell_outflow_color), select(relative_oi >= 0.0, short_color, buy_outflow_color))
+plot(relative_oi, id = "value", title = "Relative OI", style = "histogram", color_slot = "main", color = select(static_color, select(relative_oi >= 0.0, long_color, short_color), state_color))
+plot(select(show_price_line, relative_price, na), id = "price", title = "Relative price", color_slot = "price", color = extreme_band_color)
+plot(burst, id = "burst")
+style("main", title = "OI flow")
+style("price", title = "Price", role = "secondary")

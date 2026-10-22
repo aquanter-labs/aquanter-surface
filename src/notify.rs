@@ -121,7 +121,16 @@ impl Notifications {
     }
 
     pub fn publish_system(&self, alert: Alert) {
-        show_system_alert(&alert);
+        std::thread::spawn(move || {
+            if let Err(error) = notify_rust::Notification::new()
+                .appname("Flowsurface Pro")
+                .summary(&format!("{} - {}", alert.source, alert.title))
+                .body(&alert.body)
+                .show()
+            {
+                log::warn!("Failed to show system notification: {error}");
+            }
+        });
     }
 
     /// Removes a toast by index if the index exists.
@@ -142,21 +151,6 @@ impl Notifications {
             now.duration_since(state.last_seen_at).as_secs() <= DEDUPE_CACHE_TTL_SECS
         });
     }
-}
-
-fn show_system_alert(alert: &Alert) {
-    let title = format!("{} - {}", alert.source, alert.title);
-    let body = alert.body.clone();
-    std::thread::spawn(move || {
-        if let Err(error) = notify_rust::Notification::new()
-            .appname("Flowsurface")
-            .summary(&title)
-            .body(&body)
-            .show()
-        {
-            log::warn!("Failed to show system notification: {error}");
-        }
-    });
 }
 
 fn dedupe_window_for(toast: &Toast, error_backoff_level: u8) -> Duration {

@@ -1,17 +1,12 @@
 use exchange::{TickMultiplier, TickerInfo, Timeframe};
 use serde::{Deserialize, Serialize};
 
-use crate::chart::{comparison, heatmap, kline};
-use crate::panel::{ladder, timeandsales};
+use crate::chart::heatmap;
+use crate::panel::{ladder, timesales};
 use crate::stream::PersistStreamKind;
 use crate::util::ok_or_default;
 
-use crate::chart::{
-    Basis, ViewConfig,
-    heatmap::HeatmapStudy,
-    indicator::{HeatmapIndicator, KlineIndicator},
-    kline::KlineChartKind,
-};
+use crate::chart::Basis;
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 pub enum Axis {
@@ -33,54 +28,30 @@ pub enum Pane {
     },
     AiAnalysis,
     AiAnalysisPanel {
-        #[serde(deserialize_with = "ok_or_default", default)]
+        #[serde(default)]
         link_group: Option<LinkGroup>,
     },
     Trading,
     TradingPanel {
         #[serde(default)]
         config: crate::config::trading::TradingConfig,
-        #[serde(deserialize_with = "ok_or_default", default)]
-        link_group: Option<LinkGroup>,
-    },
-    HeatmapChart {
-        layout: ViewConfig,
-        #[serde(deserialize_with = "ok_or_default", default)]
-        studies: Vec<HeatmapStudy>,
-        #[serde(deserialize_with = "ok_or_default", default)]
-        stream_type: Vec<PersistStreamKind>,
-        #[serde(deserialize_with = "ok_or_default")]
-        settings: Settings,
-        #[serde(deserialize_with = "ok_or_default", default)]
-        indicators: Vec<HeatmapIndicator>,
-        #[serde(deserialize_with = "ok_or_default", default)]
+        #[serde(default)]
         link_group: Option<LinkGroup>,
     },
     ShaderHeatmap {
         #[serde(deserialize_with = "ok_or_default", default)]
-        studies: Vec<HeatmapStudy>,
+        indicators: heatmap::indicators::HeatmapIndicatorConfig,
         #[serde(deserialize_with = "ok_or_default", default)]
         stream_type: Vec<PersistStreamKind>,
         #[serde(deserialize_with = "ok_or_default")]
         settings: Settings,
-        #[serde(deserialize_with = "ok_or_default", default)]
-        indicators: Vec<HeatmapIndicator>,
         #[serde(deserialize_with = "ok_or_default", default)]
         link_group: Option<LinkGroup>,
     },
     KlineChart {
-        layout: ViewConfig,
-        kind: KlineChartKind,
+        #[serde(default)]
+        layout: Option<Box<crate::chart::kline::Config>>,
         #[serde(deserialize_with = "ok_or_default", default)]
-        stream_type: Vec<PersistStreamKind>,
-        #[serde(deserialize_with = "ok_or_default")]
-        settings: Settings,
-        #[serde(deserialize_with = "ok_or_default", default)]
-        indicators: Vec<KlineIndicator>,
-        #[serde(deserialize_with = "ok_or_default", default)]
-        link_group: Option<LinkGroup>,
-    },
-    ComparisonChart {
         stream_type: Vec<PersistStreamKind>,
         #[serde(deserialize_with = "ok_or_default")]
         settings: Settings,
@@ -104,6 +75,87 @@ pub enum Pane {
 impl Default for Pane {
     fn default() -> Self {
         Pane::Starter { link_group: None }
+    }
+}
+
+pub(crate) fn migrate_legacy_pane(value: &mut serde_json::Value) -> Result<(), serde_json::Error> {
+    if let Some(split) = value.get_mut("Split") {
+        for side in ["a", "b"] {
+            if let Some(child) = split.get_mut(side) {
+                migrate_legacy_pane(child)?;
+            }
+        }
+        return Ok(());
+    }
+    let Some(chart) = value.get_mut("KlineChart") else { return Ok(()); };
+    if chart.get("kind").is_none() && chart.get("indicators").is_none() {
+        return Ok(());
+    }
+    let indicators = chart.get("indicators").and_then(serde_json::Value::as_array)
+        .map(|values| values.iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let visual = chart.pointer("/settings/visual_config/Kline").cloned().unwrap_or_else(|| serde_json::json!({}));
+    let mut config = crate::chart::kline::pro::migrate_legacy_chart(visual, &indicators)?;
+    if let Some(splits) = chart.pointer("/layout/splits") {
+        config.settings.splits = serde_json::from_value(splits.clone())?;
+    }
+    if let Some(footprint) = chart.pointer("/kind/Footprint") {
+        config.settings.options.trade_data_requested = true;
+        config.settings.options.footprint.visible = true;
+        if let Some(clusters) = footprint.get("clusters") {
+            config.settings.options.footprint.cluster_kind = serde_json::from_value(clusters.clone())?;
+        }
+        if let Some(scaling) = footprint.get("scaling") {
+            config.settings.options.footprint.cluster_scaling = serde_json::from_value(scaling.clone())?;
+        }
+    }
+    chart["layout"] = serde_json::to_value(config)?;
+    if let Some(settings) = chart.get_mut("settings").and_then(serde_json::Value::as_object_mut) {
+        settings.remove("visual_config");
+    }
+    if let Some(chart) = chart.as_object_mut() {
+        chart.remove("kind");
+        chart.remove("indicators");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod pro_tests {
+    use super::*;
+
+    #[test]
+    fn panel_configs_and_link_groups_round_trip() {
+        for pane in [
+            Pane::AiAnalysisPanel { link_group: Some(LinkGroup::C) },
+            Pane::TradingPanel { config: Default::default(), link_group: Some(LinkGroup::H) },
+            Pane::AiAnalysis,
+            Pane::Trading,
+        ] {
+            let value = serde_json::to_value(&pane).unwrap();
+            let decoded: Pane = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn legacy_footprint_preserves_group_basis_and_indicators() {
+        let mut pane = serde_json::json!({"KlineChart": {
+            "layout": {"splits": [0.8], "autoscale": "CenterLatest"},
+            "kind": {"Footprint": {"clusters": "BidAsk", "scaling": "VisibleRange", "studies": []}},
+            "indicators": ["Volume", "Ema"],
+            "settings": {"selected_basis": {"Time": "M5"}, "visual_config": {"Kline": {}}},
+            "stream_type": [], "link_group": "C"
+        }});
+        migrate_legacy_pane(&mut pane).unwrap();
+        let decoded: Pane = serde_json::from_value(pane.clone()).unwrap();
+        let Pane::KlineChart { layout: Some(config), link_group, .. } = decoded else { panic!("missing migrated chart") };
+        assert_eq!(link_group, Some(LinkGroup::C));
+        assert!(config.settings.options.footprint.visible);
+        assert_eq!(config.settings.splits, vec![0.8]);
+        let once = pane.clone();
+        migrate_legacy_pane(&mut pane).unwrap();
+        assert_eq!(pane, once);
     }
 }
 
@@ -163,10 +215,8 @@ impl std::fmt::Display for LinkGroup {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum VisualConfig {
     Heatmap(heatmap::Config),
-    TimeAndSales(timeandsales::Config),
-    Kline(kline::Config),
+    TimeAndSales(timesales::Config),
     Ladder(ladder::Config),
-    Comparison(comparison::Config),
 }
 
 impl VisualConfig {
@@ -177,16 +227,9 @@ impl VisualConfig {
         }
     }
 
-    pub fn time_and_sales(&self) -> Option<timeandsales::Config> {
+    pub fn time_and_sales(&self) -> Option<timesales::Config> {
         match self {
             Self::TimeAndSales(cfg) => Some(*cfg),
-            _ => None,
-        }
-    }
-
-    pub fn kline(&self) -> Option<kline::Config> {
-        match self {
-            Self::Kline(cfg) => Some(cfg.clone()),
             _ => None,
         }
     }
@@ -197,13 +240,6 @@ impl VisualConfig {
             _ => None,
         }
     }
-
-    pub fn comparison(&self) -> Option<comparison::Config> {
-        match self {
-            Self::Comparison(cfg) => Some(cfg.clone()),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -211,25 +247,19 @@ pub enum ContentKind {
     Starter,
     AiAnalysis,
     Trading,
-    HeatmapChart,
     ShaderHeatmap,
-    FootprintChart,
     CandlestickChart,
-    ComparisonChart,
     TimeAndSales,
     Ladder,
 }
 
 impl ContentKind {
-    pub const ALL: [ContentKind; 10] = [
+    pub const ALL: [ContentKind; 7] = [
         ContentKind::Starter,
         ContentKind::AiAnalysis,
         ContentKind::Trading,
-        ContentKind::HeatmapChart,
         ContentKind::ShaderHeatmap,
-        ContentKind::FootprintChart,
         ContentKind::CandlestickChart,
-        ContentKind::ComparisonChart,
         ContentKind::TimeAndSales,
         ContentKind::Ladder,
     ];
@@ -241,11 +271,8 @@ impl std::fmt::Display for ContentKind {
             ContentKind::Starter => "Starter Pane",
             ContentKind::AiAnalysis => "AI Analysis",
             ContentKind::Trading => "Trading",
-            ContentKind::HeatmapChart => "Heatmap Chart (Legacy)",
             ContentKind::ShaderHeatmap => "Heatmap Chart",
-            ContentKind::FootprintChart => "Footprint Chart",
             ContentKind::CandlestickChart => "Candlestick Chart",
-            ContentKind::ComparisonChart => "Comparison Chart",
             ContentKind::TimeAndSales => "Time&Sales",
             ContentKind::Ladder => "DOM/Ladder",
         };
@@ -280,18 +307,13 @@ impl PaneSetup {
 
         let basis =
             match content_kind {
-                ContentKind::HeatmapChart | ContentKind::ShaderHeatmap => {
-                    let current = current_basis.and_then(|b| match b {
-                        Basis::Time(tf) if exchange.supports_heatmap_timeframe(tf) => Some(b),
-                        _ => None,
-                    });
-
-                    Some(current.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))))
-                }
                 ContentKind::Ladder => Some(
                     current_basis.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))),
                 ),
-                ContentKind::FootprintChart => {
+                ContentKind::ShaderHeatmap => Some(
+                    current_basis.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))),
+                ),
+                ContentKind::CandlestickChart => {
                     let current = current_basis.and_then(|b| match b {
                         Basis::Time(tf) if exchange.supports_kline_timeframe(tf) => Some(b),
                         Basis::Tick(_) => Some(b),
@@ -302,24 +324,11 @@ impl PaneSetup {
                         Basis::default_kline_time(Some(base_ticker), Timeframe::M5)
                     }))
                 }
-                ContentKind::CandlestickChart | ContentKind::ComparisonChart => {
-                    let current = current_basis.and_then(|b| match b {
-                        Basis::Time(tf) if exchange.supports_kline_timeframe(tf) => Some(b),
-                        _ => None,
-                    });
-
-                    Some(current.unwrap_or_else(|| {
-                        Basis::default_kline_time(Some(base_ticker), Timeframe::M15)
-                    }))
-                }
-                ContentKind::Starter
-                | ContentKind::AiAnalysis
-                | ContentKind::Trading
-                | ContentKind::TimeAndSales => None,
+                ContentKind::Starter | ContentKind::AiAnalysis | ContentKind::Trading | ContentKind::TimeAndSales => None,
             };
 
         let tick_multiplier = match content_kind {
-            ContentKind::HeatmapChart | ContentKind::Ladder | ContentKind::ShaderHeatmap => {
+            ContentKind::Ladder | ContentKind::ShaderHeatmap => {
                 let tm = if !is_client_aggr && prev_is_client_aggr {
                     TickMultiplier(10)
                 } else if let Some(tm) = current_tick_multiplier {
@@ -331,15 +340,9 @@ impl PaneSetup {
                 };
                 Some(tm)
             }
-            ContentKind::FootprintChart => {
-                Some(current_tick_multiplier.unwrap_or(TickMultiplier(50)))
+            ContentKind::CandlestickChart | ContentKind::TimeAndSales | ContentKind::AiAnalysis | ContentKind::Trading | ContentKind::Starter => {
+                current_tick_multiplier
             }
-            ContentKind::CandlestickChart
-            | ContentKind::ComparisonChart
-            | ContentKind::TimeAndSales
-            | ContentKind::AiAnalysis
-            | ContentKind::Trading
-            | ContentKind::Starter => current_tick_multiplier,
         };
 
         let price_step = match tick_multiplier {
@@ -350,7 +353,7 @@ impl PaneSetup {
         let depth_aggr = exchange.stream_ticksize(tick_multiplier, TickMultiplier(50));
 
         let push_freq = match content_kind {
-            ContentKind::HeatmapChart if exchange.is_custom_push_freq() => match basis {
+            ContentKind::ShaderHeatmap if exchange.is_custom_push_freq() => match basis {
                 Some(Basis::Time(tf)) if exchange.supports_heatmap_timeframe(tf) => {
                     exchange::PushFrequency::Custom(tf)
                 }
@@ -367,24 +370,5 @@ impl PaneSetup {
             depth_aggr,
             push_freq,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ai_panel_link_group_round_trips() {
-        let pane = Pane::AiAnalysisPanel {
-            link_group: Some(LinkGroup::C),
-        };
-        let decoded: Pane = serde_json::from_str(&serde_json::to_string(&pane).unwrap()).unwrap();
-        assert!(matches!(
-            decoded,
-            Pane::AiAnalysisPanel {
-                link_group: Some(LinkGroup::C)
-            }
-        ));
     }
 }

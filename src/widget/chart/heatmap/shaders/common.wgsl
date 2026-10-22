@@ -1,6 +1,6 @@
 struct Camera {
     a: vec4<f32>, // (scale_x, scale_y, center_x, center_y)
-    b: vec4<f32>, // (viewport_w, viewport_h, _, _)
+    b: vec4<f32>, // (viewport_w, viewport_h, pixel_ratio, screen_origin_x)
 };
 @group(0) @binding(0)
 var<uniform> camera: Camera;
@@ -40,13 +40,6 @@ fn screen_to_world(screen_xy: vec2<f32>) -> vec2<f32> {
         center.x + (view_px.x / max(scale.x, 1e-6)),
         center.y - (view_px.y / max(scale.y, 1e-6)),
     );
-}
-
-fn snap_ndc_x_to_pixel_edge(ndc_x: f32) -> f32 {
-    let viewport_x = max(camera.b.x, 1.0);
-    let screen_x = (ndc_x * 0.5 + 0.5) * viewport_x;
-    let snapped_x = round(screen_x);
-    return ((snapped_x / viewport_x) - 0.5) * 2.0;
 }
 
 fn bucket_rel_to_world_x(bucket_rel: f32, now_bucket_rel_f: f32, col_w: f32) -> f32 {

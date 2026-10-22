@@ -82,6 +82,26 @@ impl ResolvedStream {
         }
     }
 
+    pub fn canonicalize_kline_trade_streams(&mut self) -> bool {
+        let ResolvedStream::Ready(streams) = self else {
+            return false;
+        };
+        let Some(base_ticker) = streams.iter().find_map(|stream| match stream {
+            StreamKind::Kline { ticker_info, .. } => Some(*ticker_info),
+            _ => None,
+        }) else {
+            return false;
+        };
+        let original_len = streams.len();
+        streams.retain(|stream| {
+            !matches!(
+                stream,
+                StreamKind::Trades { ticker_info } if *ticker_info != base_ticker
+            )
+        });
+        streams.len() != original_len
+    }
+
     pub fn find_ready_map<F, T>(&self, f: F) -> Option<T>
     where
         F: FnMut(&StreamKind) -> Option<T>,

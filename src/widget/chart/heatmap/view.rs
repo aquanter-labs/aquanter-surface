@@ -7,6 +7,34 @@ use exchange::UnixMs;
 use exchange::adapter::MarketKind;
 use exchange::unit::{Price, PriceStep};
 
+#[derive(Clone, Copy)]
+pub struct TimeView<'a> {
+    pub camera: &'a Camera,
+    pub latest_bucket: i64,
+    pub interval_ms: u64,
+    pub column_world: f32,
+    pub phase: f32,
+}
+
+impl TimeView<'_> {
+    pub fn screen_x(self, time: UnixMs, width: f32) -> f32 {
+        let bucket = (time.as_u64() / self.interval_ms.max(1)) as i64;
+        self.camera.world_to_screen_x(
+            ((bucket - self.latest_bucket) as f32 - self.phase) * self.column_world,
+            width,
+        )
+    }
+
+    pub fn time_at_x(self, x: f32, width: f32) -> UnixMs {
+        let world = self.camera.screen_to_world_x(x, width);
+        let relative = (world / self.column_world.max(f32::EPSILON) + self.phase).round() as i64;
+        UnixMs::new(
+            (self.latest_bucket.saturating_add(relative).max(0) as u64)
+                .saturating_mul(self.interval_ms),
+        )
+    }
+}
+
 use iced::time::Instant;
 
 /// Throttle depth denom recompute while interacting (keeps zoom smooth)
@@ -593,6 +621,7 @@ pub struct ViewWindow {
 
     // Camera scale (world->px)
     pub cam_scale: f32,
+    pub column_width_world: f32,
 
     // Overlays
     pub volume_profile_max_width: f32,
@@ -665,8 +694,8 @@ impl ViewWindow {
         let min_steps = (-(y_max) / row_h).floor() as i64;
         let max_steps = (-(y_min) / row_h).ceil() as i64;
 
-        let lowest = input.base_price.add_steps(min_steps, input.step);
-        let highest = input.base_price.add_steps(max_steps, input.step);
+        let lowest = input.base_price.checked_add_steps(min_steps, input.step)?;
+        let highest = input.base_price.checked_add_steps(max_steps, input.step)?;
 
         // y-downsampling
         let px_per_step = row_h * cam_scale;
@@ -685,6 +714,7 @@ impl ViewWindow {
             highest,
             row_h,
             cam_scale,
+            column_width_world: col_w_world,
             volume_profile_max_width: overlay.volume_profile_max_width_world,
             depth_profile_max_width: overlay.depth_profile_max_width_world,
             volume_area_max_height: overlay.volume_strip_height_world,
@@ -702,7 +732,7 @@ impl ViewWindow {
         step_units: i64,
         steps_per: i64,
     ) -> i64 {
-        let delta_units = price.units - anchor_price.units;
+        let delta_units = price.saturating_sub(anchor_price).units;
 
         let dy_steps: i64 = delta_units.div_euclid(step_units);
         dy_steps / steps_per

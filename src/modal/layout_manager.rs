@@ -1,11 +1,11 @@
+use crate::connector::client::DataSources;
 use crate::layout::{Layout, LayoutId};
-use crate::screen::dashboard::Dashboard;
+use crate::screen::dashboard::{self, Dashboard};
 use crate::style::{Icon, icon_text};
 use crate::widget::column_drag::{self, DragEvent};
 use crate::widget::dragger_row;
 use crate::{style, tooltip};
 
-use exchange::adapter::UniqueStreams;
 use iced::widget::{
     button, center, column, container, row, scrollable, space, text, text_input,
     tooltip::Position as TooltipPosition,
@@ -46,17 +46,24 @@ pub struct LayoutManager {
 }
 
 impl LayoutManager {
-    pub fn new() -> Self {
-        let default_layout = LayoutId {
+    fn default_layout() -> (LayoutId, Layout) {
+        let id = LayoutId {
             unique: Uuid::new_v4(),
             name: "Layout 1".into(),
         };
+        let layout = Layout {
+            id: id.clone(),
+            dashboard: Dashboard::default(),
+        };
+
+        (id, layout)
+    }
+
+    pub fn new() -> Self {
+        let (default_layout, layout) = Self::default_layout();
 
         Self {
-            layouts: vec![Layout {
-                id: default_layout.clone(),
-                dashboard: Dashboard::default(),
-            }],
+            layouts: vec![layout],
             active_layout_id: Some(default_layout.unique),
             edit_mode: Editing::None,
         }
@@ -68,6 +75,17 @@ impl LayoutManager {
             active_layout_id: active_layout.map(|l| l.unique),
             edit_mode: Editing::None,
         }
+    }
+
+    pub fn ensure_layout(&mut self) {
+        if !self.layouts.is_empty() {
+            return;
+        }
+
+        let (default_layout, layout) = Self::default_layout();
+        self.layouts.push(layout);
+        self.active_layout_id = Some(default_layout.unique);
+        self.edit_mode = Editing::None;
     }
 
     pub fn get(&self, unique: Uuid) -> Option<&Layout> {
@@ -119,20 +137,24 @@ impl LayoutManager {
         final_name.chars().take(20).collect()
     }
 
-    pub fn iter_dashboards_mut(&mut self) -> impl Iterator<Item = &mut Dashboard> {
-        self.layouts.iter_mut().map(|entry| &mut entry.dashboard)
-    }
-
-    pub fn combined_streams(&self) -> UniqueStreams {
-        UniqueStreams::from(
-            self.layouts
-                .iter()
-                .flat_map(|layout| layout.dashboard.streams.iter()),
-        )
-    }
-
     pub fn mut_dashboard(&mut self, id: Uuid) -> Option<&mut Dashboard> {
         self.get_mut(id).map(|e| &mut e.dashboard)
+    }
+
+    pub fn update_dashboard(
+        &mut self,
+        message: dashboard::Message,
+        main_window: &crate::window::Window,
+        layout_id: &Uuid,
+        data_sources: &DataSources,
+    ) -> Option<(iced::Task<dashboard::Message>, Option<dashboard::Event>)> {
+        let layout_index = self
+            .layouts
+            .iter()
+            .position(|layout| layout.id.unique == *layout_id)?;
+        let dashboard = &mut self.layouts[layout_index].dashboard;
+
+        Some(dashboard.update(message, main_window, data_sources))
     }
 
     pub fn park_inactive_layouts(&mut self, active_layout_id: Uuid, main_window: window::Id) {
@@ -355,58 +377,6 @@ impl LayoutManager {
             ),
         )
         .into()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::layout::{Layout, LayoutId};
-    use exchange::adapter::{Exchange, StreamKind};
-    use exchange::{Ticker, TickerInfo};
-
-    #[test]
-    fn combines_and_deduplicates_streams_from_all_layouts() {
-        let btc = TickerInfo::new(
-            Ticker::new("BTCUSDT", Exchange::BinanceLinear),
-            0.1,
-            0.001,
-            None,
-        );
-        let eth = TickerInfo::new(
-            Ticker::new("ETHUSDT", Exchange::BinanceLinear),
-            0.01,
-            0.001,
-            None,
-        );
-        let btc_stream = StreamKind::Trades { ticker_info: btc };
-        let eth_stream = StreamKind::Trades { ticker_info: eth };
-        let mut first = Dashboard::default();
-        first.streams.add(btc_stream);
-        let mut second = Dashboard::default();
-        second.streams.add(btc_stream);
-        second.streams.add(eth_stream);
-        let manager = LayoutManager::from_config(
-            vec![
-                Layout {
-                    id: LayoutId {
-                        unique: Uuid::new_v4(),
-                        name: "First".into(),
-                    },
-                    dashboard: first,
-                },
-                Layout {
-                    id: LayoutId {
-                        unique: Uuid::new_v4(),
-                        name: "Second".into(),
-                    },
-                    dashboard: second,
-                },
-            ],
-            None,
-        );
-
-        assert_eq!(manager.combined_streams().trade_streams(None).len(), 2);
     }
 }
 

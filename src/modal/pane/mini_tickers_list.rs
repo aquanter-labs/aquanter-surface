@@ -1,7 +1,7 @@
 use exchange::TickerInfo;
 use iced::Element;
 
-use crate::dashboard::tickers_table::TickersTable;
+use crate::screen::sidebar::tickers_table::TickersTable;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RowSelection {
@@ -59,7 +59,7 @@ impl MiniPanel {
     pub fn view<'a>(
         &'a self,
         table: &'a TickersTable,
-        selected_tickers: Option<&'a [TickerInfo]>,
+        selected_tickers: Option<impl Iterator<Item = TickerInfo> + Clone + 'a>,
         base_ticker: Option<TickerInfo>,
     ) -> Element<'a, Message> {
         iced::widget::responsive(move |bounds| {
@@ -71,7 +71,7 @@ impl MiniPanel {
                 Message::RowSelected,
                 Message::SearchChanged,
                 Message::Scrolled,
-                selected_tickers,
+                selected_tickers.clone(),
                 base_ticker,
             )
         })

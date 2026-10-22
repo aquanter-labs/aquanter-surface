@@ -1,0 +1,12 @@
+language(1)
+indicator("Open Interest Pro", id = "pro.pro-open-interest", sourceable = true, max_bars_back = 2, bases = ["time"])
+format(precision = "base_ticker_min_qty", axis_labels = "abbreviated")
+candles = input.bool(false, "Candles")
+line_color = input.color(color.rgb(110, 161, 184), "Line color")
+up_color = input.color(color.rgb(89, 173, 128), "Up color")
+down_color = input.color(color.rgb(194, 102, 107), "Down color")
+value = open_interest
+opening = select(na(open_interest[1]), open_interest, open_interest[1])
+plot(select(candles, na, value), id = "value", title = "Open Interest", color_slot = "main", color = line_color, width = 1.5)
+plotcandle(select(candles, opening, na), math.max(opening, value), math.min(opening, value), value, id = "candles", color_slot = "main", color = select(value >= opening, up_color, down_color))
+style("main", title = "Open Interest")

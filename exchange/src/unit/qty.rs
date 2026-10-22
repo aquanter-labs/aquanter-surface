@@ -20,7 +20,7 @@ pub enum SizeUnit {
     Quote = 1,
 }
 
-static SIZE_CALC_UNIT: AtomicU8 = AtomicU8::new(SizeUnit::Base as u8);
+static SIZE_CALC_UNIT: AtomicU8 = AtomicU8::new(SizeUnit::Quote as u8);
 
 pub fn set_preferred_currency(v: SizeUnit) {
     SIZE_CALC_UNIT.store(v as u8, Ordering::Relaxed);
@@ -30,7 +30,7 @@ pub fn volume_size_unit() -> SizeUnit {
     match SIZE_CALC_UNIT.load(Ordering::Relaxed) {
         0 => SizeUnit::Base,
         1 => SizeUnit::Quote,
-        _ => SizeUnit::Base,
+        _ => SizeUnit::default(),
     }
 }
 
@@ -95,7 +95,7 @@ impl Qty {
         Self::scale_or_one(self.to_f64())
     }
 
-    fn min_qty_units(min_qty: MinQtySize) -> i64 {
+    pub fn min_qty_units(min_qty: MinQtySize) -> i64 {
         let exp = Self::QTY_SCALE + (min_qty.power as i32);
         assert!(exp >= 0, "QTY_SCALE must be >= -min_qty.power");
         10i64
@@ -109,14 +109,9 @@ impl Qty {
             return self;
         }
 
-        let half = unit / 2;
-        let rounded = if self.units >= 0 {
-            ((self.units + half).div_euclid(unit)) * unit
-        } else {
-            ((self.units - half).div_euclid(unit)) * unit
-        };
-
-        Self { units: rounded }
+        Self {
+            units: Self::round_units_half_away(self.units, unit),
+        }
     }
 
     pub fn to_lots(self, min_qty: MinQtySize) -> i64 {
@@ -125,11 +120,27 @@ impl Qty {
             return self.units;
         }
 
-        let half = unit / 2;
-        if self.units >= 0 {
-            (self.units + half).div_euclid(unit)
+        Self::round_units_half_away(self.units, unit).div_euclid(unit)
+    }
+
+    fn round_units_half_away(units: i64, unit: i64) -> i64 {
+        let magnitude = units.unsigned_abs();
+        let half = (unit / 2) as u64;
+        let rounded_magnitude =
+            (magnitude.saturating_add(half) / unit as u64).saturating_mul(unit as u64);
+        let limit = if units >= 0 {
+            i64::MAX as u64
         } else {
-            (self.units - half).div_euclid(unit)
+            i64::MAX as u64 + 1
+        };
+        let rounded_magnitude = rounded_magnitude.min(limit / unit as u64 * unit as u64);
+
+        if units >= 0 {
+            rounded_magnitude as i64
+        } else if rounded_magnitude == i64::MAX as u64 + 1 {
+            i64::MIN
+        } else {
+            -(rounded_magnitude as i64)
         }
     }
 

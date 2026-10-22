@@ -30,8 +30,7 @@ const TICK_MULTIPLIER_MAX: u16 = 2000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub enum ModifierKind {
-    Candlestick(Basis),
-    Footprint(Basis, TickMultiplier),
+    Candlestick(Basis, TickMultiplier),
     Heatmap(Basis, TickMultiplier),
     Orderbook(Basis, TickMultiplier),
     Comparison(Basis),
@@ -182,8 +181,7 @@ impl Modifier {
     pub fn new(kind: ModifierKind) -> Self {
         let tab = SelectedTab::from(&kind);
         let selected_timeframe = match kind {
-            ModifierKind::Candlestick(Basis::Time(tf))
-            | ModifierKind::Footprint(Basis::Time(tf), _)
+            ModifierKind::Candlestick(Basis::Time(tf), _)
             | ModifierKind::Comparison(Basis::Time(tf))
                 if tf.is_custom() =>
             {
@@ -239,12 +237,11 @@ impl Modifier {
 
     pub fn update_kind_with_basis(&mut self, basis: Basis) {
         match self.kind {
-            ModifierKind::Candlestick(_) => self.kind = ModifierKind::Candlestick(basis),
+            ModifierKind::Candlestick(_, ticksize) => {
+                self.kind = ModifierKind::Candlestick(basis, ticksize);
+            }
             ModifierKind::Comparison(_) => {
                 self.kind = ModifierKind::Comparison(basis);
-            }
-            ModifierKind::Footprint(_, ticksize) => {
-                self.kind = ModifierKind::Footprint(basis, ticksize);
             }
             ModifierKind::Heatmap(_, ticksize) => {
                 self.kind = ModifierKind::Heatmap(basis, ticksize);
@@ -257,8 +254,8 @@ impl Modifier {
 
     pub fn update_kind_with_multiplier(&mut self, ticksize: TickMultiplier) {
         match self.kind {
-            ModifierKind::Footprint(basis, _) => {
-                self.kind = ModifierKind::Footprint(basis, ticksize);
+            ModifierKind::Candlestick(basis, _) => {
+                self.kind = ModifierKind::Candlestick(basis, ticksize);
             }
             ModifierKind::Heatmap(basis, _) => self.kind = ModifierKind::Heatmap(basis, ticksize),
             ModifierKind::Orderbook(basis, _) => {
@@ -315,6 +312,9 @@ impl Modifier {
                         *parsed_input = None;
                         *is_input_valid = true;
                     };
+                }
+                if let Some(min_tick) = self.min_ticksize {
+                    self.price_step = Some(new_ticksize.multiply_step(PriceStep::from(min_tick)));
                 }
                 Some(Action::TicksizeSelected(new_ticksize))
             }
@@ -395,10 +395,8 @@ impl Modifier {
         let kind = self.kind;
 
         let (selected_basis, selected_ticksize) = match kind {
-            ModifierKind::Candlestick(basis) | ModifierKind::Comparison(basis) => {
-                (Some(basis), None)
-            }
-            ModifierKind::Footprint(basis, ticksize)
+            ModifierKind::Comparison(basis) => (Some(basis), None),
+            ModifierKind::Candlestick(basis, ticksize)
             | ModifierKind::Heatmap(basis, ticksize)
             | ModifierKind::Orderbook(basis, ticksize) => (Some(basis), Some(ticksize)),
         };
@@ -423,7 +421,7 @@ impl Modifier {
                     column![].padding(4).spacing(8).align_x(Horizontal::Center);
 
                 let allows_tick_basis = match kind {
-                    ModifierKind::Candlestick(_) | ModifierKind::Footprint(_, _) => true,
+                    ModifierKind::Candlestick(_, _) => true,
                     ModifierKind::Heatmap(_, _)
                     | ModifierKind::Orderbook(_, _)
                     | ModifierKind::Comparison(_) => false,
@@ -541,11 +539,12 @@ impl Modifier {
 
                             if matches!(
                                 kind,
-                                ModifierKind::Candlestick(_)
-                                    | ModifierKind::Footprint(_, _)
-                                    | ModifierKind::Comparison(_)
+                                ModifierKind::Candlestick(_, _) | ModifierKind::Comparison(_)
                             ) {
                                 let custom_timeframe = self.parsed_timeframe.filter(|timeframe| {
+                                    if !self.timeframe_input_is_valid {
+                                        return false;
+                                    }
                                     let supported = |ticker_info: &exchange::TickerInfo| {
                                         ticker_info.exchange().supports_kline_timeframe(*timeframe)
                                     };
@@ -647,7 +646,7 @@ impl Modifier {
                         .push(rule::horizontal(1).style(style::split_ruler));
 
                     let allows_custom_tsizes = exchange.is_depth_client_aggr()
-                        || matches!(kind, ModifierKind::Footprint(_, _));
+                        || matches!(kind, ModifierKind::Candlestick(_, _));
 
                     let allowed_tm = if allows_custom_tsizes {
                         TickMultiplier::ALL.to_vec()
@@ -727,9 +726,9 @@ fn timeframe_grid_config(
     stream_pair: Option<&StreamPairKind>,
 ) -> Option<(Vec<Timeframe>, usize)> {
     match kind {
-        ModifierKind::Candlestick(_)
-        | ModifierKind::Footprint(_, _)
-        | ModifierKind::Comparison(_) => Some((supported_kline_timeframes(stream_pair), 3)),
+        ModifierKind::Candlestick(_, _) | ModifierKind::Comparison(_) => {
+            Some((supported_kline_timeframes(stream_pair), 3))
+        }
         ModifierKind::Heatmap(_, _) => Some((supported_heatmap_timeframes(stream_pair)?, 2)),
         ModifierKind::Orderbook(_, _) => None,
     }
@@ -839,8 +838,7 @@ fn supported_heatmap_timeframes(stream_pair: Option<&StreamPairKind>) -> Option<
 impl From<&ModifierKind> for SelectedTab {
     fn from(kind: &ModifierKind) -> Self {
         match kind {
-            ModifierKind::Candlestick(basis)
-            | ModifierKind::Footprint(basis, _)
+            ModifierKind::Candlestick(basis, _)
             | ModifierKind::Heatmap(basis, _)
             | ModifierKind::Orderbook(basis, _)
             | ModifierKind::Comparison(basis) => match basis {
@@ -862,6 +860,24 @@ impl From<&ModifierKind> for SelectedTab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_timeframe_input_validates_minutes_and_restores_selection() {
+        let mut modifier = Modifier::new(ModifierKind::Candlestick(
+            Basis::Time(Timeframe::Custom(10)),
+            TickMultiplier(1),
+        ));
+        assert_eq!(modifier.timeframe_input.to_display_string(), "10");
+        assert_eq!(modifier.parsed_timeframe, Some(Timeframe::Custom(10)));
+        for input in ["0", "1", "1441", "65535"] {
+            modifier.update(Message::TimeframeInputChanged(input.into()));
+            assert!(!modifier.timeframe_input_is_valid);
+        }
+        for input in ["2", "10", "1440", ""] {
+            modifier.update(Message::TimeframeInputChanged(input.into()));
+            assert!(modifier.timeframe_input_is_valid);
+        }
+    }
 
     #[test]
     fn ten_minutes_is_a_common_timeframe_between_five_and_fifteen() {

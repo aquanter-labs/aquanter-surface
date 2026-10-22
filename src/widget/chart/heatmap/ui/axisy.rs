@@ -1,12 +1,14 @@
-use super::{AxisInteraction, Message};
-use crate::widget::chart::heatmap::{scene::camera::Camera, ui::AXIS_TEXT_SIZE};
+use super::AxisInteraction;
+use crate::widget::chart::Y_AXIS_LABEL_LEFT_INSET;
+use crate::widget::chart::heatmap::{Message, scene::camera::Camera, ui::AXIS_TEXT_SIZE};
+use data::chart::ticks::y::{PriceAxis, TickValue};
 use exchange::unit::{MinTicksize, Price, PriceStep};
 use iced::{Rectangle, Renderer, Theme, widget::canvas};
 use iced_core::mouse;
 
 /// Rough vertical spacing (in screen pixels) between Y-axis labels.
 const LABEL_TARGET_PX: f32 = 48.0;
-const DRAG_ZOOM_SENS: f32 = 0.005;
+const DRAG_ZOOM_SENS: f32 = 0.004;
 
 pub struct AxisYLabelCanvas<'a> {
     pub cache: &'a iced::widget::canvas::Cache,
@@ -36,42 +38,6 @@ impl LabelKind {
                 (*y_px - 0.5 * label_height, *y_px + 0.5 * label_height)
             }
         }
-    }
-}
-
-/// Checks if two ranges overlap.
-fn ranges_overlap(a: (f32, f32), b: (f32, f32)) -> bool {
-    a.1 >= b.0 && a.0 <= b.1
-}
-
-fn div_ceil_i64(value: i64, divisor: i64) -> i64 {
-    let q = value.div_euclid(divisor);
-    if value.rem_euclid(divisor) == 0 {
-        q
-    } else {
-        q.saturating_add(1)
-    }
-}
-
-fn major_step_for_range(
-    lowest_price: Price,
-    highest_price: Price,
-    labels_can_fit: i32,
-    step: PriceStep,
-) -> PriceStep {
-    let step_units = step.units.max(1);
-
-    let range_units = highest_price
-        .units
-        .abs_diff(lowest_price.units)
-        .max(step_units as u64);
-    let target_labels = labels_can_fit.max(2) as f32;
-    let raw_major = (range_units as f32) / target_labels;
-    let nice_major = crate::widget::chart::nice_step(raw_major);
-
-    let major_multiple = (nice_major / step_units as f32).ceil().max(1.0) as i64;
-    PriceStep {
-        units: step_units.saturating_mul(major_multiple),
     }
 }
 
@@ -107,22 +73,12 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
         match event {
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let p = cursor.position_over(bounds)?;
+                let click = mouse::Click::new(p, mouse::Button::Left, state.previous_click);
+                state.previous_click = Some(click);
 
-                // Double-click detection needs global cursor position + previous click state.
-                if let Some(global_pos) = cursor.position() {
-                    let new_click =
-                        mouse::Click::new(global_pos, mouse::Button::Left, state.previous_click);
-
-                    let is_double = new_click.kind() == mouse::click::Kind::Double;
-
-                    state.previous_click = Some(new_click);
-
-                    if is_double {
-                        state.interaction = AxisInteraction::None;
-                        return Some(canvas::Action::publish(Message::AxisYDoubleClicked));
-                    }
-                } else {
-                    state.previous_click = None;
+                if click.kind() == mouse::click::Kind::Double {
+                    state.interaction = AxisInteraction::None;
+                    return Some(canvas::Action::publish(Message::AxisYDoubleClicked));
                 }
 
                 state.interaction = AxisInteraction::Panning {
@@ -153,15 +109,9 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             }
             iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 let p = cursor.position_in(bounds)?;
-                let scroll_amount = match delta {
-                    mouse::ScrollDelta::Lines { y, .. } => *y * 0.1,
-                    mouse::ScrollDelta::Pixels { y, .. } => *y * 0.01,
-                };
-
-                let factor = (1.0 + scroll_amount).clamp(0.01, 100.0);
 
                 Some(canvas::Action::publish(Message::ScrolledAxisY {
-                    factor,
+                    factor: super::wheel_zoom_factor(*delta),
                     cursor_y: p.y,
                     viewport_h: bounds.height,
                 }))
@@ -198,6 +148,17 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             let step = PriceStep {
                 units: self.step.units.max(1),
             };
+            let price_at_step = |offset: i64| {
+                base_price
+                    .checked_add_steps(offset, step)
+                    .unwrap_or_else(|| {
+                        Price::from_units(if offset.is_negative() {
+                            i64::MIN
+                        } else {
+                            i64::MAX
+                        })
+                    })
+            };
 
             let step_at_top = super::step_center_pos_from_world_y(y_world_top, row_h);
             let step_at_bottom = super::step_center_pos_from_world_y(y_world_bottom, row_h);
@@ -205,16 +166,26 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             let lowest_step = step_at_top.min(step_at_bottom).floor() as i64;
             let highest_step = step_at_top.max(step_at_bottom).ceil() as i64;
 
-            let lowest_price = base_price.add_steps(lowest_step, step);
-            let highest_price = base_price.add_steps(highest_step, step);
+            let lowest_price = price_at_step(lowest_step);
+            let highest_price = price_at_step(highest_step);
 
             let labels_can_fit = (bounds.height / LABEL_TARGET_PX).floor() as i32;
-            let major_step =
-                major_step_for_range(lowest_price, highest_price, labels_can_fit, step);
-            let major_step_units = major_step.units.max(step.units);
 
-            let x = bounds.width / 2.0;
-            let cursor_label_padding = 6.0f32;
+            // Universal row-aligned price grid (same machinery as the kline
+            // chart); lives in `data::chart::ticks`. Fall back to a grid of
+            // exactly the row step when no coarser "nice" grid fits.
+            let axis = PriceAxis::new(step, Some(self.label_precision));
+            let mut ticks = axis.ticks(
+                lowest_price.to_f64(),
+                highest_price.to_f64(),
+                labels_can_fit,
+            );
+            if ticks.ticks.is_empty() {
+                ticks = axis.ticks_from_row(lowest_price.to_f64(), highest_price.to_f64());
+            }
+
+            let x = Y_AXIS_LABEL_LEFT_INSET;
+            let cursor_label_padding = 3.0f32;
             let cursor_label_height = AXIS_TEXT_SIZE + 2.0 * cursor_label_padding;
             let size_cursor_label = iced::Size {
                 width: bounds.width,
@@ -242,8 +213,8 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                             super::world_y_for_step_center(step_at_cursor, row_h);
                         let y_px = self.world_to_px_y(y_world_for_step, bounds);
 
-                        let price_at_cursor = base_price.add_steps(step_at_cursor, step);
-                        let label_at_cursor = price_at_cursor.to_string(self.label_precision);
+                        let price_at_cursor = price_at_step(step_at_cursor);
+                        let label_at_cursor = axis.format(price_at_cursor);
 
                         LabelKind::Cursor {
                             y_px,
@@ -257,21 +228,19 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             let y_world_base = super::world_y_for_step_center(base_step, row_h);
             let y_px_base = self.world_to_px_y(y_world_base, bounds);
 
-            let price_base = base_price.add_steps(base_step, step);
-            let label_base = price_base.to_string(self.label_precision);
+            let price_base = price_at_step(base_step);
+            let label_base = axis.format(price_base);
 
             let base_label = LabelKind::Base {
                 y_px: y_px_base,
                 label: label_base,
             };
 
-            // Tick labels (absolute price-domain majors, then projected to row grid)
-            let mut tick_units =
-                div_ceil_i64(lowest_price.units, major_step_units).saturating_mul(major_step_units);
-            let mut safety_counter = 0usize;
-            let tick_limit = highest_price.units.saturating_add(major_step_units / 2);
-
-            while tick_units <= tick_limit && safety_counter < 2_048 {
+            // Tick labels (absolute price-domain majors from the row grid)
+            for tick in ticks.ticks {
+                let TickValue::PriceUnits(tick_units) = tick.value else {
+                    continue;
+                };
                 let rel_units = tick_units.saturating_sub(base_price.units);
 
                 if rel_units % step.units == 0 {
@@ -280,18 +249,10 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                     let y_px = self.world_to_px_y(y_world, bounds);
 
                     if (0.0..=bounds.height).contains(&y_px) {
-                        let price = Price::from_units(tick_units);
-                        let label = price.to_string(self.label_precision);
+                        let label = axis.format_units(tick_units);
                         labels.push(LabelKind::Tick { y_px, label });
                     }
                 }
-
-                let next_tick = tick_units.saturating_add(major_step_units);
-                if next_tick == tick_units {
-                    break;
-                }
-                tick_units = next_tick;
-                safety_counter += 1;
             }
 
             // --- Render labels with overlap filtering ---
@@ -321,7 +282,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                         color: text_color,
                         size: AXIS_TEXT_SIZE.into(),
                         font: crate::style::AZERET_MONO,
-                        align_x: iced::Alignment::Center.into(),
+                        align_x: iced::Alignment::Start.into(),
                         align_y: iced::Alignment::Center.into(),
                         ..Default::default()
                     });
@@ -350,7 +311,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
                         color: palette.primary.strong.text,
                         size: AXIS_TEXT_SIZE.into(),
                         font: crate::style::AZERET_MONO,
-                        align_x: iced::Alignment::Center.into(),
+                        align_x: iced::Alignment::Start.into(),
                         align_y: iced::Alignment::Center.into(),
                         ..Default::default()
                     });
@@ -359,22 +320,22 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
 
             // Draw cursor label (highest priority)
             if let Some(LabelKind::Cursor { y_px, label }) = cursor_label_snapped {
-                let mut bg = palette.secondary.base.color;
-                bg = iced::Color { a: 1.0, ..bg };
+                let label_y = (y_px - 0.5 * size_cursor_label.height)
+                    .clamp(0.0, (bounds.height - size_cursor_label.height).max(0.0));
 
                 frame.fill_rectangle(
-                    iced::Point::new(0.0, y_px - 0.5 * size_cursor_label.height),
+                    iced::Point::new(0.0, label_y),
                     size_cursor_label,
-                    bg,
+                    palette.background.strong.color,
                 );
 
                 frame.fill_text(canvas::Text {
                     content: label,
-                    position: iced::Point::new(x, y_px),
-                    color: palette.secondary.base.text,
+                    position: iced::Point::new(x, label_y + 0.5 * size_cursor_label.height),
+                    color: palette.background.strong.text,
                     size: AXIS_TEXT_SIZE.into(),
                     font: crate::style::AZERET_MONO,
-                    align_x: iced::Alignment::Center.into(),
+                    align_x: iced::Alignment::Start.into(),
                     align_y: iced::Alignment::Center.into(),
                     ..Default::default()
                 });
@@ -399,4 +360,8 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             mouse::Interaction::default()
         }
     }
+}
+
+fn ranges_overlap(a: (f32, f32), b: (f32, f32)) -> bool {
+    a.1 >= b.0 && a.0 <= b.1
 }

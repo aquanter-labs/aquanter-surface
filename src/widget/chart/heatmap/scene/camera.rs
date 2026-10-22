@@ -1,4 +1,6 @@
 use crate::widget::chart::heatmap::scene::cell::{Cell, MIN_COL_W_WORLD, MIN_ROW_H_WORLD};
+use crate::window::PixelRatio;
+use iced::Rectangle;
 
 const MIN_CAMERA_SCALE: f32 = 1e1;
 const MAX_CAMERA_SCALE: f32 = 1e3;
@@ -6,8 +8,8 @@ const MAX_CAMERA_SCALE: f32 = 1e3;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
-    pub a: [f32; 4], // (scale, center.x, center.y, pad)
-    pub b: [f32; 4], // (viewport_w, viewport_h, pad, pad)
+    pub a: [f32; 4], // (scale_x, scale_y, center_x, center_y)
+    pub b: [f32; 4], // (viewport_w, viewport_h, pixel_ratio, screen_origin_x)
 }
 
 #[repr(C)]
@@ -54,17 +56,17 @@ impl Camera {
         row_height: f32,
         base_price: exchange::unit::Price,
         step: exchange::unit::PriceStep,
-    ) -> exchange::unit::Price {
+    ) -> Option<exchange::unit::Price> {
         let y = self.offset[1];
 
         if !row_height.is_finite() || row_height <= 0.0 || !y.is_finite() {
-            return base_price;
+            return Some(base_price);
         }
 
         let steps_f = (-(y) / row_height).round();
         let steps_i = steps_f as i64;
 
-        base_price.add_steps(steps_i, step)
+        base_price.checked_add_steps(steps_i, step)
     }
 
     fn right_pad_world(&self, viewport_w: f32) -> f32 {
@@ -329,16 +331,13 @@ impl Camera {
         cy + (screen_y - viewport_h * 0.5) / s
     }
 
-    pub fn to_uniform(self, viewport_w: f32, viewport_h: f32) -> CameraUniform {
-        let vw = viewport_w.round().max(1.0);
-        let vh = viewport_h.round().max(1.0);
-
+    pub fn to_uniform(self, bounds: Rectangle, pixel_ratio: PixelRatio) -> CameraUniform {
         let s = self.clamped_scale();
-        let [center_x, center_y] = self.center(vw);
+        let [center_x, center_y] = self.center(bounds.width);
 
         CameraUniform {
             a: [s, s, center_x, center_y],
-            b: [vw, vh, 0.0, 0.0],
+            b: [bounds.width, bounds.height, pixel_ratio.value(), bounds.x],
         }
     }
 

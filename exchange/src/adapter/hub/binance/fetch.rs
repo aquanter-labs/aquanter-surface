@@ -12,10 +12,13 @@ use super::{
     THIRTY_DAYS_MS, exchange_from_market_type, raw_qty_unit_from_market_type,
 };
 use crate::adapter::hub::AdapterError;
+use crate::adapter::{KlinePage, kline_page_end};
 use csv::ReaderBuilder;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::HashMap, io::BufReader, path::PathBuf, time::UNIX_EPOCH};
+
+const MAX_KLINE_BARS: u64 = 1_000;
 
 #[derive(Deserialize, Debug, Clone)]
 struct FetchedKline(
@@ -44,6 +47,8 @@ struct DeOpenInterest {
 
 #[derive(Deserialize, Debug)]
 struct DeTrade {
+    #[serde(rename = "a")]
+    id: u64,
     #[serde(rename = "T")]
     time: u64,
     #[serde(rename = "p", deserialize_with = "de_string_to_number")]
@@ -365,12 +370,12 @@ pub(super) async fn fetch_klines(
         let start = start.as_u64();
         let end = end.as_u64();
         let interval_ms = timeframe.to_milliseconds();
-        let num_intervals = ((end - start) / interval_ms).min(1000);
+        let num_intervals = ((end - start) / interval_ms + 1).min(MAX_KLINE_BARS);
 
         if num_intervals < 3 {
-            let new_start = start - (interval_ms * 5);
-            let new_end = end + (interval_ms * 5);
-            let num_intervals = ((new_end - new_start) / interval_ms).min(1000);
+            let new_start = start.saturating_sub(interval_ms * 5);
+            let new_end = end.saturating_add(interval_ms * 5);
+            let num_intervals = ((new_end - new_start) / interval_ms + 1).min(MAX_KLINE_BARS);
 
             url.push_str(&format!(
                 "&startTime={new_start}&endTime={new_end}&limit={num_intervals}"
@@ -453,6 +458,24 @@ pub(super) async fn fetch_klines(
     Ok(klines)
 }
 
+pub(super) async fn fetch_klines_page(
+    hub: &mut HttpHub<BinanceLimiter>,
+    ticker_info: TickerInfo,
+    timeframe: Timeframe,
+    from: UnixMs,
+    to: UnixMs,
+) -> Result<KlinePage, AdapterError> {
+    let page_to = kline_page_end(from, to, timeframe, MAX_KLINE_BARS)?;
+    let data = fetch_klines(
+        hub,
+        ticker_info,
+        timeframe,
+        Some((from, page_to.saturating_sub(1))),
+    )
+    .await?;
+    Ok(KlinePage::new(data, from, page_to))
+}
+
 pub(super) async fn fetch_historical_oi(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker_info: TickerInfo,
@@ -521,8 +544,7 @@ pub(super) async fn fetch_historical_oi(
             start
         };
 
-        let interval_ms = period.to_milliseconds();
-        let num_intervals = ((end - adjusted_start) / interval_ms).min(500);
+        let num_intervals = crate::adapter::open_interest_limit(adjusted_start, end, period, 500);
 
         url.push_str(&format!(
             "&startTime={adjusted_start}&endTime={end}&limit={num_intervals}"
@@ -563,7 +585,19 @@ async fn fetch_intraday_trades(
     let mut url = format!("{base_url}?symbol={symbol_str}&limit=1000");
     url.push_str(&format!("&startTime={}", from.as_u64()));
 
-    let de_trades: Vec<DeTrade> = hub.http_json_with_limiter(&url, weight, None, None).await?;
+    let mut de_trades: Vec<DeTrade> = hub.http_json_with_limiter(&url, weight, None, None).await?;
+    let mut needs_boundary = de_trades.len() == 1000;
+    while needs_boundary {
+        let from_id = de_trades
+            .last()
+            .unwrap()
+            .id
+            .checked_add(1)
+            .ok_or_else(|| AdapterError::ParseError("Trade ID overflow".into()))?;
+        let url = format!("{base_url}?symbol={symbol_str}&limit=1000&fromId={from_id}");
+        let page = hub.http_json_with_limiter(&url, weight, None, None).await?;
+        needs_boundary = append_trade_boundary(&mut de_trades, page)?;
+    }
 
     let qty_norm = QtyNormalization::with_raw_qty_unit(
         volume_size_unit() == SizeUnit::Quote,
@@ -582,6 +616,22 @@ async fn fetch_intraday_trades(
         .collect();
 
     Ok(trades)
+}
+
+fn append_trade_boundary(
+    trades: &mut Vec<DeTrade>,
+    page: Vec<DeTrade>,
+) -> Result<bool, AdapterError> {
+    let boundary = trades.last().unwrap().time;
+    let last_id = trades.last().unwrap().id;
+    if page.first().is_some_and(|trade| trade.id <= last_id) {
+        return Err(AdapterError::ParseError(
+            "Trade ID paging did not advance".into(),
+        ));
+    }
+    let needs_more = page.len() == 1000 && page.iter().all(|trade| trade.time == boundary);
+    trades.extend(page.into_iter().filter(|trade| trade.time == boundary));
+    Ok(needs_more)
 }
 
 async fn get_hist_trades_with_client(
@@ -661,12 +711,12 @@ async fn get_hist_trades_with_client(
 
         trades.extend(csv_reader.records().filter_map(|record| {
             record.ok().and_then(|record| {
-                let time = normalize_archive_timestamp(record[5].parse::<u64>().ok()?);
-                let is_sell = parse_archive_bool(&record[6])?;
-                let price_f64 = record[1].parse::<f64>().ok()?;
+                let time = normalize_archive_timestamp(record.get(5)?.parse::<u64>().ok()?);
+                let is_sell = parse_archive_bool(record.get(6)?)?;
+                let price_f64 = record.get(1)?.parse::<f64>().ok()?;
 
                 let price = Price::from_f64(price_f64).round_to_min_tick(ticker_info.min_ticksize);
-                let qty = qty_norm.normalize_qty(record[2].parse::<f64>().ok()?, price_f64);
+                let qty = qty_norm.normalize_qty(record.get(2)?.parse::<f64>().ok()?, price_f64);
 
                 Some(Trade {
                     time: time.into(),
@@ -703,7 +753,7 @@ fn parse_archive_bool(value: &str) -> Option<bool> {
 pub(super) async fn fetch_trades(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker_info: TickerInfo,
-    from_time: UnixMs,
+    mut from_time: UnixMs,
     data_path: Option<PathBuf>,
 ) -> Result<Vec<Trade>, AdapterError> {
     let Some(data_path) = data_path else {
@@ -720,47 +770,72 @@ pub(super) async fn fetch_trades(
         })?
         .and_utc();
 
-    let from_time_ms = i64::try_from(from_time.as_u64())
-        .map_err(|_| AdapterError::InvalidRequest("Timestamp exceeds i64 range".to_string()))?;
+    loop {
+        let from_time_ms = i64::try_from(from_time.as_u64())
+            .map_err(|_| AdapterError::InvalidRequest("Timestamp exceeds i64 range".to_string()))?;
 
-    if from_time_ms >= today_midnight.timestamp_millis() {
-        return fetch_intraday_trades(hub, ticker_info, from_time).await;
-    }
-
-    let from_date = chrono::DateTime::from_timestamp_millis(from_time_ms)
-        .ok_or_else(|| AdapterError::ParseError("Invalid timestamp".into()))?
-        .date_naive();
-
-    let client = hub.client().clone();
-
-    match get_hist_trades_with_client(&client, ticker_info, from_date, data_path).await {
-        Ok(mut trades) => {
-            if let Some(latest_trade) = trades.last().copied() {
-                match fetch_intraday_trades(hub, ticker_info, latest_trade.time).await {
-                    Ok(intraday_trades) => {
-                        trades.extend(intraday_trades);
-                    }
-                    Err(e) => {
-                        log::error!("Failed to fetch intraday trades: {}", e);
-                    }
-                }
-            }
-
-            Ok(trades)
+        if from_time_ms >= today_midnight.timestamp_millis() {
+            return fetch_intraday_trades(hub, ticker_info, from_time).await;
         }
-        Err(e) => {
-            log::warn!(
-                "Historical trades fetch failed: {}, falling back to intraday fetch",
-                e
-            );
-            fetch_intraday_trades(hub, ticker_info, from_time).await
+
+        let from_date = chrono::DateTime::from_timestamp_millis(from_time_ms)
+            .ok_or_else(|| AdapterError::ParseError("Invalid timestamp".into()))?
+            .date_naive();
+
+        let client = hub.client().clone();
+
+        match get_hist_trades_with_client(&client, ticker_info, from_date, data_path.clone()).await
+        {
+            Ok(mut trades) => {
+                trades.retain(|trade| trade.time >= from_time);
+                trades.sort_by_key(|trade| trade.time);
+                if !trades.is_empty() {
+                    return Ok(trades);
+                }
+                from_time = from_time
+                    .floor_to(crate::Timeframe::D1)
+                    .saturating_add(crate::Timeframe::D1.to_milliseconds());
+            }
+            Err(e) => {
+                log::warn!(
+                    "Historical trades fetch failed: {}, falling back to intraday fetch",
+                    e
+                );
+                return fetch_intraday_trades(hub, ticker_info, from_time).await;
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_archive_timestamp, parse_archive_bool};
+    use super::{DeTrade, append_trade_boundary, normalize_archive_timestamp, parse_archive_bool};
+
+    fn trade(id: u64, time: u64) -> DeTrade {
+        DeTrade {
+            id,
+            time,
+            price: 10.0,
+            qty: 1.0,
+            is_sell: false,
+        }
+    }
+
+    #[test]
+    fn full_trade_pages_do_not_skip_the_last_millisecond() {
+        let mut trades = (0..1000).map(|id| trade(id, 42)).collect::<Vec<_>>();
+        assert!(
+            append_trade_boundary(&mut trades, (1000..2000).map(|id| trade(id, 42)).collect())
+                .unwrap()
+        );
+        assert!(
+            !append_trade_boundary(&mut trades, vec![trade(2000, 42), trade(2001, 43)]).unwrap()
+        );
+        assert_eq!(trades.len(), 2001);
+        assert_eq!(trades.last().unwrap().id, 2000);
+        assert!(trades.iter().all(|trade| trade.time == 42));
+        assert!(append_trade_boundary(&mut trades, vec![trade(2000, 42)]).is_err());
+    }
 
     #[test]
     fn archive_timestamps_accept_milliseconds_and_microseconds() {

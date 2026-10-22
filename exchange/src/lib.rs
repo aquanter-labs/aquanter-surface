@@ -611,7 +611,7 @@ pub struct Liquidation {
     pub qty: Qty,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Kline {
     pub time: UnixMs,
     pub open: Price,
@@ -644,7 +644,7 @@ impl Kline {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Volume {
     TotalOnly(Qty),
     BuySell(Qty, Qty),
@@ -771,44 +771,6 @@ impl TickMultiplier {
             .checked_mul(i64::from(self.0.max(1)))
             .expect("tick multiplier overflowed PriceStep");
         PriceStep { units }
-    }
-
-    /// Derives unscaled step from a grouped/scaled step. If the value is not exactly divisible,
-    /// rounds to nearest atomic unit.
-    pub fn unscale_step(&self, scaled_step: PriceStep) -> PriceStep {
-        let m = i64::from(self.0.max(1));
-        if m == 1 {
-            return scaled_step;
-        }
-
-        let q = scaled_step.units.div_euclid(m);
-        let r = scaled_step.units.rem_euclid(m);
-        let rounded = if r.saturating_mul(2) >= m { q + 1 } else { q };
-
-        PriceStep {
-            units: rounded.max(1),
-        }
-    }
-
-    /// Derives unscaled step from a grouped/scaled step; if it is not exactly divisible,
-    /// falls back to the ticker's declared minimum tick.
-    pub fn unscale_step_or_min_tick(
-        &self,
-        scaled_step: PriceStep,
-        min_tick: MinTicksize,
-    ) -> PriceStep {
-        let m = i64::from(self.0.max(1));
-        if m == 1 {
-            return scaled_step;
-        }
-
-        if scaled_step.units > 0 && scaled_step.units.rem_euclid(m) == 0 {
-            PriceStep {
-                units: scaled_step.units / m,
-            }
-        } else {
-            min_tick.into()
-        }
     }
 
     /// Returns the final tick step after applying the user selected multiplier.

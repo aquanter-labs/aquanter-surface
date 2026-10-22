@@ -1,8 +1,7 @@
 pub mod axisx;
 pub mod axisy;
+pub mod indicator;
 pub mod overlay;
-
-pub use super::Message;
 
 const AXIS_TEXT_SIZE: f32 = crate::style::text_size::BODY;
 const PAUSED_CTRL_LABEL_TEXT_SIZE: f32 = crate::style::text_size::SMALL;
@@ -164,6 +163,15 @@ fn step_floor_from_world_y(world_y: f32, row_h: f32) -> i64 {
 
 fn world_y_for_y_bin_center(y_bin: i64, steps_per_y_bin: i64, row_h: f32) -> f32 {
     -((y_bin as f32 + 0.5) * (steps_per_y_bin.max(1) as f32) * row_h)
+}
+
+pub(super) fn wheel_zoom_factor(delta: iced_core::mouse::ScrollDelta) -> f32 {
+    let amount = match delta {
+        iced_core::mouse::ScrollDelta::Lines { y, .. } => y * 0.02,
+        iced_core::mouse::ScrollDelta::Pixels { y, .. } => y * 0.002,
+    };
+
+    (1.0 + amount).clamp(0.01, 100.0)
 }
 
 fn paused_control_hovered(

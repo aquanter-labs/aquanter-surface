@@ -1,46 +1,102 @@
-use exchange::adapter::{AdapterError, AdapterHandles, Exchange, StreamKind};
-use exchange::{Kline, OpenInterest, TickerInfo, Trade, UnixMs};
+use data::chart::kline::OpenInterestSeries;
+use data::chart::kline::fetch_plan::supports_open_interest;
+use exchange::adapter::{AdapterError, AdapterHandles, Exchange, KlinePage, StreamKind};
+use exchange::{Kline, TickerInfo, Timeframe, Trade, UnixMs};
 use iced::{
     Task,
     task::{Handle, Straw, sipper},
 };
 use rustc_hash::FxHashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::RwLock;
 use uuid::Uuid;
 
-static TRADE_FETCH_ENABLED: AtomicBool = AtomicBool::new(false);
+use crate::connector::client::{DataSources, ServerClient};
 
-pub fn toggle_trade_fetch(value: bool) {
-    TRADE_FETCH_ENABLED.store(value, Ordering::Relaxed);
+pub use data::TradeFetchMode;
+pub use data::chart::kline::FetchRange;
+
+static TRADE_FETCH_MODE: RwLock<TradeFetchMode> = RwLock::new(TradeFetchMode::Off);
+
+/// Maximum trades to request per Arrow IPC call to server.
+const ARROW_LIMIT: usize = 400_000;
+
+/// Override the global trade-fetch mode at runtime.
+pub fn set_trade_fetch_mode(mode: TradeFetchMode) {
+    if let Ok(mut guard) = TRADE_FETCH_MODE.write() {
+        *guard = mode;
+    } else {
+        log::error!("Trade fetch mode lock poisoned — resetting to Off");
+    }
 }
 
+/// Return the current global trade-fetch mode.
+pub fn trade_fetch_mode() -> TradeFetchMode {
+    TRADE_FETCH_MODE
+        .read()
+        .map(|g| g.clone())
+        .unwrap_or(TradeFetchMode::Off)
+}
+
+/// Returns `true` when a trade-fetch source (server or exchange API) is
+/// active.
 pub fn is_trade_fetch_enabled() -> bool {
-    TRADE_FETCH_ENABLED.load(Ordering::Relaxed)
+    trade_fetch_mode() != TradeFetchMode::Off
 }
 
 #[derive(Debug, Clone)]
 pub enum FetchedData {
     Trades {
         batch: Vec<Trade>,
+        /// Upper bound of the fetch gap — trades beyond this timestamp
+        /// already exist on the chart and must be filtered out.
         until_time: UnixMs,
-        req_id: Uuid,
+        /// Whether the paging task has finished producing batches.
         is_batches_done: bool,
+        /// Whether the source returned any trade data for the request.
+        has_data: bool,
+        /// Optional request ID to mark completion on the chart's
+        /// [`RequestHandler`] once the batch is processed.
+        req_id: Option<Uuid>,
     },
     Klines {
         data: Vec<Kline>,
         req_id: Option<uuid::Uuid>,
+        is_batches_done: bool,
+        has_data: bool,
     },
-    OI {
-        data: Vec<OpenInterest>,
+    OpenInterest {
+        series: OpenInterestSeries,
         req_id: Option<uuid::Uuid>,
     },
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
+pub enum ReqError {
+    #[error("Request overlaps with an existing request")]
+    Overlaps,
+    #[error("Source has no data for the requested range")]
+    NoData,
+    /// A previous attempt for this range failed and the retry cooldown
+    /// has not yet elapsed.
+    #[error("Previous request failed, retry not yet allowed")]
+    Failed,
+}
+
+/// Lifecycle of a fetch request.
+///
+/// * `Failed` is retried after the cooldown (transient errors may resolve).
+/// * `Completed` and `NoData` retain coverage evidence for non-profile inputs.
+/// * Profile coverage lives in `ProfileKlineSource`, so completed profile
+///   requests are removed.
+#[derive(PartialEq, Clone, Debug)]
 enum RequestStatus {
     Pending,
-    Completed(u64),
+    /// Fetch succeeded and data was inserted.
+    Completed,
+    /// The source returned an empty result for this range.
+    NoData,
+    /// The fetch failed (network error, parse error, etc.).
     Failed(u64),
 }
 
@@ -50,67 +106,244 @@ pub struct RequestHandler {
 }
 
 impl RequestHandler {
-    pub fn add_request(&mut self, fetch: FetchRange) -> Option<Uuid> {
+    const RETRY_AFTER_MS: u64 = 30_000;
+
+    pub fn add_request(&mut self, fetch: FetchRange) -> Result<Option<Uuid>, ReqError> {
         let request = FetchRequest::new(fetch);
         let id = Uuid::new_v4();
 
-        if let Some(existing_id) = self
-            .requests
-            .iter()
-            .find_map(|(id, existing)| existing.same_with(&request).then_some(*id))
-        {
-            let existing = self.requests.get_mut(&existing_id).expect("request exists");
-            let retry = match existing.status {
-                RequestStatus::Completed(timestamp) | RequestStatus::Failed(timestamp) => {
-                    (chrono::Utc::now().timestamp_millis() as u64).saturating_sub(timestamp)
-                        > 30_000
-                }
-                RequestStatus::Pending => false,
-            };
-            if retry {
-                existing.status = RequestStatus::Pending;
-                return Some(existing_id);
+        if let Some((existing_id, status)) = self.requests.iter().find_map(|(k, v)| {
+            if v.same_with(&request) {
+                Some((*k, v.status.clone()))
+            } else {
+                None
             }
-            return None;
+        }) {
+            match status {
+                RequestStatus::Completed => return Ok(None),
+                RequestStatus::NoData => return Err(ReqError::NoData),
+                RequestStatus::Pending if !is_history_fetch(&fetch) => {
+                    return Err(ReqError::Overlaps);
+                }
+                RequestStatus::Failed(ts) if !is_history_fetch(&fetch) => {
+                    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+                    if now_ms.saturating_sub(ts) > Self::RETRY_AFTER_MS {
+                        if let Some(existing) = self.requests.get_mut(&existing_id) {
+                            existing.status = RequestStatus::Pending;
+                            existing.received_trades = 0;
+                        }
+                        return Ok(Some(existing_id));
+                    }
+                    return Err(ReqError::Failed);
+                }
+                RequestStatus::Pending | RequestStatus::Failed(_) => {}
+            }
+        }
+
+        if is_history_fetch(&fetch) {
+            if self.requests.values().any(|existing| {
+                existing.status == RequestStatus::Pending && existing.overlaps(&fetch)
+            }) {
+                return Err(ReqError::Overlaps);
+            }
+
+            let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+            let mut expired_failed = Vec::new();
+            for (existing_id, existing) in &self.requests {
+                let RequestStatus::Failed(failed_at) = existing.status else {
+                    continue;
+                };
+                if !existing.overlaps(&fetch) {
+                    continue;
+                }
+                if now_ms.saturating_sub(failed_at) <= Self::RETRY_AFTER_MS {
+                    return Err(ReqError::Failed);
+                }
+                expired_failed.push(*existing_id);
+            }
+            for existing_id in expired_failed {
+                self.requests.remove(&existing_id);
+            }
         }
 
         self.requests.insert(id, request);
-        Some(id)
+        Ok(Some(id))
     }
 
-    pub fn mark_completed(&mut self, id: Uuid) {
-        if let Some(request) = self.requests.get_mut(&id) {
-            let timestamp = chrono::Utc::now().timestamp_millis() as u64;
-            request.status = RequestStatus::Completed(timestamp);
-        } else {
-            log::warn!("Request not found: {:?}", id);
+    pub fn is_pending(&self, id: Uuid) -> bool {
+        self.requests
+            .get(&id)
+            .is_some_and(|request| request.status == RequestStatus::Pending)
+    }
+
+    pub fn is_profile_request(&self, id: Uuid) -> bool {
+        self.requests.get(&id).is_some_and(|request| {
+            request.status == RequestStatus::Pending
+                && matches!(request.fetch_type, FetchRange::ProfileKline { .. })
+        })
+    }
+
+    pub fn request_ids(&self) -> impl Iterator<Item = Uuid> + '_ {
+        self.requests.keys().copied()
+    }
+
+    pub fn has_pending_trade_fetch(&self) -> bool {
+        self.requests.values().any(|request| {
+            request.status == RequestStatus::Pending
+                && matches!(request.fetch_type, FetchRange::Trades(..))
+        })
+    }
+
+    pub fn has_pending_profile_fetch(&self) -> bool {
+        self.requests.values().any(|request| {
+            request.status == RequestStatus::Pending
+                && matches!(request.fetch_type, FetchRange::ProfileKline { .. })
+        })
+    }
+
+    pub fn pending_ranges(&self) -> impl Iterator<Item = FetchRange> + '_ {
+        self.requests
+            .values()
+            .filter(|request| request.status == RequestStatus::Pending)
+            .map(|request| request.fetch_type)
+    }
+
+    pub fn pending_trade_count(&self) -> Option<usize> {
+        self.requests.values().find_map(|request| {
+            (request.status == RequestStatus::Pending
+                && matches!(request.fetch_type, FetchRange::Trades(..)))
+            .then_some(request.received_trades)
+        })
+    }
+
+    pub fn record_trade_batch(&mut self, id: Uuid, count: usize) -> bool {
+        let Some(request) = self.requests.get_mut(&id) else {
+            return false;
+        };
+
+        if request.status != RequestStatus::Pending
+            || !matches!(request.fetch_type, FetchRange::Trades(..))
+        {
+            return false;
         }
+
+        request.received_trades = request.received_trades.saturating_add(count);
+        true
     }
 
-    pub fn mark_failed(&mut self, id: Uuid, error: String) -> bool {
+    pub fn mark_completed(&mut self, id: Uuid) -> bool {
+        if self.is_profile_request(id) {
+            return self.mark_profile_completed(id).is_some();
+        }
+
+        let Some(request) = self.requests.get_mut(&id) else {
+            return false;
+        };
+        if request.status != RequestStatus::Pending {
+            return false;
+        }
+
+        request.status = RequestStatus::Completed;
+        true
+    }
+
+    pub fn mark_profile_completed(&mut self, id: Uuid) -> Option<FetchRange> {
+        let request = self.requests.get(&id)?;
+        if request.status != RequestStatus::Pending
+            || !matches!(request.fetch_type, FetchRange::ProfileKline { .. })
+        {
+            return None;
+        }
+        self.requests.remove(&id).map(|request| request.fetch_type)
+    }
+
+    /// Mark a request as completed with no data — the source returned an
+    /// empty result.  The range will never be retried.
+    pub fn mark_no_data(&mut self, id: Uuid) -> bool {
+        if self.is_profile_request(id) {
+            self.requests.remove(&id);
+            return true;
+        }
+
+        let Some(request) = self.requests.get_mut(&id) else {
+            return false;
+        };
+        if request.status != RequestStatus::Pending {
+            return false;
+        }
+        request.status = RequestStatus::NoData;
+        true
+    }
+
+    pub fn mark_failed(&mut self, id: Uuid) -> bool {
         if let Some(request) = self.requests.get_mut(&id) {
-            let is_trade = matches!(request.fetch_type, FetchRange::Trades(..));
-            log::debug!("Request {id} failed: {error}");
-            request.status = RequestStatus::Failed(chrono::Utc::now().timestamp_millis() as u64);
-            is_trade
+            if request.status != RequestStatus::Pending {
+                return false;
+            }
+            let timestamp = chrono::Utc::now().timestamp_millis() as u64;
+            request.status = RequestStatus::Failed(timestamp);
+            true
         } else {
-            log::warn!("Request not found: {:?}", id);
             false
         }
     }
-}
 
-#[derive(PartialEq, Debug, Clone, Copy)]
-pub enum FetchRange {
-    Kline(UnixMs, UnixMs),
-    OpenInterest(UnixMs, UnixMs),
-    Trades(UnixMs, UnixMs),
+    pub fn clear_open_interest_requests(&mut self) -> Vec<Uuid> {
+        let removed = self
+            .requests
+            .iter()
+            .filter(|(_, request)| matches!(request.fetch_type, FetchRange::OpenInterest { .. }))
+            .map(|(id, _)| *id)
+            .collect();
+        self.requests
+            .retain(|_, request| !matches!(request.fetch_type, FetchRange::OpenInterest { .. }));
+        removed
+    }
+
+    pub fn clear_pending_profile_requests(&mut self) -> Vec<Uuid> {
+        let removed = self
+            .requests
+            .iter()
+            .filter(|(_, request)| {
+                matches!(request.fetch_type, FetchRange::ProfileKline { .. })
+                    && request.status == RequestStatus::Pending
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        self.requests.retain(|_, request| {
+            !matches!(request.fetch_type, FetchRange::ProfileKline { .. })
+                || request.status != RequestStatus::Pending
+        });
+        removed
+    }
+
+    pub fn clear_pending_trade_requests(&mut self) -> Vec<Uuid> {
+        let removed = self
+            .requests
+            .iter()
+            .filter(|(_, request)| {
+                matches!(request.fetch_type, FetchRange::Trades(..))
+                    && request.status == RequestStatus::Pending
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        self.requests.retain(|_, request| {
+            !matches!(request.fetch_type, FetchRange::Trades(..))
+                || request.status != RequestStatus::Pending
+        });
+        removed
+    }
+
+    pub fn reset_for_basis_change(&mut self) {
+        self.requests.clear();
+    }
 }
 
 #[derive(PartialEq, Debug)]
 struct FetchRequest {
     fetch_type: FetchRange,
     status: RequestStatus,
+    received_trades: usize,
 }
 
 impl FetchRequest {
@@ -118,19 +351,68 @@ impl FetchRequest {
         FetchRequest {
             fetch_type,
             status: RequestStatus::Pending,
+            received_trades: 0,
         }
     }
 
     fn same_with(&self, other: &FetchRequest) -> bool {
-        match (&self.fetch_type, &other.fetch_type) {
+        self.same_with_range(&other.fetch_type)
+    }
+
+    /// Check whether the stored [`FetchRange`] matches a given range.
+    fn same_with_range(&self, range: &FetchRange) -> bool {
+        match (&self.fetch_type, range) {
             (FetchRange::Kline(s1, e1), FetchRange::Kline(s2, e2)) => e1 == e2 && s1 == s2,
-            (FetchRange::OpenInterest(s1, e1), FetchRange::OpenInterest(s2, e2)) => {
-                e1 == e2 && s1 == s2
-            }
+            (
+                FetchRange::ProfileKline {
+                    timeframe: t1,
+                    from: s1,
+                    to: e1,
+                },
+                FetchRange::ProfileKline {
+                    timeframe: t2,
+                    from: s2,
+                    to: e2,
+                },
+            ) => t1 == t2 && e1 == e2 && s1 == s2,
+            (
+                FetchRange::OpenInterest { from: s1, to: e1 },
+                FetchRange::OpenInterest { from: s2, to: e2 },
+            ) => e1 == e2 && s1 == s2,
             (FetchRange::Trades(s1, e1), FetchRange::Trades(s2, e2)) => e1 == e2 && s1 == s2,
             _ => false,
         }
     }
+
+    fn overlaps(&self, range: &FetchRange) -> bool {
+        match (&self.fetch_type, range) {
+            (FetchRange::Kline(s1, e1), FetchRange::Kline(s2, e2)) => s1 <= e2 && s2 <= e1,
+            (
+                FetchRange::OpenInterest { from: s1, to: e1 },
+                FetchRange::OpenInterest { from: s2, to: e2 },
+            ) => s1 <= e2 && s2 <= e1,
+            (
+                FetchRange::ProfileKline {
+                    timeframe: t1,
+                    from: s1,
+                    to: e1,
+                },
+                FetchRange::ProfileKline {
+                    timeframe: t2,
+                    from: s2,
+                    to: e2,
+                },
+            ) => t1 == t2 && s1 < e2 && s2 < e1,
+            _ => false,
+        }
+    }
+}
+
+fn is_history_fetch(range: &FetchRange) -> bool {
+    matches!(
+        range,
+        FetchRange::Kline(..) | FetchRange::ProfileKline { .. } | FetchRange::OpenInterest { .. }
+    )
 }
 
 pub struct FetchSpec {
@@ -169,50 +451,33 @@ impl Clone for FetchSpec {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum InfoKind {
-    FetchingKlines,
-    FetchingTrades(usize),
-    FetchingOI,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FetchTaskStatus {
-    Loading(InfoKind),
-    Completed,
-}
-
 #[derive(Debug, Clone)]
 pub enum FetchUpdate {
-    Status {
-        pane_id: Uuid,
-        status: FetchTaskStatus,
-    },
     Data {
-        layout_id: Uuid,
         pane_id: Uuid,
         stream: StreamKind,
         data: FetchedData,
     },
     Error {
         pane_id: Uuid,
-        req_id: Option<Uuid>,
         error: String,
+        req_id: Option<Uuid>,
     },
 }
 
 pub fn request_fetch(
-    handles: AdapterHandles,
+    sources: &DataSources,
     pane_id: Uuid,
     ready_streams: &[StreamKind],
-    layout_id: Uuid,
     req_id: Uuid,
     fetch: FetchRange,
     stream: Option<StreamKind>,
-    on_trade_handle: &mut impl FnMut(Handle),
+    on_fetch_handle: &mut impl FnMut(Uuid, Handle),
 ) -> Task<FetchUpdate> {
+    let handles = sources.exchange.clone();
+
     match fetch {
-        FetchRange::Kline(from, to) => {
+        FetchRange::Kline(from, to) | FetchRange::ProfileKline { from, to, .. } => {
             let kline_stream = if let Some(s) = stream {
                 Some((s, pane_id))
             } else {
@@ -225,18 +490,73 @@ pub fn request_fetch(
                 })
             };
 
-            if let Some((stream, pane_uid)) = kline_stream {
-                return kline_fetch_task(
-                    handles.clone(),
-                    layout_id,
-                    pane_uid,
-                    stream,
-                    Some(req_id),
-                    Some((from, to)),
-                );
+            if let Some((
+                StreamKind::Kline {
+                    ticker_info,
+                    timeframe,
+                },
+                pane_uid,
+            )) = kline_stream
+            {
+                let now = UnixMs::now();
+                let (timeframe, from, to) = match fetch {
+                    FetchRange::ProfileKline { timeframe, .. } => {
+                        (timeframe, from, to.min(now.floor_to(timeframe)))
+                    }
+                    _ => (
+                        timeframe,
+                        from.floor_to(timeframe),
+                        to.floor_to(timeframe)
+                            .offset_by_timeframe(timeframe, 1)
+                            .min(now.floor_to(timeframe)),
+                    ),
+                };
+                let (task, handle) = Task::sip(
+                    fetch_klines_paged(handles, ticker_info, timeframe, from, to),
+                    move |batch| FetchUpdate::Data {
+                        pane_id: pane_uid,
+                        stream: StreamKind::Kline {
+                            ticker_info,
+                            timeframe,
+                        },
+                        data: FetchedData::Klines {
+                            data: batch,
+                            req_id: Some(req_id),
+                            is_batches_done: false,
+                            has_data: true,
+                        },
+                    },
+                    move |result| match result {
+                        Ok(has_data) => FetchUpdate::Data {
+                            pane_id: pane_uid,
+                            stream: StreamKind::Kline {
+                                ticker_info,
+                                timeframe,
+                            },
+                            data: FetchedData::Klines {
+                                data: Vec::new(),
+                                req_id: Some(req_id),
+                                is_batches_done: true,
+                                has_data,
+                            },
+                        },
+                        Err(err) => {
+                            log::error!("Kline fetch failed: {err}");
+                            FetchUpdate::Error {
+                                pane_id: pane_uid,
+                                error: err.ui_message(),
+                                req_id: Some(req_id),
+                            }
+                        }
+                    },
+                )
+                .abortable();
+
+                on_fetch_handle(req_id, handle.abort_on_drop());
+                return task;
             }
         }
-        FetchRange::OpenInterest(from, to) => {
+        FetchRange::OpenInterest { from, to } => {
             let kline_stream = if let Some(s) = stream {
                 Some((s, pane_id))
             } else {
@@ -250,90 +570,132 @@ pub fn request_fetch(
             };
 
             if let Some((stream, pane_uid)) = kline_stream {
-                return oi_fetch_task(
-                    handles.clone(),
-                    layout_id,
+                return open_interest_fetch_task(
+                    handles,
                     pane_uid,
                     stream,
                     Some(req_id),
                     Some((from, to)),
+                    on_fetch_handle,
                 );
             }
         }
         FetchRange::Trades(from_time, to_time) => {
-            let trade_info = ready_streams.iter().find_map(|stream| {
-                if let StreamKind::Trades { ticker_info } = stream {
-                    Some((*ticker_info, pane_id, *stream))
-                } else {
-                    None
-                }
-            });
+            let trade_stream = stream
+                .filter(|stream| matches!(stream, StreamKind::Trades { .. }))
+                .or_else(|| {
+                    ready_streams.iter().find_map(|stream| {
+                        if let StreamKind::Trades { .. } = stream {
+                            Some(*stream)
+                        } else {
+                            None
+                        }
+                    })
+                });
 
-            if let Some((ticker_info, pane_id, stream)) = trade_info {
+            if let Some(trade_stream @ StreamKind::Trades { ticker_info }) = trade_stream {
                 let is_binance = matches!(
                     ticker_info.exchange(),
                     Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse
                 );
+                let mode = trade_fetch_mode();
+                let server = sources.server.clone();
+                let data_path = data::data_path(Some("market_data/binance/"));
 
-                if is_binance {
-                    let data_path = data::data_path(Some("market_data/binance/"));
-
-                    let (task, handle) = Task::sip(
-                        fetch_trades_batched(
-                            handles.clone(),
-                            ticker_info,
-                            from_time,
-                            to_time,
-                            data_path,
-                        ),
-                        move |batch| {
-                            let data = FetchedData::Trades {
-                                batch,
-                                until_time: to_time,
-                                req_id,
-                                is_batches_done: false,
-                            };
-
-                            FetchUpdate::Data {
-                                layout_id,
-                                pane_id,
-                                data,
-                                stream,
-                            }
-                        },
-                        move |result| match result {
-                            Ok(()) => FetchUpdate::Data {
-                                layout_id,
-                                pane_id,
-                                stream,
-                                data: FetchedData::Trades {
-                                    batch: vec![],
-                                    until_time: to_time,
-                                    req_id,
-                                    is_batches_done: true,
-                                },
-                            },
-                            Err(err) => {
-                                log::error!("Trade fetch failed: {err}");
-                                FetchUpdate::Error {
-                                    pane_id,
-                                    req_id: Some(req_id),
-                                    error: err.ui_message(),
-                                }
-                            }
-                        },
-                    )
-                    .abortable();
-
-                    on_trade_handle(handle.abort_on_drop());
-
-                    let update_status = Task::done(FetchUpdate::Status {
+                if let Some(ref client) = server {
+                    log::debug!(
+                        "Trade fetch: using server at {} ({})",
+                        client.base_url(),
+                        ticker_info.exchange()
+                    );
+                } else if mode == TradeFetchMode::Server {
+                    log::error!(
+                        "Server mode selected but server URL is invalid, check Network Manager settings"
+                    );
+                    return Task::done(FetchUpdate::Error {
                         pane_id,
-                        status: FetchTaskStatus::Loading(InfoKind::FetchingTrades(0)),
+                        error: "Server mode selected but the server URL is invalid.".to_string(),
+                        req_id: Some(req_id),
                     });
-
-                    return update_status.chain(task);
+                } else if is_binance {
+                    log::debug!(
+                        "Trade fetch: using direct exchange API for {}",
+                        ticker_info.exchange()
+                    );
+                } else {
+                    log::warn!(
+                        "Trade fetch via exchange API is only supported for Binance, got {}",
+                        ticker_info.exchange()
+                    );
+                    return Task::done(FetchUpdate::Error {
+                        pane_id,
+                        error: format!(
+                            "Trade fetch via exchange API is only supported for Binance, got {}",
+                            ticker_info.exchange()
+                        ),
+                        req_id: Some(req_id),
+                    });
                 }
+
+                let (task, handle) = Task::sip(
+                    fetch_trades_paged(server, handles, ticker_info, from_time, to_time, data_path),
+                    move |batch| {
+                        let data = FetchedData::Trades {
+                            batch,
+                            req_id: Some(req_id),
+                            until_time: to_time,
+                            is_batches_done: false,
+                            has_data: true,
+                        };
+
+                        FetchUpdate::Data {
+                            pane_id,
+                            data,
+                            stream: trade_stream,
+                        }
+                    },
+                    move |result| match result {
+                        Ok(true) => FetchUpdate::Data {
+                            pane_id,
+                            data: FetchedData::Trades {
+                                batch: Vec::new(),
+                                req_id: Some(req_id),
+                                until_time: to_time,
+                                is_batches_done: true,
+                                has_data: true,
+                            },
+                            stream: trade_stream,
+                        },
+                        Ok(false) => {
+                            // Source returned no data for this range. Produce
+                            // an empty batch so the dashboard calls mark_no_data.
+                            FetchUpdate::Data {
+                                pane_id,
+                                data: FetchedData::Trades {
+                                    batch: Vec::new(),
+                                    req_id: Some(req_id),
+                                    until_time: to_time,
+                                    is_batches_done: true,
+                                    has_data: false,
+                                },
+                                stream: trade_stream,
+                            }
+                        }
+                        Err(err) => {
+                            log::error!("Trade fetch failed: {err}");
+                            FetchUpdate::Error {
+                                pane_id,
+                                error: err.ui_message(),
+                                req_id: Some(req_id),
+                            }
+                        }
+                    },
+                )
+                .abortable();
+
+                on_fetch_handle(req_id, handle.abort_on_drop());
+
+                return task;
             }
         }
     }
@@ -342,117 +704,72 @@ pub fn request_fetch(
 }
 
 pub fn request_fetch_many(
-    handles: AdapterHandles,
+    sources: &DataSources,
     pane_id: Uuid,
     ready_streams: &[StreamKind],
-    layout_id: Uuid,
     reqs: impl IntoIterator<Item = (Uuid, FetchRange, Option<StreamKind>)>,
-    mut on_trade_handle: impl FnMut(Handle),
+    mut on_fetch_handle: impl FnMut(Uuid, Handle),
 ) -> Task<FetchUpdate> {
-    let mut tasks = Vec::new();
-
-    for (req_id, fetch, stream) in reqs {
-        tasks.push(request_fetch(
-            handles.clone(),
+    Task::batch(reqs.into_iter().map(|(req_id, fetch, stream)| {
+        request_fetch(
+            sources,
             pane_id,
             ready_streams,
-            layout_id,
             req_id,
             fetch,
             stream,
-            &mut on_trade_handle,
-        ));
-    }
-
-    Task::batch(tasks)
+            &mut on_fetch_handle,
+        )
+    }))
 }
 
-pub fn oi_fetch_task(
+pub fn open_interest_fetch_task(
     handles: AdapterHandles,
-    layout_id: Uuid,
     pane_id: Uuid,
     stream: StreamKind,
     req_id: Option<Uuid>,
     range: Option<(UnixMs, UnixMs)>,
+    on_fetch_handle: &mut impl FnMut(Uuid, Handle),
 ) -> Task<FetchUpdate> {
-    let update_status = Task::done(FetchUpdate::Status {
-        pane_id,
-        status: FetchTaskStatus::Loading(InfoKind::FetchingOI),
-    });
-
     let fetch_task = match stream {
         StreamKind::Kline {
             ticker_info,
             timeframe,
         } => {
+            if !supports_open_interest(ticker_info, timeframe) {
+                return Task::done(FetchUpdate::Error {
+                    pane_id,
+                    error: format!(
+                        "Open Interest is not available for {}",
+                        ticker_info.exchange()
+                    ),
+                    req_id,
+                });
+            }
+
             let fetch = async move {
                 handles
                     .fetch_open_interest(ticker_info, timeframe, range)
                     .await
+                    .map(|data| {
+                        OpenInterestSeries::from_points(
+                            data.into_iter().map(|point| (point.time, point.value)),
+                        )
+                    })
             };
 
             Task::perform(
-                iced::futures::TryFutureExt::map_err(fetch, |err| {
-                    log::error!("Open interest fetch failed: {err}");
+                iced::futures::TryFutureExt::map_err(fetch, move |err| {
+                    log::error!("Open Interest fetch failed: {err}");
                     err.ui_message()
                 }),
                 move |result| match result {
-                    Ok(oi) => {
-                        let data = FetchedData::OI { data: oi, req_id };
-                        FetchUpdate::Data {
-                            layout_id,
-                            pane_id,
-                            data,
-                            stream,
-                        }
-                    }
-                    Err(err) => FetchUpdate::Error {
-                        pane_id,
-                        req_id,
-                        error: err,
-                    },
-                },
-            )
-        }
-        _ => Task::none(),
-    };
-
-    update_status.chain(fetch_task)
-}
-
-pub fn kline_fetch_task(
-    handles: AdapterHandles,
-    layout_id: Uuid,
-    pane_id: Uuid,
-    stream: StreamKind,
-    req_id: Option<Uuid>,
-    range: Option<(UnixMs, UnixMs)>,
-) -> Task<FetchUpdate> {
-    let update_status = Task::done(FetchUpdate::Status {
-        pane_id,
-        status: FetchTaskStatus::Loading(InfoKind::FetchingKlines),
-    });
-
-    let fetch_task = match stream {
-        StreamKind::Kline {
-            ticker_info,
-            timeframe,
-        } => {
-            let fetch = async move { handles.fetch_klines(ticker_info, timeframe, range).await };
-
-            Task::perform(
-                iced::futures::TryFutureExt::map_err(fetch, |err| {
-                    log::error!("Kline fetch failed: {err}");
-                    err.ui_message()
-                }),
-                move |result| match result {
-                    Ok(klines) => {
-                        let data = FetchedData::Klines {
-                            data: klines,
+                    Ok(batch) => {
+                        let data = FetchedData::OpenInterest {
+                            series: batch,
                             req_id,
                         };
                         FetchUpdate::Data {
-                            layout_id,
                             pane_id,
                             data,
                             stream,
@@ -460,8 +777,8 @@ pub fn kline_fetch_task(
                     }
                     Err(err) => FetchUpdate::Error {
                         pane_id,
-                        req_id,
                         error: err,
+                        req_id,
                     },
                 },
             )
@@ -469,68 +786,119 @@ pub fn kline_fetch_task(
         _ => Task::none(),
     };
 
-    update_status.chain(fetch_task)
+    let (task, handle) = fetch_task.abortable();
+    if let Some(req_id) = req_id {
+        on_fetch_handle(req_id, handle.abort_on_drop());
+    }
+    task
 }
 
-pub fn fetch_trades_batched(
+fn fetch_klines_paged(
+    handles: AdapterHandles,
+    ticker_info: TickerInfo,
+    timeframe: Timeframe,
+    from_time: UnixMs,
+    to_time: UnixMs,
+) -> impl Straw<bool, Vec<Kline>, AdapterError> {
+    sipper(async move |mut progress| {
+        let mut cursor = from_time;
+        let mut had_data = false;
+
+        while cursor < to_time {
+            let page = handles
+                .fetch_klines_page(ticker_info, timeframe, cursor, to_time)
+                .await?;
+            let next_cursor = advance_kline_page(cursor, to_time, &page)?;
+            if !page.data.is_empty() {
+                had_data = true;
+                progress.send(page.data).await;
+            }
+            cursor = next_cursor;
+        }
+
+        Ok(had_data)
+    })
+}
+
+fn advance_kline_page(
+    cursor: UnixMs,
+    end: UnixMs,
+    page: &KlinePage,
+) -> Result<UnixMs, AdapterError> {
+    if page.next_from <= cursor {
+        return Err(AdapterError::ParseError(
+            "Kline paging range did not advance".to_string(),
+        ));
+    }
+    if page.next_from > end {
+        return Err(AdapterError::ParseError(
+            "Kline paging cursor exceeded requested end".to_string(),
+        ));
+    }
+    Ok(page.next_from)
+}
+
+/// Fetch trades from the configured source using a single forward-paging
+/// loop (oldest → newest).
+///
+/// Returns `Ok(true)` when at least one trade was received, `Ok(false)`
+/// when the source confirmed the range has no data.
+pub fn fetch_trades_paged(
+    server: Option<ServerClient>,
     handles: AdapterHandles,
     ticker_info: TickerInfo,
     from_time: UnixMs,
     to_time: UnixMs,
     data_path: PathBuf,
-) -> impl Straw<(), Vec<Trade>, AdapterError> {
+) -> impl Straw<bool, Vec<Trade>, AdapterError> {
     sipper(async move |mut progress| {
-        let mut latest_trade_t = from_time;
+        let mut cursor = from_time;
+        let mut had_data = false;
 
-        while latest_trade_t < to_time {
-            match handles
-                .fetch_trades(ticker_info, latest_trade_t, Some(data_path.clone()))
-                .await
-            {
-                Ok(batch) => {
-                    if batch.is_empty() {
-                        break;
-                    }
+        while cursor < to_time {
+            let prev_cursor = cursor;
 
-                    latest_trade_t = batch.last().map_or(latest_trade_t, |trade| trade.time);
+            if let Some(ref client) = server {
+                let parsed = client
+                    .fetch_trades_arrow(ticker_info, cursor, to_time, ARROW_LIMIT)
+                    .await?;
 
-                    let () = progress.send(batch).await;
+                let is_empty = parsed.raw_row_count == 0;
+                if !is_empty {
+                    had_data = had_data || !parsed.trades.is_empty();
+                    cursor = parsed.last_ts.map_or(cursor, |t| t.saturating_add(1));
                 }
-                Err(err) => return Err(err),
+                if !parsed.trades.is_empty() {
+                    progress.send(parsed.trades).await;
+                }
+                if is_empty {
+                    break;
+                }
+            } else {
+                let batch = handles
+                    .fetch_trades(ticker_info, cursor, Some(data_path.clone()))
+                    .await?;
+
+                if batch.is_empty() {
+                    break;
+                }
+
+                had_data = true;
+                cursor = batch.last().map_or(cursor, |t| t.time.saturating_add(1));
+                progress.send(batch).await;
+            }
+
+            if cursor <= prev_cursor {
+                log::error!(
+                    "paging cursor did not advance past {prev_cursor:?} despite a non-empty response; \
+             aborting to avoid an infinite loop (source may be malformed)"
+                );
+                return Err(AdapterError::ParseError(
+                    "Source may be malformed. Check logs for details.".to_string(),
+                ));
             }
         }
 
-        Ok(())
+        Ok(had_data)
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pending_duplicate_request_is_silently_deduplicated() {
-        let mut handler = RequestHandler::default();
-        let range = FetchRange::Kline(UnixMs::new(1000), UnixMs::new(2000));
-
-        assert!(handler.add_request(range).is_some());
-        assert_eq!(handler.add_request(range), None);
-    }
-
-    #[test]
-    fn failed_requests_retry_after_cooldown() {
-        let mut handler = RequestHandler::default();
-        let range = FetchRange::Kline(UnixMs::new(1000), UnixMs::new(2000));
-        let id = handler.add_request(range).expect("new request");
-        assert!(!handler.mark_failed(id, "temporary".to_string()));
-        assert_eq!(handler.add_request(range), None);
-
-        handler.requests.get_mut(&id).unwrap().status = RequestStatus::Failed(0);
-        assert_eq!(handler.add_request(range), Some(id));
-        assert_eq!(handler.requests[&id].status, RequestStatus::Pending);
-
-        let trade = FetchRange::Trades(UnixMs::new(1000), UnixMs::new(2000));
-        let trade_id = handler.add_request(trade).expect("new trade request");
-        assert!(handler.mark_failed(trade_id, "temporary".to_string()));
-    }
 }

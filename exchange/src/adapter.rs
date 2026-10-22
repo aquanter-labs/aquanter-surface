@@ -19,6 +19,10 @@ use std::{str::FromStr, sync::Arc};
 pub use client::{AdapterHandles, MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM};
 pub use proxy::Proxy;
 
+pub(crate) fn open_interest_limit(from: u64, to: u64, period: Timeframe, cap: u64) -> u64 {
+    (to.saturating_sub(from) / period.to_milliseconds() + 1).clamp(1, cap)
+}
+
 pub fn allowed_multipliers_for_min_tick(min_ticksize: crate::unit::MinTicksize) -> &'static [u16] {
     hub::hyperliquid::allowed_multipliers_for_min_tick(min_ticksize)
 }
@@ -619,4 +623,36 @@ impl<I> StreamConfig<I> {
             push_freq,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct KlinePage {
+    pub data: Vec<Kline>,
+    pub next_from: UnixMs,
+}
+
+impl KlinePage {
+    pub(crate) fn new(mut data: Vec<Kline>, from: UnixMs, next_from: UnixMs) -> Self {
+        data.retain(|kline| kline.time >= from && kline.time < next_from);
+        data.sort_unstable_by_key(|kline| kline.time);
+        data.dedup_by_key(|kline| kline.time);
+        Self { data, next_from }
+    }
+}
+
+fn kline_page_end(
+    from: UnixMs,
+    to: UnixMs,
+    timeframe: Timeframe,
+    max_bars: u64,
+) -> Result<UnixMs, AdapterError> {
+    if from >= to || max_bars == 0 {
+        return Err(AdapterError::InvalidRequest(
+            "Invalid kline page range".to_string(),
+        ));
+    }
+
+    Ok(from
+        .saturating_add(timeframe.to_milliseconds().max(1).saturating_mul(max_bars))
+        .min(to))
 }

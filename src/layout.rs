@@ -30,7 +30,9 @@ pub struct SavedState {
     pub custom_theme: Option<data::Theme>,
     pub audio_cfg: data::AudioStream,
     pub volume_size_unit: exchange::SizeUnit,
-    pub proxy_cfg: Option<exchange::proxy::Proxy>,
+    pub network: data::Network,
+    pub cache_market_metadata: bool,
+    pub antialiasing: bool,
     pub ai_cfg: data::config::ai::AiConfig,
     pub alert_cfg: data::config::alerts::AlertConfig,
 }
@@ -60,10 +62,12 @@ impl Default for SavedState {
             theme: data::Theme::default(),
             custom_theme: None,
             audio_cfg: data::AudioStream::default(),
-            volume_size_unit: exchange::SizeUnit::Base,
-            proxy_cfg: None,
-            ai_cfg: data::config::ai::AiConfig::default(),
-            alert_cfg: data::config::alerts::AlertConfig::default(),
+            volume_size_unit: exchange::SizeUnit::default(),
+            network: data::Network::default(),
+            cache_market_metadata: false,
+            antialiasing: true,
+            ai_cfg: Default::default(),
+            alert_cfg: Default::default(),
         }
     }
 }
@@ -101,12 +105,11 @@ impl From<&Dashboard> for data::Dashboard {
 
         data::Dashboard {
             pane: from_layout(&dashboard.panes, main_window_layout),
-            popout: {
-                popouts_layout
-                    .iter()
-                    .map(|(pane, window_spec)| (pane.clone(), *window_spec))
-                    .collect()
-            },
+            popout: popouts_layout
+                .iter()
+                .map(|(pane, window_spec)| (pane.clone(), *window_spec))
+                .collect(),
+            chart_settings: dashboard.chart_settings,
         }
     }
 }
@@ -126,45 +129,19 @@ impl From<&pane::State> for data::Pane {
                 config: trader.config().clone(),
                 link_group: pane.link_group,
             },
-            pane::Content::Heatmap {
-                chart,
-                indicators,
-                studies,
-                layout,
-                ..
-            } => data::Pane::HeatmapChart {
-                layout: chart.as_ref().map_or(layout.clone(), |c| c.chart_layout()),
+            pane::Content::ShaderHeatmap(heatmap) => data::Pane::ShaderHeatmap {
+                indicators: heatmap.indicator_config().clone(),
                 stream_type: streams,
                 settings: pane.settings.clone(),
-                indicators: indicators.clone(),
-                studies: chart
+                link_group: pane.link_group,
+            },
+            pane::Content::Kline { chart, layout, .. } => data::Pane::KlineChart {
+                layout: chart
                     .as_ref()
-                    .map_or(studies.clone(), |c| c.studies.clone()),
-                link_group: pane.link_group,
-            },
-            pane::Content::ShaderHeatmap {
-                indicators,
-                studies,
-                ..
-            } => data::Pane::ShaderHeatmap {
-                stream_type: streams,
-                studies: studies.clone(),
-                indicators: indicators.clone(),
-                settings: pane.settings.clone(),
-                link_group: pane.link_group,
-            },
-            pane::Content::Kline {
-                chart,
-                indicators,
-                kind,
-                layout,
-                ..
-            } => data::Pane::KlineChart {
-                layout: chart.as_ref().map_or(layout.clone(), |c| c.chart_layout()),
-                kind: kind.clone(),
+                    .map(|chart| Box::new(chart.serializable_config()))
+                    .or_else(|| layout.clone()),
                 stream_type: streams,
                 settings: pane.settings.clone(),
-                indicators: indicators.clone(),
                 link_group: pane.link_group,
             },
             pane::Content::TimeAndSales(_) => data::Pane::TimeAndSales {
@@ -177,20 +154,6 @@ impl From<&pane::State> for data::Pane {
                 settings: pane.settings.clone(),
                 link_group: pane.link_group,
             },
-            pane::Content::Comparison(chart) => {
-                let settings = data::layout::pane::Settings {
-                    visual_config: chart.as_ref().map(|c| {
-                        data::layout::pane::VisualConfig::Comparison(c.serializable_config())
-                    }),
-                    ..pane.settings.clone()
-                };
-
-                data::Pane::ComparisonChart {
-                    stream_type: streams,
-                    settings,
-                    link_group: pane.link_group,
-                }
-            }
         }
     }
 }
@@ -261,39 +224,12 @@ fn configuration_with_trading(
             ))
         }
         data::Pane::ShaderHeatmap {
+            indicators,
             stream_type,
             settings,
-            indicators,
-            studies,
             link_group,
         } => {
-            let content = pane::Content::ShaderHeatmap {
-                chart: None,
-                indicators: indicators.clone(),
-                studies,
-            };
-
-            Configuration::Pane(pane::State::from_config(
-                content,
-                stream_type,
-                settings,
-                link_group,
-            ))
-        }
-        data::Pane::HeatmapChart {
-            layout,
-            studies,
-            stream_type,
-            settings,
-            indicators,
-            link_group,
-        } => {
-            let content = pane::Content::Heatmap {
-                chart: None,
-                indicators: indicators.clone(),
-                layout,
-                studies,
-            };
+            let content = pane::Content::ShaderHeatmap(pane::HeatmapContent::Parked(indicators));
 
             Configuration::Pane(pane::State::from_config(
                 content,
@@ -304,32 +240,14 @@ fn configuration_with_trading(
         }
         data::Pane::KlineChart {
             layout,
-            kind,
             stream_type,
             settings,
-            indicators,
             link_group,
         } => {
             let content = pane::Content::Kline {
                 chart: None,
-                indicators: indicators.clone(),
                 layout,
-                kind,
             };
-
-            Configuration::Pane(pane::State::from_config(
-                content,
-                stream_type,
-                settings,
-                link_group,
-            ))
-        }
-        data::Pane::ComparisonChart {
-            stream_type,
-            settings,
-            link_group,
-        } => {
-            let content = pane::Content::Comparison(None);
 
             Configuration::Pane(pane::State::from_config(
                 content,
@@ -378,20 +296,16 @@ pub fn load_saved_state() -> SavedState {
                 let mut popout_windows = Vec::new();
 
                 for (pane, window_spec) in &layout.dashboard.popout {
-                    let configuration =
-                        configuration_with_trading(pane.clone(), Some(&state.trading_cfg));
+                    let configuration = configuration_with_trading(pane.clone(), Some(&state.trading_cfg));
                     popout_windows.push((configuration, *window_spec));
                 }
 
                 let layout_id = Uuid::new_v4();
 
                 let dashboard = Dashboard::from_config(
-                    configuration_with_trading(
-                        layout.dashboard.pane.clone(),
-                        Some(&state.trading_cfg),
-                    ),
+                    configuration_with_trading(layout.dashboard.pane.clone(), Some(&state.trading_cfg)),
                     popout_windows,
-                    layout_id,
+                    layout.dashboard.chart_settings,
                 );
 
                 de_layouts.push((layout.name.clone(), layout_id, dashboard));
@@ -430,14 +344,27 @@ pub fn load_saved_state() -> SavedState {
                 }
             };
 
-            crate::connector::fetcher::toggle_trade_fetch(state.trade_fetch_enabled);
+            // Hydrate secrets from keychain into the network config
+            let mut network = state.network.clone();
+            if network.proxy.is_none() {
+                network.proxy = state.proxy_cfg.clone();
+            }
+            if state.trade_fetch_enabled == Some(true)
+                && matches!(network.trade_fetch_mode, data::config::network::TradeFetchMode::Off)
+            {
+                network.trade_fetch_mode = data::config::network::TradeFetchMode::Exchange;
+            }
+            if network.server_auth_token.is_none()
+                && let Some(ref url) = network.server_url
+            {
+                network.server_auth_token = data::config::auth::load_server_token(url);
+            }
             exchange::unit::qty::set_preferred_currency(state.size_in_quote_ccy);
+            crate::connector::fetcher::set_trade_fetch_mode(network.trade_fetch_mode.clone());
 
-            // Hydrate proxy auth from keychain (keeps auth out of persisted JSON)
-            let mut proxy_cfg = state.proxy_cfg;
-            if let Some(proxy) = proxy_cfg.as_mut()
+            if let Some(proxy) = network.proxy.as_mut()
                 && proxy.auth().is_none()
-                && let Some(auth) = data::config::proxy::load_proxy_auth(proxy)
+                && let Some(auth) = data::config::auth::load_proxy_auth(proxy)
             {
                 proxy.set_auth(Some(auth));
             }
@@ -452,7 +379,9 @@ pub fn load_saved_state() -> SavedState {
                 scale_factor: state.scale_factor,
                 audio_cfg: state.audio_cfg,
                 volume_size_unit: state.size_in_quote_ccy,
-                proxy_cfg,
+                network,
+                cache_market_metadata: state.cache_market_metadata,
+                antialiasing: state.antialiasing,
                 ai_cfg: state.ai_cfg,
                 alert_cfg: state.alert_cfg,
             }

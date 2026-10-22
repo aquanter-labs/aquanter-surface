@@ -4,6 +4,7 @@ pub mod chart;
 pub mod config;
 pub mod layout;
 pub mod log;
+pub mod metadata;
 pub mod panel;
 pub mod stream;
 pub mod tickers_table;
@@ -14,16 +15,52 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 
 pub use audio::AudioStream;
+pub use chart::kline::indicators::{
+    IndicatorCatalogPaths, initialize_indicator_catalog, initialize_indicator_catalog_with_paths,
+};
 pub use config::ScaleFactor;
+pub use config::network::{Network, TradeFetchMode};
 pub use config::sidebar::{self, Sidebar};
 pub use config::state::{Layouts, State};
 pub use config::theme::Theme;
 pub use config::timezone::UserTimezone;
 
+#[doc(hidden)]
+pub use ::exchange;
 use ::log::{error, info, warn};
+#[doc(hidden)]
+pub use ::serde;
 pub use layout::{Dashboard, Layout, Pane};
+pub use metadata::{MarketMetadata, MetadataSource};
+
+use crate::layout::pane::VisualConfig;
 
 pub const SAVED_STATE_PATH: &str = "saved-state.json";
+
+#[derive(Debug, Clone)]
+pub enum PaneSettingsSnapshot {
+    Heatmap(chart::heatmap::SettingsSnapshot),
+    Kline(chart::kline::SettingsSnapshot),
+    TimeAndSales(Option<panel::timesales::Config>),
+    Ladder(Option<panel::ladder::Config>),
+}
+
+impl PaneSettingsSnapshot {
+    pub fn visual_config(&self) -> Option<VisualConfig> {
+        match self {
+            Self::Heatmap(snapshot) => snapshot.config.map(VisualConfig::Heatmap),
+            Self::TimeAndSales(config) => config.map(VisualConfig::TimeAndSales),
+            Self::Ladder(config) => config.map(VisualConfig::Ladder),
+            Self::Kline(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum PaneSettingsTransfer {
+    Visual(Option<VisualConfig>),
+    Kline,
+}
 
 #[derive(thiserror::Error, Debug, Clone)]
 pub enum InternalError {
@@ -44,8 +81,20 @@ pub fn write_json_to_file(json: &str, file_name: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut file = File::create(path)?;
-    file.write_all(json.as_bytes())?;
+    // Write to a temp file and rename so the previous good state survives a
+    // crash or partial write.
+    let tmp_path = path.with_extension("tmp");
+
+    let write_result = File::create(&tmp_path).and_then(|mut file| {
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp_path, &path)
+    });
+
+    if let Err(e) = write_result {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -131,21 +180,25 @@ pub fn open_url(url: &str) -> Result<(), InternalError> {
 }
 
 pub fn data_path(path_name: Option<&str>) -> PathBuf {
-    let root = if let Ok(path) = std::env::var("FLOWSURFACE_DATA_PATH") {
-        PathBuf::from(path)
+    if let Ok(path) = std::env::var("FLOWSURFACE_DATA_PATH") {
+        let root = PathBuf::from(path);
+        match path_name {
+            Some(name) => root.join(name),
+            None => root,
+        }
     } else {
         let data_dir = dirs_next::data_dir().unwrap_or_else(|| PathBuf::from("."));
-        data_dir.join("flowsurface")
-    };
-    if let Some(path_name) = path_name {
-        root.join(path_name)
-    } else {
-        root
+        if let Some(path_name) = path_name {
+            data_dir.join("flowsurface").join(path_name)
+        } else {
+            data_dir.join("flowsurface")
+        }
     }
 }
 
 fn cleanup_directory(data_path: &PathBuf) -> usize {
     if !data_path.exists() {
+        warn!("Data path {:?} does not exist, skipping cleanup", data_path);
         return 0;
     }
 
@@ -194,6 +247,12 @@ fn cleanup_directory(data_path: &PathBuf) -> usize {
     }
 
     deleted_files.len()
+}
+
+pub fn load_antialiasing() -> bool {
+    read_from_file(SAVED_STATE_PATH)
+        .map(|state| state.antialiasing)
+        .unwrap_or_else(|_| true)
 }
 
 pub fn cleanup_old_market_data() -> usize {

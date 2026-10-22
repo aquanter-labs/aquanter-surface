@@ -32,6 +32,35 @@ pub mod text_size {
     pub const EMPHASIS: f32 = BODY + 1.0;
 }
 
+pub mod text_color {
+    use iced::widget::text::Style;
+    use iced::{Color, Theme};
+
+    fn from_color(color: Color) -> Style {
+        Style { color: Some(color) }
+    }
+
+    pub fn title(theme: &Theme) -> Style {
+        from_color(theme.extended_palette().background.strong.text)
+    }
+
+    pub fn section(theme: &Theme) -> Style {
+        from_color(theme.extended_palette().background.base.text)
+    }
+
+    pub fn body(theme: &Theme) -> Style {
+        from_color(theme.extended_palette().background.weak.text)
+    }
+
+    pub fn muted(theme: &Theme) -> Style {
+        from_color(theme.extended_palette().background.weaker.text)
+    }
+
+    pub fn secondary(theme: &Theme) -> Style {
+        from_color(theme.extended_palette().secondary.strong.color)
+    }
+}
+
 /// Icon glyph code points for the `icons` font (`assets/fonts/icons.ttf`).
 /// Values represent each glyph's `code` in `assets/fonts/fontello.json`.
 /// Enum variant names may differ from Fontello CSS names.
@@ -70,6 +99,25 @@ pub enum Icon {
     Folder = 61716,
     ExternalLink = 61772,
     Refresh = 59416,
+    Crosshair = 59426,
+    Trendline = 59427,
+    DrawingBox = 59428,
+    HorizontalLine = 59429,
+    VerticalLine = 59430,
+    Ruler = 59431,
+    Magnet = 59432,
+    Layers = 59433,
+    ChevronUp = 59434,
+    ChevronDown = 59435,
+    ChevronRight = 59436,
+    Eye = 59437,
+    EyeOff = 59438,
+}
+
+impl Icon {
+    pub fn visibility(visible: bool) -> Self {
+        if visible { Self::Eye } else { Self::EyeOff }
+    }
 }
 
 impl From<Icon> for char {
@@ -147,11 +195,17 @@ pub fn tooltip(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 
     Style {
-        background: Some(palette.background.weakest.color.into()),
+        text_color: Some(palette.background.base.text),
+        background: Some(palette.background.base.color.into()),
         border: Border {
             width: 1.0,
-            color: palette.background.weak.color,
+            color: palette.background.strong.color,
             radius: 4.0.into(),
+        },
+        shadow: Shadow {
+            offset: iced::Vector { x: 0.0, y: 0.0 },
+            blur_radius: 8.0,
+            color: Color::BLACK.scale_alpha(if palette.is_dark { 0.8 } else { 0.2 }),
         },
         ..Default::default()
     }
@@ -159,7 +213,7 @@ pub fn tooltip(theme: &Theme) -> Style {
 
 pub mod button {
     use iced::{
-        Border, Color, Theme,
+        Border, Theme,
         widget::button::{Status, Style},
     };
 
@@ -240,7 +294,7 @@ pub mod button {
             text_color: if status == Status::Disabled {
                 palette.background.weak.text
             } else {
-                Color::WHITE
+                iced::Color::WHITE
             },
             background: Some(background.into()),
             border: Border {
@@ -298,6 +352,39 @@ pub mod button {
                         Some(palette.background.strong.color.into())
                     }
                 }
+            },
+            ..Default::default()
+        }
+    }
+
+    pub fn magnet(theme: &Theme, status: Status, enabled: bool, active: bool) -> Style {
+        let palette = theme.extended_palette();
+        let enabled_color = palette.secondary.strong.color;
+
+        Style {
+            text_color: if enabled && !active {
+                enabled_color
+            } else {
+                palette.background.base.text
+            },
+            border: Border {
+                radius: 3.0.into(),
+                width: if enabled && !active { 1.0 } else { 0.0 },
+                color: enabled_color.scale_alpha(0.75),
+            },
+            background: match status {
+                Status::Active => {
+                    if active {
+                        Some(palette.background.weak.color.into())
+                    } else if enabled {
+                        Some(enabled_color.scale_alpha(0.14).into())
+                    } else {
+                        None
+                    }
+                }
+                Status::Pressed => Some(palette.background.weak.color.into()),
+                Status::Hovered => Some(palette.background.strong.color.into()),
+                Status::Disabled => Some(palette.background.strong.color.into()),
             },
             ..Default::default()
         }
@@ -376,6 +463,48 @@ pub mod button {
         }
     }
 
+    pub fn indicator_row(theme: &Theme, status: Status, is_active: bool) -> Style {
+        let palette = theme.extended_palette();
+
+        iced::widget::button::Style {
+            text_color: {
+                if status == Status::Disabled {
+                    palette.background.strongest.color
+                } else if is_active {
+                    palette.background.strongest.text
+                } else {
+                    palette.background.base.text
+                }
+            },
+            border: iced::Border {
+                radius: if is_active { 4.0.into() } else { 2.0.into() },
+                width: if is_active { 2.0 } else { 1.0 },
+                color: if is_active {
+                    palette.background.strong.color
+                } else {
+                    palette.background.weak.color
+                },
+            },
+            background: match status {
+                iced::widget::button::Status::Active => {
+                    if is_active {
+                        Some(palette.background.weakest.color.into())
+                    } else {
+                        Some(palette.background.base.color.into())
+                    }
+                }
+                iced::widget::button::Status::Pressed => {
+                    Some(palette.background.weakest.color.into())
+                }
+                iced::widget::button::Status::Hovered => Some(palette.background.weak.color.into()),
+                iced::widget::button::Status::Disabled => {
+                    Some(palette.background.weakest.color.into())
+                }
+            },
+            ..Default::default()
+        }
+    }
+
     pub fn info(theme: &Theme, _status: Status) -> Style {
         let palette = theme.extended_palette();
 
@@ -386,6 +515,27 @@ pub mod button {
                 ..Default::default()
             },
             background: Some(palette.background.weakest.color.into()),
+            ..Default::default()
+        }
+    }
+
+    pub fn tooltip_indicator(theme: &Theme, status: Status) -> Style {
+        let palette = theme.extended_palette();
+        let accent = palette.secondary.base.color;
+
+        Style {
+            text_color: accent,
+            border: Border {
+                width: 1.0,
+                color: accent.scale_alpha(0.75),
+                radius: 3.0.into(),
+            },
+            background: match status {
+                Status::Active => Some(accent.scale_alpha(0.1).into()),
+                Status::Pressed => Some(accent.scale_alpha(0.3).into()),
+                Status::Hovered => Some(accent.scale_alpha(0.2).into()),
+                Status::Disabled => Some(palette.background.weakest.color.into()),
+            },
             ..Default::default()
         }
     }
@@ -642,18 +792,92 @@ pub fn modal_container(theme: &Theme) -> Style {
     }
 }
 
-pub fn colored_circle_container(theme: &Theme, color: iced::Color) -> Style {
+pub fn inspector_section(theme: &Theme) -> Style {
+    let palette = theme.extended_palette();
+    let mut style = modal_container(theme);
+    style.background = Some(palette.background.weaker.color.into());
+    style.text_color = Some(palette.background.weaker.text);
+    style
+}
+
+pub fn inspector_control(theme: &Theme) -> Style {
+    let palette = theme.extended_palette();
+    let mut style = modal_container(theme);
+    style.background = Some(palette.background.strong.color.into());
+    style.text_color = Some(palette.background.strong.text);
+    style.border.color = palette.background.stronger.color;
+    style
+}
+
+pub fn inspector_slider_container(theme: &Theme) -> Style {
+    let surface = theme.extended_palette().background.strongest;
+    let mut style = inspector_control(theme);
+    style.background = Some(surface.color.into());
+    style.text_color = Some(surface.text);
+    style
+}
+
+pub fn inspector_slider(theme: &Theme, status: widget::slider::Status) -> widget::slider::Style {
+    let palette = theme.extended_palette();
+
+    let mut style = widget::slider::default(theme, status);
+    style.rail.backgrounds.1 = palette.background.base.color.into();
+    style
+}
+
+pub fn chart_sidebar_container(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 
     Style {
-        background: Some(color.into()),
-        border: Border {
-            width: 1.0,
-            color: palette.background.weak.color,
-            radius: 16.0.into(),
+        background: {
+            if palette.is_dark {
+                Some(palette.background.weak.color.scale_alpha(0.2).into())
+            } else {
+                Some(palette.background.strong.color.scale_alpha(0.2).into())
+            }
         },
         snap: true,
         ..Default::default()
+    }
+}
+
+pub fn chart_toolbar(theme: &Theme) -> Style {
+    let palette = theme.extended_palette();
+
+    Style {
+        text_color: Some(palette.background.base.text),
+        background: Some(palette.background.base.color.into()),
+        border: Border {
+            width: 1.0,
+            color: palette.background.strong.color,
+            radius: 4.0.into(),
+        },
+        shadow: Shadow {
+            offset: iced::Vector { x: 0.0, y: 0.0 },
+            blur_radius: 8.0,
+            color: Color::BLACK.scale_alpha(if palette.is_dark { 0.8 } else { 0.2 }),
+        },
+        snap: true,
+    }
+}
+
+pub fn chart_info_tooltip(theme: &Theme) -> Style {
+    let palette = theme.extended_palette();
+
+    Style {
+        text_color: Some(palette.primary.weak.text),
+        background: Some(palette.primary.weak.color.into()),
+        border: Border {
+            width: 1.0,
+            color: palette.primary.strong.color,
+            radius: 4.0.into(),
+        },
+        shadow: Shadow {
+            offset: iced::Vector { x: 0.0, y: 0.0 },
+            blur_radius: 8.0,
+            color: Color::BLACK.scale_alpha(if palette.is_dark { 0.8 } else { 0.2 }),
+        },
+        snap: true,
     }
 }
 
@@ -839,7 +1063,29 @@ pub fn split_ruler(theme: &Theme) -> iced::widget::rule::Style {
     }
 }
 
+pub fn tab_ruler(theme: &Theme) -> iced::widget::rule::Style {
+    let palette = theme.extended_palette();
+
+    iced::widget::rule::Style {
+        color: palette.background.strong.color.scale_alpha(0.5),
+        radius: iced::border::Radius::default(),
+        fill_mode: iced::widget::rule::FillMode::Full,
+        snap: true,
+    }
+}
+
 // crosshair dashed line for charts
+pub fn chart_crosshair(theme: &Theme) -> Stroke<'_> {
+    dashed_line(theme).with_color(
+        theme
+            .extended_palette()
+            .background
+            .base
+            .text
+            .scale_alpha(0.35),
+    )
+}
+
 pub fn dashed_line(theme: &'_ Theme) -> Stroke<'_> {
     let palette = theme.extended_palette();
 

@@ -1,9 +1,7 @@
 use super::ScaleFactor;
-use super::ai::AiConfig;
-use super::alerts::AlertConfig;
 use super::sidebar::Sidebar;
 use super::timezone::UserTimezone;
-use super::trading::TradingConfig;
+use crate::config::network::Network;
 use crate::layout::WindowSpec;
 use crate::{AudioStream, Layout, Theme};
 
@@ -18,6 +16,7 @@ pub struct Layouts {
 #[derive(Default, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct State {
+    #[serde(deserialize_with = "deserialize_layouts")]
     pub layout_manager: Layouts,
     pub selected_theme: Theme,
     pub custom_theme: Option<Theme>,
@@ -26,12 +25,18 @@ pub struct State {
     pub sidebar: Sidebar,
     pub scale_factor: ScaleFactor,
     pub audio_cfg: AudioStream,
-    pub trade_fetch_enabled: bool,
-    pub size_in_quote_ccy: exchange::SizeUnit,
+    pub ai_cfg: super::ai::AiConfig,
+    pub alert_cfg: super::alerts::AlertConfig,
+    pub trading_cfg: super::trading::TradingConfig,
+    pub network: Network,
+    #[serde(skip_serializing)]
     pub proxy_cfg: Option<exchange::proxy::Proxy>,
-    pub ai_cfg: AiConfig,
-    pub alert_cfg: AlertConfig,
-    pub trading_cfg: TradingConfig,
+    #[serde(skip_serializing)]
+    pub trade_fetch_enabled: Option<bool>,
+    pub size_in_quote_ccy: exchange::SizeUnit,
+    pub cache_market_metadata: bool,
+    #[serde(default = "default_antialiasing")]
+    pub antialiasing: bool,
 }
 
 impl State {
@@ -44,12 +49,12 @@ impl State {
         sidebar: Sidebar,
         scale_factor: ScaleFactor,
         audio_cfg: AudioStream,
-        trade_fetch_enabled: bool,
+        network: Network,
         volume_size_unit: exchange::SizeUnit,
-        proxy_cfg: Option<exchange::proxy::Proxy>,
-        ai_cfg: AiConfig,
-        alert_cfg: AlertConfig,
-        trading_cfg: TradingConfig,
+        cache_market_metadata: bool,
+        antialiasing: bool,
+        ai_cfg: super::ai::AiConfig,
+        alert_cfg: super::alerts::AlertConfig,
     ) -> Self {
         State {
             layout_manager,
@@ -60,14 +65,42 @@ impl State {
             sidebar,
             scale_factor,
             audio_cfg,
-            trade_fetch_enabled,
+            network,
+            proxy_cfg: None,
+            trade_fetch_enabled: None,
             size_in_quote_ccy: volume_size_unit,
-            proxy_cfg,
+            cache_market_metadata,
+            antialiasing,
             ai_cfg,
             alert_cfg,
-            trading_cfg,
+            trading_cfg: Default::default(),
         }
     }
+}
+
+const fn default_antialiasing() -> bool {
+    true
+}
+
+fn deserialize_layouts<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Layouts, D::Error> {
+    let mut value = serde_json::Value::deserialize(deserializer)?;
+    if let Some(layouts) = value.get_mut("layouts").and_then(serde_json::Value::as_array_mut) {
+        for layout in layouts {
+            if let Some(dashboard) = layout.get_mut("dashboard") {
+                if let Some(pane) = dashboard.get_mut("pane") {
+                    crate::layout::pane::migrate_legacy_pane(pane).map_err(serde::de::Error::custom)?;
+                }
+                if let Some(popouts) = dashboard.get_mut("popout").and_then(serde_json::Value::as_array_mut) {
+                    for popout in popouts {
+                        if let Some(pane) = popout.get_mut(0) {
+                            crate::layout::pane::migrate_legacy_pane(pane).map_err(serde::de::Error::custom)?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
 }
 
 #[cfg(test)]
@@ -75,8 +108,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn old_saved_state_defaults_to_no_alert_rules() {
+    fn pre_pro_state_defaults_optional_features() {
         let state: State = serde_json::from_str("{}").unwrap();
         assert!(state.alert_cfg.rules.is_empty());
+        assert!(state.layout_manager.layouts.is_empty());
+        assert!(state.antialiasing);
+    }
+
+    #[test]
+    fn legacy_pro_layout_keeps_panels_in_splits_and_popouts() {
+        let state: State = serde_json::from_value(serde_json::json!({
+            "trade_fetch_enabled": true,
+            "layout_manager": {"active_layout": "Pro", "layouts": [{
+                "name": "Pro", "dashboard": {
+                    "pane": {"Split": {"axis": "Vertical", "ratio": 0.5,
+                        "a": "AiAnalysis", "b": {"TradingPanel": {"link_group": "B"}}}},
+                    "popout": [[{"AiAnalysisPanel": {"link_group": "B"}}, {"pos_x": 0.0, "pos_y": 0.0, "width": 800.0, "height": 600.0}]]
+                }
+            }]}
+        })).unwrap();
+        assert_eq!(state.trade_fetch_enabled, Some(true));
+        let dashboard = &state.layout_manager.layouts[0].dashboard;
+        assert!(matches!(dashboard.pane, crate::layout::pane::Pane::Split { .. }));
+        assert!(matches!(dashboard.popout[0].0, crate::layout::pane::Pane::AiAnalysisPanel { link_group: Some(crate::layout::pane::LinkGroup::B) }));
     }
 }

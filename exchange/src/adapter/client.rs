@@ -1,5 +1,6 @@
 use super::{
-    AdapterError, Event, Exchange, MarketKind, StreamConfig, StreamKind, StreamTicksize, Venue,
+    AdapterError, Event, Exchange, KlinePage, MarketKind, StreamConfig, StreamKind, StreamTicksize,
+    Venue,
     hub::{binance, bybit, hyperliquid, mexc, okex},
 };
 use crate::{
@@ -60,10 +61,18 @@ impl KlineAggregator {
         Some(result)
     }
 
-    fn starts_at_bucket(&self) -> bool {
-        self.bucket
+    fn covers_sources(&self, source: Timeframe) -> bool {
+        let starts_at_bucket = self
+            .bucket
             .zip(self.source_klines.first_key_value().map(|(time, _)| *time))
-            .is_some_and(|(bucket, first)| bucket == first)
+            .is_some_and(|(bucket, first)| bucket == first);
+        let mut expected = self.bucket;
+        starts_at_bucket
+            && self.source_klines.keys().all(|time| {
+                let contiguous = expected == Some(*time);
+                expected = Some(time.saturating_add(source.to_milliseconds()));
+                contiguous
+            })
     }
 }
 
@@ -101,6 +110,37 @@ fn kline_fetch_range(
     })
 }
 
+fn open_interest_page_end(from: UnixMs, to: UnixMs, source: Timeframe) -> UnixMs {
+    // Stay below every supported venue's page cap, even with missing samples.
+    to.min(from.saturating_add(100 * source.to_milliseconds() - 1))
+}
+
+async fn fetch_open_interest_range<F, Fut>(
+    from: UnixMs,
+    to: UnixMs,
+    source: Timeframe,
+    mut fetch: F,
+) -> Result<Vec<OpenInterest>, AdapterError>
+where
+    F: FnMut((UnixMs, UnixMs)) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<OpenInterest>, AdapterError>>,
+{
+    let mut cursor = from;
+    let mut points = Vec::new();
+    while cursor <= to {
+        let end = open_interest_page_end(cursor, to, source);
+        points.extend(fetch((cursor, end)).await?);
+        if end == to {
+            break;
+        }
+        cursor = end.saturating_add(1);
+    }
+    points.retain(|point| point.time >= from && point.time <= to);
+    points.sort_unstable_by_key(|point| point.time);
+    points.dedup_by_key(|point| point.time);
+    Ok(points)
+}
+
 #[derive(Clone)]
 pub struct AdapterHandles {
     binance: Option<binance::BinanceHandle>,
@@ -113,25 +153,26 @@ pub struct AdapterHandles {
 impl AdapterHandles {
     pub fn spawn_venue(
         &mut self,
+        client: &reqwest::Client,
         venue: Venue,
         proxy: Option<&super::proxy::Proxy>,
     ) -> Result<(), AdapterError> {
-        let client = reqwest::Client::new();
         match venue {
             Venue::Binance => {
-                self.binance = Some(binance::BinanceHandle::new(client, proxy)?);
+                self.binance = Some(binance::BinanceHandle::new(client.clone(), proxy)?);
             }
             Venue::Bybit => {
-                self.bybit = Some(bybit::BybitHandle::new(client, proxy)?);
+                self.bybit = Some(bybit::BybitHandle::new(client.clone(), proxy)?);
             }
             Venue::Hyperliquid => {
-                self.hyperliquid = Some(hyperliquid::HyperliquidHandle::new(client, proxy)?);
+                self.hyperliquid =
+                    Some(hyperliquid::HyperliquidHandle::new(client.clone(), proxy)?);
             }
             Venue::Okex => {
-                self.okex = Some(okex::OkexHandle::new(client, proxy)?);
+                self.okex = Some(okex::OkexHandle::new(client.clone(), proxy)?);
             }
             Venue::Mexc => {
-                self.mexc = Some(mexc::MexcHandle::new(client, proxy)?);
+                self.mexc = Some(mexc::MexcHandle::new(client.clone(), proxy)?);
             }
         }
 
@@ -139,6 +180,7 @@ impl AdapterHandles {
     }
 
     pub fn spawn_venues(
+        client: &reqwest::Client,
         venues: impl IntoIterator<Item = Venue>,
         proxy: Option<&super::proxy::Proxy>,
     ) -> Self {
@@ -151,7 +193,7 @@ impl AdapterHandles {
         };
 
         for venue in venues {
-            if let Err(err) = out.spawn_venue(venue, proxy) {
+            if let Err(err) = out.spawn_venue(client, venue, proxy) {
                 log::error!("Failed to spawn {venue} adapter: {err}");
             }
         }
@@ -300,82 +342,92 @@ impl AdapterHandles {
                 }),
         };
 
-        let handles = self.clone();
-        let initialize = async move {
-            let mut aggregators: HashMap<StreamKind, KlineAggregator> = HashMap::new();
-            let now = UnixMs::now();
-
-            for (source_stream, targets) in &targets_by_source {
-                let Some((ticker_info, source_timeframe)) = source_stream.as_kline_stream() else {
-                    continue;
-                };
-                let custom_targets = targets
-                    .iter()
-                    .filter_map(|target| {
-                        let timeframe = target.as_kline_stream()?.1;
-                        (timeframe != source_timeframe).then_some((*target, timeframe))
-                    })
-                    .collect::<Vec<_>>();
-                let Some(from) = custom_targets
-                    .iter()
-                    .map(|(_, timeframe)| now.floor_to(*timeframe))
-                    .min()
-                else {
-                    continue;
-                };
-
-                if let Ok(mut klines) = handles
-                    .fetch_klines(ticker_info, source_timeframe, Some((from, now)))
-                    .await
-                {
-                    klines.sort_unstable_by_key(|kline| kline.time);
-                    for (target, timeframe) in custom_targets {
-                        let aggregator = aggregators
-                            .entry(target)
-                            .or_insert_with(|| KlineAggregator::new(timeframe));
-                        for kline in &klines {
-                            aggregator.update(*kline);
+        let state = (
+            source_stream,
+            HashMap::<StreamKind, KlineAggregator>::new(),
+            self.clone(),
+            targets_by_source,
+            stream_scope,
+        );
+        stream::unfold(state, |state| async move {
+            let (mut source_stream, mut aggregators, handles, targets_by_source, target_scope) =
+                state;
+            let event = source_stream.next().await?;
+            if matches!(event, Event::Connected(_)) {
+                aggregators.clear();
+                let now = UnixMs::now();
+                for (source_stream, targets) in &targets_by_source {
+                    let (ticker_info, source) = source_stream.as_kline_stream().unwrap();
+                    let custom_targets = targets
+                        .iter()
+                        .filter_map(|target| {
+                            let timeframe = target.as_kline_stream()?.1;
+                            (timeframe != source).then_some((*target, timeframe))
+                        })
+                        .collect::<Vec<_>>();
+                    let Some(from) = custom_targets
+                        .iter()
+                        .map(|(_, target)| now.floor_to(*target))
+                        .min()
+                    else {
+                        continue;
+                    };
+                    match handles
+                        .fetch_native_klines_range(ticker_info, source, from, now)
+                        .await
+                    {
+                        Ok(klines) => {
+                            for (target, timeframe) in custom_targets {
+                                let aggregator = aggregators
+                                    .entry(target)
+                                    .or_insert_with(|| KlineAggregator::new(timeframe));
+                                for kline in &klines {
+                                    aggregator.update(*kline);
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            log::warn!("Failed to seed custom klines for {ticker_info:?}: {error}")
                         }
                     }
                 }
             }
-
-            (aggregators, targets_by_source)
-        };
-
-        let target_scope = stream_scope.clone();
-        let mut source_stream = Some(source_stream);
-        stream::once(initialize)
-            .flat_map(move |(mut aggregators, targets_by_source)| {
-                let target_scope = target_scope.clone();
-                source_stream.take().unwrap().flat_map(move |event| {
-                    let events = match event {
-                        Event::KlineReceived(source, kline) => targets_by_source
-                            .get(&source)
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|target| {
-                                let source_timeframe = source.as_kline_stream()?.1;
-                                let target_timeframe = target.as_kline_stream()?.1;
-                                let aggregator = aggregators
-                                    .entry(*target)
-                                    .or_insert_with(|| KlineAggregator::new(target_timeframe));
-                                let kline = aggregator.update(kline)?;
-                                (source_timeframe == target_timeframe
-                                    || aggregator.starts_at_bucket())
-                                .then_some(Event::KlineReceived(*target, kline))
-                            })
-                            .collect(),
-                        Event::Connected(_) => vec![Event::Connected(target_scope.clone())],
-                        Event::Disconnected(_, reason) => {
-                            vec![Event::Disconnected(target_scope.clone(), reason)]
-                        }
-                        event => vec![event],
-                    };
-                    stream::iter(events)
-                })
-            })
-            .boxed()
+            let events = match event {
+                Event::KlineReceived(source, kline) => targets_by_source
+                    .get(&source)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|target| {
+                        let source_timeframe = source.as_kline_stream()?.1;
+                        let target_timeframe = target.as_kline_stream()?.1;
+                        let aggregator = aggregators
+                            .entry(*target)
+                            .or_insert_with(|| KlineAggregator::new(target_timeframe));
+                        let kline = aggregator.update(kline)?;
+                        (source_timeframe == target_timeframe
+                            || aggregator.covers_sources(source_timeframe))
+                        .then_some(Event::KlineReceived(*target, kline))
+                    })
+                    .collect(),
+                Event::Connected(_) => vec![Event::Connected(target_scope.clone())],
+                Event::Disconnected(_, reason) => {
+                    vec![Event::Disconnected(target_scope.clone(), reason)]
+                }
+                event => vec![event],
+            };
+            Some((
+                events,
+                (
+                    source_stream,
+                    aggregators,
+                    handles,
+                    targets_by_source,
+                    target_scope,
+                ),
+            ))
+        })
+        .flat_map(stream::iter)
+        .boxed()
     }
 
     pub fn trade_stream(
@@ -640,51 +692,177 @@ impl AdapterHandles {
         timeframe: Timeframe,
         range: Option<(UnixMs, UnixMs)>,
     ) -> Result<Vec<Kline>, AdapterError> {
-        let exchange = ticker_info.ticker.exchange;
-        let venue = exchange.venue();
-        let source = exchange.kline_source_timeframe(timeframe).ok_or_else(|| {
-            AdapterError::InvalidRequest(format!("Unsupported kline timeframe: {timeframe}"))
-        })?;
-        let range = kline_fetch_range(source, timeframe, range);
+        let source = ticker_info
+            .exchange()
+            .kline_source_timeframe(timeframe)
+            .ok_or_else(|| {
+                AdapterError::InvalidRequest(format!("Unsupported kline timeframe: {timeframe}"))
+            })?;
+        if source != timeframe {
+            let (from, to) = kline_fetch_range(source, timeframe, range).unwrap();
+            let from = from.floor_to(timeframe);
+            let mut cursor = from;
+            let mut klines = Vec::new();
+            while cursor < to {
+                let page = self
+                    .fetch_klines_page(ticker_info, timeframe, cursor, to)
+                    .await?;
+                if page.next_from <= cursor || page.next_from > to {
+                    return Err(AdapterError::ParseError(
+                        "Kline paging did not advance within range".into(),
+                    ));
+                }
+                cursor = page.next_from;
+                klines.extend(page.data);
+            }
+            return Ok(klines);
+        }
+        let venue = ticker_info.ticker.exchange.venue();
 
-        let klines = match venue {
+        match venue {
             Venue::Binance => {
                 let Some(handle) = self.binance.as_ref() else {
                     return Err(Self::missing_venue_error(venue));
                 };
-                handle.fetch_klines(ticker_info, source, range).await
+                handle.fetch_klines(ticker_info, timeframe, range).await
             }
             Venue::Bybit => {
                 let Some(handle) = self.bybit.as_ref() else {
                     return Err(Self::missing_venue_error(venue));
                 };
-                handle.fetch_klines(ticker_info, source, range).await
+                handle.fetch_klines(ticker_info, timeframe, range).await
             }
             Venue::Hyperliquid => {
                 let Some(handle) = self.hyperliquid.as_ref() else {
                     return Err(Self::missing_venue_error(venue));
                 };
-                handle.fetch_klines(ticker_info, source, range).await
+                handle.fetch_klines(ticker_info, timeframe, range).await
             }
             Venue::Okex => {
                 let Some(handle) = self.okex.as_ref() else {
                     return Err(Self::missing_venue_error(venue));
                 };
-                handle.fetch_klines(ticker_info, source, range).await
+                handle.fetch_klines(ticker_info, timeframe, range).await
             }
             Venue::Mexc => {
                 let Some(handle) = self.mexc.as_ref() else {
                     return Err(Self::missing_venue_error(venue));
                 };
-                handle.fetch_klines(ticker_info, source, range).await
+                handle.fetch_klines(ticker_info, timeframe, range).await
             }
-        }?;
+        }
+    }
 
-        Ok(if source == timeframe {
-            klines
-        } else {
-            aggregate_klines(klines, timeframe)
-        })
+    pub async fn fetch_klines_page(
+        &self,
+        ticker_info: TickerInfo,
+        timeframe: Timeframe,
+        from: UnixMs,
+        to: UnixMs,
+    ) -> Result<KlinePage, AdapterError> {
+        let source = ticker_info
+            .exchange()
+            .kline_source_timeframe(timeframe)
+            .ok_or_else(|| {
+                AdapterError::InvalidRequest(format!("Unsupported kline timeframe: {timeframe}"))
+            })?;
+        if source == timeframe {
+            return self
+                .fetch_native_klines_page(ticker_info, source, from, to)
+                .await;
+        }
+        if from >= to {
+            return Err(AdapterError::InvalidRequest(
+                "Kline range must be nonempty".into(),
+            ));
+        }
+        // Keep source pages together until a complete target boundary is reached.
+        let end = to.min(
+            from.floor_to(timeframe)
+                .saturating_add(400 * timeframe.to_milliseconds()),
+        );
+        let data = self
+            .fetch_native_klines_range(ticker_info, source, from.floor_to(timeframe), end)
+            .await?;
+        Ok(KlinePage::new(aggregate_klines(data, timeframe), from, end))
+    }
+
+    async fn fetch_native_klines_range(
+        &self,
+        ticker_info: TickerInfo,
+        source: Timeframe,
+        from: UnixMs,
+        end: UnixMs,
+    ) -> Result<Vec<Kline>, AdapterError> {
+        let mut cursor = from;
+        let mut data = Vec::new();
+        while cursor < end {
+            let page = self
+                .fetch_native_klines_page(ticker_info, source, cursor, end)
+                .await?;
+            if page.next_from <= cursor || page.next_from > end {
+                return Err(AdapterError::ParseError(
+                    "Kline paging did not advance within range".into(),
+                ));
+            }
+            cursor = page.next_from;
+            data.extend(page.data);
+        }
+        data.sort_unstable_by_key(|kline| kline.time);
+        Ok(data)
+    }
+
+    async fn fetch_native_klines_page(
+        &self,
+        ticker_info: TickerInfo,
+        timeframe: Timeframe,
+        from: UnixMs,
+        to: UnixMs,
+    ) -> Result<KlinePage, AdapterError> {
+        let venue = ticker_info.ticker.exchange.venue();
+
+        match venue {
+            Venue::Binance => {
+                let Some(handle) = self.binance.as_ref() else {
+                    return Err(Self::missing_venue_error(venue));
+                };
+                handle
+                    .fetch_klines_page(ticker_info, timeframe, from, to)
+                    .await
+            }
+            Venue::Bybit => {
+                let Some(handle) = self.bybit.as_ref() else {
+                    return Err(Self::missing_venue_error(venue));
+                };
+                handle
+                    .fetch_klines_page(ticker_info, timeframe, from, to)
+                    .await
+            }
+            Venue::Hyperliquid => {
+                let Some(handle) = self.hyperliquid.as_ref() else {
+                    return Err(Self::missing_venue_error(venue));
+                };
+                handle
+                    .fetch_klines_page(ticker_info, timeframe, from, to)
+                    .await
+            }
+            Venue::Okex => {
+                let Some(handle) = self.okex.as_ref() else {
+                    return Err(Self::missing_venue_error(venue));
+                };
+                handle
+                    .fetch_klines_page(ticker_info, timeframe, from, to)
+                    .await
+            }
+            Venue::Mexc => {
+                let Some(handle) = self.mexc.as_ref() else {
+                    return Err(Self::missing_venue_error(venue));
+                };
+                handle
+                    .fetch_klines_page(ticker_info, timeframe, from, to)
+                    .await
+            }
+        }
     }
 
     pub async fn fetch_open_interest(
@@ -701,6 +879,34 @@ impl AdapterHandles {
                     "Open interest data not available for {exchange} at {timeframe}"
                 ))
             })?;
+
+        let now = UnixMs::now();
+        let (from, to) =
+            range.unwrap_or_else(|| (now.saturating_sub(400 * timeframe.to_milliseconds()), now));
+        if from > to {
+            return Err(AdapterError::InvalidRequest(
+                "Open interest range is reversed".into(),
+            ));
+        }
+        let mut cursor = from.floor_to(source);
+        if exchange.venue() == Venue::Binance {
+            cursor = cursor.max(now.saturating_sub(30 * 24 * 60 * 60 * 1000));
+        }
+        let mut points = fetch_open_interest_range(cursor, to, source, |range| {
+            self.fetch_native_open_interest(ticker_info, source, Some(range))
+        })
+        .await?;
+        points.retain(|point| point.time >= from && point.time <= to);
+        Ok(points)
+    }
+
+    async fn fetch_native_open_interest(
+        &self,
+        ticker_info: TickerInfo,
+        source: Timeframe,
+        range: Option<(UnixMs, UnixMs)>,
+    ) -> Result<Vec<OpenInterest>, AdapterError> {
+        let exchange = ticker_info.exchange();
 
         match exchange {
             Exchange::BinanceLinear | Exchange::BinanceInverse => {
@@ -816,6 +1022,102 @@ mod tests {
             Exchange::BinanceLinear.open_interest_source_timeframe(Timeframe::Custom(11)),
             None
         );
+        assert!(aggregator.covers_sources(Timeframe::M5));
+        assert!(
+            aggregator
+                .update(kline(0, 1.0, 1.0, 1.0, 1.0, Volume::empty_total()))
+                .is_some()
+        );
+        aggregator.update(kline(1_500_000, 1.0, 1.0, 1.0, 1.0, Volume::empty_total()));
+        assert!(!aggregator.covers_sources(Timeframe::M5));
+        assert!(
+            aggregator
+                .update(kline(0, 1.0, 1.0, 1.0, 1.0, Volume::empty_total()))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn historical_custom_klines_cross_native_page_boundaries_without_losing_volume() {
+        let source = (0..2000)
+            .map(|index| {
+                kline(
+                    index * 300_000,
+                    index as f64,
+                    index as f64 + 2.0,
+                    index as f64 - 1.0,
+                    index as f64 + 1.0,
+                    Volume::BuySell(Qty::from_f64(1.0), Qty::from_f64(2.0)),
+                )
+            })
+            .collect::<Vec<_>>();
+        let targets = aggregate_klines(source, Timeframe::Custom(10));
+        assert_eq!(targets.len(), 1000);
+        assert_eq!(targets[499].time.as_u64(), 499 * 600_000);
+        assert_eq!(targets[500].open, Price::from_f64(1000.0));
+        assert!(
+            targets
+                .iter()
+                .all(|kline| kline.volume.total() == Qty::from_f64(6.0))
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_custom_and_liquidation_streams_report_target_scopes() {
+        let handles = AdapterHandles {
+            binance: None,
+            bybit: None,
+            hyperliquid: None,
+            okex: None,
+            mexc: None,
+        };
+        let info = TickerInfo::new(
+            Ticker::new("BTCUSDT", Exchange::BinanceLinear),
+            0.1,
+            0.001,
+            None,
+        );
+        let mut klines = handles.kline_stream(&StreamConfig::new(
+            vec![(info, Timeframe::Custom(10))],
+            info.exchange(),
+            None,
+            crate::PushFrequency::ServerDefault,
+        ));
+        let Some(Event::Disconnected(scope, _)) = klines.next().await else {
+            panic!("expected disconnect");
+        };
+        assert_eq!(
+            scope.as_ref(),
+            &[StreamKind::Kline {
+                ticker_info: info,
+                timeframe: Timeframe::Custom(10)
+            }]
+        );
+        let mut liquidations = handles.liquidation_stream(&StreamConfig::new(
+            vec![info],
+            info.exchange(),
+            None,
+            crate::PushFrequency::ServerDefault,
+        ));
+        let Some(Event::Disconnected(scope, _)) = liquidations.next().await else {
+            panic!("expected disconnect");
+        };
+        assert_eq!(
+            scope.as_ref(),
+            &[StreamKind::Liquidations { ticker_info: info }]
+        );
+        let unique = super::super::UniqueStreams::from(scope.iter());
+        assert_eq!(
+            unique.liquidation_streams(Some(info.exchange())),
+            vec![info]
+        );
+        assert_eq!(
+            unique.combined()[info.exchange()]
+                .as_ref()
+                .unwrap()
+                .liquidation,
+            vec![info]
+        );
     }
 
     #[test]
@@ -831,11 +1133,96 @@ mod tests {
             None
         );
     }
-}
 
-impl Default for AdapterHandles {
-    fn default() -> Self {
-        Self::spawn_venues(Venue::ALL, None)
+    #[tokio::test]
+    async fn custom_ten_minute_oi_pages_through_missing_ranges_and_preserves_freshness() {
+        let target = Timeframe::Custom(10);
+        let source = Exchange::BinanceLinear
+            .open_interest_source_timeframe(target)
+            .unwrap();
+        let step = source.to_milliseconds();
+        let end = UnixMs::new(400 * target.to_milliseconds());
+        let mut ranges = Vec::new();
+        let points = fetch_open_interest_range(UnixMs::ZERO, end, source, |(from, to)| {
+            ranges.push((from, to));
+            let data = if from == UnixMs::new(100 * step) {
+                Vec::new()
+            } else {
+                (from.as_u64()..=to.as_u64())
+                    .step_by(step as usize)
+                    .map(|time| OpenInterest {
+                        time: time.into(),
+                        value: time as f64,
+                    })
+                    .collect()
+            };
+            std::future::ready(Ok(data))
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(ranges.len(), 9);
+        assert!(
+            ranges
+                .windows(2)
+                .all(|pair| pair[0].1.saturating_add(1) == pair[1].0)
+        );
+        assert_eq!(ranges.last().unwrap().1, end);
+        assert_eq!(points.len(), 701);
+        assert_eq!(points.last().unwrap().time, end);
+        assert!(
+            points
+                .iter()
+                .any(|point| point.time == UnixMs::new(200 * step))
+        );
+        assert!(
+            !points
+                .iter()
+                .any(|point| point.time == UnixMs::new(100 * step))
+        );
+
+        let mut requested = None;
+        let backfill = fetch_open_interest_range(
+            UnixMs::new(100 * step),
+            UnixMs::new(200 * step - 1),
+            source,
+            |range| {
+                requested = Some(range);
+                std::future::ready(Ok(vec![OpenInterest {
+                    time: range.0,
+                    value: 42.0,
+                }]))
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            requested,
+            Some((UnixMs::new(100 * step), UnixMs::new(200 * step - 1)))
+        );
+        assert_eq!(backfill[0].time, UnixMs::new(100 * step));
+    }
+
+    #[test]
+    fn open_interest_limits_include_endpoints_and_never_become_zero() {
+        for cap in [200, 500] {
+            assert_eq!(
+                super::super::open_interest_limit(0, 0, Timeframe::M5, cap),
+                1
+            );
+            assert_eq!(
+                super::super::open_interest_limit(0, 1, Timeframe::M5, cap),
+                1
+            );
+            assert_eq!(
+                super::super::open_interest_limit(0, 300_000, Timeframe::M5, cap),
+                2
+            );
+            assert_eq!(
+                super::super::open_interest_limit(0, u64::MAX, Timeframe::M5, cap),
+                cap
+            );
+        }
     }
 }
 
