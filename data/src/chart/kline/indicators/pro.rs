@@ -316,5 +316,62 @@ mod tests {
             assert_eq!(rate, confirmed, "open bar must not move the win rate");
         }
     }
+
+    #[test]
+    fn oi_flow_net_splits_relative_oi_into_four_flow_states() {
+        let report = super::super::bundled::load_bundled_sources();
+        assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        assert!(report.registrations.iter().any(|registration| registration.id.id() == "pro.oi-flow-net"));
+
+        let source = include_str!("../../../../indicators/sources/oi-flow-net.ind");
+        let compiled = indicator_engine::compile(source, "oi-flow-net.ind").expect("flow script compiles");
+        let mut config = indicator_engine::IndicatorConfig::default();
+        config.values.insert("show_price_line".into(), indicator_engine::InputValue::Bool(true));
+        let mut instance = compiled.instantiate(config).expect("inputs bind");
+        let states = ["buy_inflow", "sell_inflow", "buy_outflow", "sell_outflow"];
+        let mut seen = [false; 4];
+        let mut bursts = 0;
+        for index in 0..400_usize {
+            let t = index as f64;
+            let close = 100.0 + (t * 0.21).sin() * 6.0;
+            let frame = IndicatorFrame {
+                index,
+                time: index as i64 * 60_000,
+                basis: TimeOrTick::Time,
+                instrument: InstrumentContext { min_tick: Some(0.01) },
+                chart: ChartFrame {
+                    open: Some(close), high: Some(close + 1.0), low: Some(close - 1.0), close: Some(close),
+                    volume: Some(10.0),
+                    directional_volume_available: false,
+                    buy_qty: 0.0,
+                    sell_qty: 0.0,
+                    trade: None,
+                    footprint_levels: Vec::new().into(),
+                },
+                open_interest: Some(1_000.0 + (t * 0.13).cos() * 80.0 + (t * 0.47).sin() * 15.0),
+                series_inputs: Vec::new().into(),
+            };
+            let output = instance.evaluate_closed(frame).expect("flow evaluates");
+            let value = |id: &str| output.plots.iter().find(|plot| plot.id == id).map(|plot| plot.value.clone());
+            let number = |id: &str| match value(id) { Some(Value::Float(value)) => Some(value), _ => None };
+            if value("burst") == Some(Value::Bool(true)) {
+                bursts += 1;
+                assert_eq!(number("burst_marker"), number("value"));
+            }
+            let (Some(oi), Some(price)) = (number("value"), number("price")) else { continue; };
+            let expected = match (oi >= 0.0, price >= 0.0) {
+                (true, true) => 0,
+                (true, false) => 1,
+                (false, false) => 2,
+                (false, true) => 3,
+            };
+            seen[expected] = true;
+            for (state, id) in states.iter().enumerate() {
+                assert_eq!(number(id), (state == expected).then_some(oi), "bar {index} {id}");
+            }
+        }
+        assert_eq!(seen, [true; 4], "fixture should cover every flow state");
+        assert!(bursts > 0, "fixture should produce bursts");
+    }
 }
 

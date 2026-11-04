@@ -59,7 +59,7 @@ pub(crate) fn inputs(name: &str, config: &ProConfig) -> Element<'static, Message
                 pick_list(VolumeProfileRange::ALL, Some(config.volume_profile.range), move |value| { let mut c = profile_range.clone(); c.volume_profile.range = value; Message::ProConfigChanged(c) }),
             ].spacing(4));
             controls = controls.push(pick_list(VolumeProfilePastEnd::ALL, Some(config.volume_profile.past_duration_end), move |value| { let mut c = profile_end.clone(); c.volume_profile.past_duration_end = value; Message::ProConfigChanged(c) }));
-            controls = controls.push(number(config, "Rows", f32::from(config.volume_profile.rows), 10.0, 400.0, 1.0, |c, v| c.volume_profile.rows = v as u16));
+            controls = controls.push(number(config, "Rows (candles; footprint uses one row per tick)", f32::from(config.volume_profile.rows), 16.0, 400.0, 1.0, |c, v| c.volume_profile.rows = v as u16));
         }
         _ => {}
     }

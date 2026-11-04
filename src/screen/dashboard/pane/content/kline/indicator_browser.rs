@@ -4,8 +4,7 @@ use crate::style::{self, Icon, icon_text};
 use crate::widget::inspector::{InspectorContent, InspectorSection};
 use data::chart::kline::IndicatorId;
 use data::chart::kline::{
-    IndicatorUnsupportedReason, KlineStudy, StudyDataSource,
-    indicators::{IndicatorInputSource, all_indicators, declared_input_requirements},
+    IndicatorUnsupportedReason, KlineStudy, StudyDataSource, indicators::all_indicators,
 };
 use iced::{
     Alignment, Element, Length,
@@ -48,79 +47,60 @@ struct AvailableIndicator {
     active_count: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IndicatorInputGroup {
-    Candles,
-    CandlesOrTrades,
-    CandlesAndTrades,
-    Trades,
+/// Menu sections, listed in declaration order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum MenuGroup {
+    Trend,
+    Vwap,
+    Oscillators,
+    OrderFlow,
     OpenInterest,
-    CandlesAndOi,
-    CandlesOrTradesAndOi,
-    TradesAndOi,
-    CandlesTradesAndOi,
-    NoExternalData,
+    Profiles,
+    Other,
 }
 
-impl IndicatorInputGroup {
-    const ALL: [Self; 10] = [
-        Self::Candles,
-        Self::CandlesOrTrades,
-        Self::CandlesAndTrades,
-        Self::Trades,
-        Self::OpenInterest,
-        Self::CandlesAndOi,
-        Self::CandlesOrTradesAndOi,
-        Self::TradesAndOi,
-        Self::CandlesTradesAndOi,
-        Self::NoExternalData,
-    ];
-
+impl MenuGroup {
     fn for_indicator(indicator: &IndicatorId) -> Self {
-        let requirements = declared_input_requirements(indicator);
-        let requires = |source| {
-            requirements
-                .iter()
-                .any(|requirement| requirement.source == source && requirement.is_required())
-        };
-
-        let requires_directional_volume = requires(IndicatorInputSource::DirectionalVolume);
-        if requires_directional_volume {
-            return if requires(IndicatorInputSource::OpenInterest) {
-                Self::CandlesOrTradesAndOi
-            } else {
-                Self::CandlesOrTrades
-            };
+        match indicator.id() {
+            "core.moving-averages" | "core.bollinger-bands" => Self::Trend,
+            "core.vwap" | "core.anchored-vwap" => Self::Vwap,
+            "core.rsi" | "pro.stoch-rsi" => Self::Oscillators,
+            "core.volume" | "core.cumulative-volume-delta" | "pro.pro-cvd" | "core.bar-analysis"
+            | "pro.order-flow-bias" => Self::OrderFlow,
+            "core.open-interest" | "pro.pro-open-interest" | "pro.oi-weighted-delta"
+            | "pro.oi-flow-net" | "pro.oi-delta-divergence" | "pro.liquidation-pressure" => {
+                Self::OpenInterest
+            }
+            _ => Self::Other,
         }
+    }
 
-        match (
-            requires(IndicatorInputSource::Klines),
-            requires(IndicatorInputSource::Trades),
-            requires(IndicatorInputSource::OpenInterest),
-        ) {
-            (true, false, false) => Self::Candles,
-            (true, true, false) => Self::CandlesAndTrades,
-            (false, true, false) => Self::Trades,
-            (false, false, true) => Self::OpenInterest,
-            (true, false, true) => Self::CandlesAndOi,
-            (false, true, true) => Self::TradesAndOi,
-            (true, true, true) => Self::CandlesTradesAndOi,
-            (false, false, false) => Self::NoExternalData,
+    fn for_study(study: KlineStudy) -> Self {
+        match study {
+            KlineStudy::VolumeProfile { .. } | KlineStudy::TpoProfile { .. } => Self::Profiles,
+            KlineStudy::BigTrades { .. } => Self::OrderFlow,
+        }
+    }
+
+    fn for_pro(id: &str) -> Self {
+        match id {
+            "SessionVwap" | "AnchoredVwap" => Self::Vwap,
+            "VolumeProfile" | "FixedVolumeProfile" => Self::Profiles,
+            "OrderBook" => Self::OrderFlow,
+            "LiquidationHeatmap" => Self::OpenInterest,
+            _ => Self::Other,
         }
     }
 
     const fn label(self) -> &'static str {
         match self {
-            Self::Candles => "Candles",
-            Self::CandlesOrTrades => "Candles or trades",
-            Self::CandlesAndTrades => "Candles + trades",
-            Self::Trades => "Trades",
-            Self::OpenInterest => "OI",
-            Self::CandlesAndOi => "Candles + OI",
-            Self::CandlesOrTradesAndOi => "Candles or trades + OI",
-            Self::TradesAndOi => "Trades + OI",
-            Self::CandlesTradesAndOi => "Candles + trades + OI",
-            Self::NoExternalData => "No external data",
+            Self::Trend => "Trend",
+            Self::Vwap => "VWAP",
+            Self::Oscillators => "Oscillators",
+            Self::OrderFlow => "Volume & Order Flow",
+            Self::OpenInterest => "Open Interest & Liquidations",
+            Self::Profiles => "Profiles",
+            Self::Other => "Other",
         }
     }
 }
@@ -240,16 +220,6 @@ pub fn view<'a>(chart: &'a KlineChart, picker: &'a State) -> Element<'a, KlineMe
         .into()
 }
 
-fn pro_group(id: &str) -> IndicatorInputGroup {
-    match id {
-        "SessionVwap" | "AnchoredVwap" | "VolumeProfile" | "FixedVolumeProfile" => {
-            IndicatorInputGroup::Candles
-        }
-        "OrderBook" | "LiquidationHeatmap" => IndicatorInputGroup::Trades,
-        _ => IndicatorInputGroup::NoExternalData,
-    }
-}
-
 fn pro_row(chart: &KlineChart, id: &'static str, label: &'static str) -> Element<'static, KlineMessage> {
     let active = chart.pro_config().is_enabled(id);
     let toggle = button(
@@ -301,77 +271,52 @@ fn indicator_group_views(
     indicators: Vec<AvailableIndicator>,
     studies: Vec<AvailableStudy>,
 ) -> Vec<Element<'static, KlineMessage>> {
-    let mut grouped: Vec<(IndicatorInputGroup, Vec<AvailableIndicator>)> = IndicatorInputGroup::ALL
-        .into_iter()
-        .map(|group| (group, Vec::new()))
-        .collect();
-
+    let mut entries: Vec<(MenuGroup, String, Element<'static, KlineMessage>)> = Vec::new();
     for available in indicators {
-        let group = IndicatorInputGroup::for_indicator(&available.indicator);
-        if let Some((_, entries)) = grouped
-            .iter_mut()
-            .find(|(candidate, _)| *candidate == group)
-        {
-            entries.push(available);
+        let label = available.indicator.to_string();
+        let group = MenuGroup::for_indicator(&available.indicator);
+        let row = indicator_row(
+            available.indicator,
+            available.unavailable_reason,
+            available.active_count,
+        );
+        entries.push((group, label, row));
+    }
+    for available in studies {
+        entries.push((
+            MenuGroup::for_study(available.study),
+            available.study.to_string(),
+            study_row(available.study, available.availability, available.active),
+        ));
+    }
+    for (id, label) in super::settings::pro_indicators::ITEMS {
+        if picker.matches_query(label) {
+            entries.push((MenuGroup::for_pro(id), (*label).to_owned(), pro_row(chart, id, label)));
         }
     }
+    entries.sort_by_cached_key(|(group, label, _)| (*group, label.to_lowercase()));
 
-    grouped
-        .into_iter()
-        .filter_map(|(group, mut indicators)| {
-            indicators
-                .sort_by_cached_key(|available| available.indicator.to_string().to_lowercase());
-
-            let mut rows = indicators
-                .into_iter()
-                .map(|available| {
-                    indicator_row(
-                        available.indicator,
-                        available.unavailable_reason,
-                        available.active_count,
-                    )
-                })
-                .collect::<Vec<_>>();
-
-            let mut study_rows = studies
-                .iter()
-                .filter(|available| {
-                    let study_group = match available.study.source() {
-                        StudyDataSource::Kline => IndicatorInputGroup::Candles,
-                        StudyDataSource::Trades => IndicatorInputGroup::Trades,
-                    };
-                    study_group == group
-                })
-                .map(|available| {
-                    study_row(available.study, available.availability, available.active)
-                })
-                .collect::<Vec<_>>();
-            rows.append(&mut study_rows);
-
-            for (id, label) in super::settings::pro_indicators::ITEMS {
-                if pro_group(id) == group && picker.matches_query(label) {
-                    rows.push(pro_row(chart, id, label));
-                }
-            }
-
-            if rows.is_empty() {
-                return None;
-            }
-
-            Some(
-                column![
-                    crate::widget::text::emphasis(group.label()),
-                    iced::widget::Column::with_children(rows)
-                        .spacing(2)
-                        .width(Length::Fill),
-                ]
-                .padding([0, 4])
-                .spacing(4)
-                .width(Length::Fill)
-                .into(),
-            )
-        })
-        .collect()
+    let mut views = Vec::new();
+    let mut entries = entries.into_iter().peekable();
+    while let Some((group, _, row)) = entries.next() {
+        let mut rows = vec![row];
+        while let Some((_, _, row)) = entries.next_if(|(next, ..)| *next == group) {
+            rows.push(row);
+        }
+        views.push(
+            column![
+                crate::widget::text::emphasis(group.label()),
+                iced::widget::Column::with_children(rows)
+                    .spacing(2)
+                    .width(Length::Fill),
+            ]
+            .padding([0, 4])
+            .spacing(4)
+            .width(Length::Fill)
+            .into(),
+        );
+    }
+    views
 }
 
 fn group_active_indicators(indicators: &[IndicatorId]) -> Vec<ActiveIndicator> {

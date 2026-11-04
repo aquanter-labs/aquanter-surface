@@ -172,44 +172,17 @@ impl<'a> KlineWidget<'a> {
         if points.is_empty() {
             points = series.points().collect();
         }
-        let mut buckets = std::collections::BTreeMap::<exchange::unit::Price, (f64, f64)>::new();
-        for point in &points {
-            for (price, group) in &point.footprint.trades {
-                let entry = buckets.entry(price.floor_to_step(tick)).or_default();
-                entry.0 += group.buy_qty.to_f64();
-                entry.1 += group.sell_qty.to_f64();
-            }
-        }
-        if buckets.values().all(|(buy, sell)| *buy + *sell <= 0.0) {
-            for point in &points {
-                let (buy, sell) = point.kline.volume.buy_sell().map(|(buy, sell)| (buy.to_f64(), sell.to_f64())).unwrap_or_else(|| {
-                    let total = point.kline.volume.total().to_f64();
-                    if point.kline.close >= point.kline.open { (total, 0.0) } else { (0.0, total) }
-                });
-                if buy + sell <= 0.0 { continue; }
-                let mut price = exchange::unit::Price::from_f64(point.kline.low.to_f64()).floor_to_step(tick);
-                let end = exchange::unit::Price::from_f64(point.kline.high.to_f64()).floor_to_step(tick);
-                let mut count = 1u32;
-                let mut cursor = price;
-                while cursor < end {
-                    let Some(next) = cursor.checked_add_steps(1, tick) else { break; };
-                    cursor = next;
-                    count += 1;
-                    if count > 20_000 { break; }
-                }
-                let span = f64::from(count);
-                for _ in 0..count {
-                    let entry = buckets.entry(price).or_default();
-                    entry.0 += buy / span;
-                    entry.1 += sell / span;
-                    let Some(next) = price.checked_add_steps(1, tick) else { break; };
-                    price = next;
-                }
-            }
-        }
+        let samples = points.iter().flat_map(|point| profile_samples(point)).collect::<Vec<_>>();
+        // Footprint rows are one tick tall, so the profile follows them; Rows applies to candles.
+        let bins = if self.footprint.visible {
+            tick_profile_bins(&samples, tick.to_f64_lossy())
+        } else {
+            profile_bins(&samples, usize::from(profile.rows.clamp(16, 400)))
+        };
+        let Some((low, step, bins)) = bins else { return; };
         let delta = matches!(profile.display, data::chart::kline::pro::VolumeProfileDisplay::Delta);
-        let value = |&(buy, sell): &(f64, f64)| if delta { buy - sell } else { buy + sell };
-        let max = buckets.values().map(value).map(f64::abs).fold(0.0, f64::max);
+        let value = |bin: &ProfileBin| if delta { bin.buy - bin.sell } else { bin.buy + bin.sell + bin.neutral };
+        let max = bins.iter().map(value).map(f64::abs).fold(0.0, f64::max);
         let width = if self.footprint.visible { main.x - bounds.x } else { bounds.width * f32::from(profile.max_width_percent.min(50)) / 100.0 };
         if width <= 0.0 { return; }
         let column = Rectangle { width, ..bounds };
@@ -217,26 +190,30 @@ impl<'a> KlineWidget<'a> {
             frame.fill_rectangle(Point::new(column.x, column.y), Size::new(column.width, column.height), palette.background.weakest.color);
             frame.fill_rectangle(Point::new(column.x + column.width - 1.0, column.y), Size::new(1.0, column.height), palette.background.strong.color.scale_alpha(0.25));
             if max <= 0.0 { return; }
-            for (price, bucket) in &buckets {
-                let Some((top, height)) = tick_row(scene, *price, tick) else { continue; };
-                let (buy, sell) = *bucket;
+            for (index, bin) in bins.iter().enumerate() {
+                let signed = value(bin);
+                if signed.abs() <= f64::EPSILON { continue; }
+                let row_low = low + index as f64 * step;
+                let row = if self.footprint.visible {
+                    tick_row(scene, exchange::unit::Price::from_f64(row_low + step / 2.0), tick)
+                } else {
+                    price_y(scene, row_low).zip(price_y(scene, row_low + step)).map(|(y0, y1)| (y0.min(y1), (y1 - y0).abs().max(1.0)))
+                };
+                let Some((top, height)) = row else { continue; };
                 if delta {
-                    let signed = buy - sell;
-                    if signed.abs() <= f64::EPSILON { continue; }
                     let color = if signed < 0.0 { palette.danger.base.color } else { palette.success.base.color };
                     frame.fill_rectangle(Point::new(column.x, top), Size::new((signed.abs() / max) as f32 * width, height), color.scale_alpha(0.75));
-                    paint_profile_qty(frame, config, column.x, top, height, width, signed, palette.background.base.text);
                 } else {
                     let mut x = column.x;
-                    for (qty, color) in [(sell, palette.danger.base.color), (buy, palette.success.base.color)] {
+                    for (qty, color) in [(bin.sell, palette.danger.base.color), (bin.neutral, palette.secondary.base.color), (bin.buy, palette.success.base.color)] {
                         let bar = (qty / max) as f32 * width;
                         if bar > 0.0 {
                             frame.fill_rectangle(Point::new(x, top), Size::new(bar, height), color.scale_alpha(0.75));
                             x += bar;
                         }
                     }
-                    paint_profile_qty(frame, config, column.x, top, height, width, buy + sell, palette.background.base.text);
                 }
+                paint_profile_qty(frame, config, column.x, top, height, width, signed, palette.background.base.text);
             }
         });
     }
@@ -597,16 +574,40 @@ fn profile_samples(point: &data::chart::kline::series::KlineSeriesPoint<'_>) -> 
     vec![ProfileSample::Range { low: point.kline.low.to_f64(), high: point.kline.high.to_f64(), buy, sell, neutral }]
 }
 
-fn profile_bins(samples: &[ProfileSample], rows: usize) -> Option<(f64, f64, Vec<ProfileBin>)> {
+fn sample_bounds(samples: &[ProfileSample]) -> Option<(f64, f64)> {
     let bounds = |sample: &ProfileSample| match *sample {
         ProfileSample::Price { price, .. } => (price, price),
         ProfileSample::Range { low, high, .. } => (low, high),
     };
     let low = samples.iter().map(|sample| bounds(sample).0).min_by(f64::total_cmp)?;
     let high = samples.iter().map(|sample| bounds(sample).1).max_by(f64::total_cmp)?;
+    Some((low, high))
+}
+
+/// `rows` equal rows spanning the samples' price range.
+fn profile_bins(samples: &[ProfileSample], rows: usize) -> Option<(f64, f64, Vec<ProfileBin>)> {
+    let (low, high) = sample_bounds(samples)?;
     let rows = rows.max(1);
     let step = ((high - low) / rows as f64).max(f64::EPSILON);
-    let index = |price: f64| (((price - low) / step) as usize).min(rows - 1);
+    Some((low, step, bin_samples(samples, low, step, rows)))
+}
+
+/// One row per tick, centered on the tick prices like footprint rows.
+fn tick_profile_bins(samples: &[ProfileSample], tick: f64) -> Option<(f64, f64, Vec<ProfileBin>)> {
+    const MAX_ROWS: f64 = 20_000.0;
+    let (low, high) = sample_bounds(samples)?;
+    if !tick.is_finite() || tick <= 0.0 { return None; }
+    let step = tick * ((high - low) / tick / MAX_ROWS).ceil().max(1.0);
+    // Candle-only bounds can sit between ticks; snap to the footprint grid (floor_to_step).
+    let snap = |price: f64| (price / step + 1e-9).floor() * step;
+    let (low, high) = (snap(low), snap(high));
+    let rows = ((high - low) / step).round() as usize + 1;
+    let low = low - step / 2.0;
+    Some((low, step, bin_samples(samples, low, step, rows)))
+}
+
+fn bin_samples(samples: &[ProfileSample], low: f64, step: f64, rows: usize) -> Vec<ProfileBin> {
+    let index = |price: f64| (((price - low) / step).max(0.0) as usize).min(rows - 1);
     let mut bins = vec![ProfileBin::default(); rows];
     for sample in samples {
         match *sample {
@@ -623,11 +624,12 @@ fn profile_bins(samples: &[ProfileSample], rows: usize) -> Option<(f64, f64, Vec
                     bin.neutral += neutral;
                     continue;
                 }
-                for (row, bin) in bins.iter_mut().enumerate() {
+                for row in index(range_low)..=index(range_high) {
                     let bin_low = low + row as f64 * step;
                     let overlap = range_high.min(bin_low + step) - range_low.max(bin_low);
                     if overlap > 0.0 {
                         let ratio = overlap / range;
+                        let bin = &mut bins[row];
                         bin.buy += buy * ratio;
                         bin.sell += sell * ratio;
                         bin.neutral += neutral * ratio;
@@ -636,7 +638,7 @@ fn profile_bins(samples: &[ProfileSample], rows: usize) -> Option<(f64, f64, Vec
             }
         }
     }
-    Some((low, step, bins))
+    bins
 }
 
 fn paint_marker(frame: &mut PaintInputs, point: Point, buy: bool, color: iced::Color) {
@@ -679,6 +681,34 @@ mod tests {
         let undirected = [ProfileSample::Range { low: 100.0, high: 102.0, buy: 0.0, sell: 0.0, neutral: 4.0 }];
         let (_, _, bins) = profile_bins(&undirected, 2).unwrap();
         assert_eq!(bins, vec![ProfileBin { neutral: 2.0, ..ProfileBin::default() }; 2]);
+        assert_eq!(profile_bins(&undirected, 16).unwrap().2.len(), 16);
+    }
+
+    #[test]
+    fn footprint_profile_rows_center_on_ticks() {
+        let samples = [
+            ProfileSample::Price { price: 100.0, buy: 1.0, sell: 0.0 },
+            ProfileSample::Price { price: 100.3, buy: 0.0, sell: 2.0 },
+        ];
+        let (low, step, bins) = tick_profile_bins(&samples, 0.1).unwrap();
+        assert_eq!(bins.len(), 4);
+        assert!((low + step / 2.0 - 100.0).abs() < 1e-9);
+        assert_eq!(bins[0].buy, 1.0);
+        assert_eq!(bins[3].sell, 2.0);
+        assert_eq!(bins[1..3], [ProfileBin::default(); 2]);
+    }
+
+    #[test]
+    fn mixed_history_profile_rows_stay_on_tick_grid() {
+        let samples = [
+            ProfileSample::Range { low: 100.03, high: 100.13, buy: 0.0, sell: 0.0, neutral: 1.0 },
+            ProfileSample::Price { price: 100.2, buy: 3.0, sell: 0.0 },
+        ];
+        let (low, step, bins) = tick_profile_bins(&samples, 0.1).unwrap();
+        let center = |index: usize| low + (index as f64 + 0.5) * step;
+        let row = bins.iter().position(|bin| bin.buy == 3.0).unwrap();
+        assert!((center(row) - 100.2).abs() < 1e-9);
+        assert!((center(0) - 100.0).abs() < 1e-9);
     }
 
 

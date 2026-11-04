@@ -1805,8 +1805,19 @@ impl KlineChart {
         self.options
             .pro
             .enabled
-            .retain(|name| data::chart::kline::pro::ProConfig::scripted_indicator_id(name).is_none());
+            .retain(|name| !data::chart::kline::pro::ProConfig::is_legacy_indicator(name));
         let mut added = false;
+        let retired = self
+            .indicators
+            .instances
+            .instances()
+            .iter()
+            .filter(|instance| data::chart::kline::pro::ProConfig::is_retired_indicator(instance.kind.id()))
+            .map(|instance| instance.id)
+            .collect::<Vec<_>>();
+        for id in retired {
+            added |= self.indicators.remove_indicator_instance(id);
+        }
         for name in names {
             let Some(id) = data::chart::kline::pro::ProConfig::scripted_indicator_id(&name) else {
                 continue;
