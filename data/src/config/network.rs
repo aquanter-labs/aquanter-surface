@@ -30,7 +30,7 @@ impl Network {
 pub enum TradeFetchMode {
     #[default]
     Off,
-    /// Direct exchange API only (Binance spot/linear/inverse).
+    /// Direct exchange API only (Binance, Bybit, OKX).
     Exchange,
     /// Remote Arrow IPC market-data server.
     Server,

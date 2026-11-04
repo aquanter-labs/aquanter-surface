@@ -277,6 +277,15 @@ impl FetchCoordinator {
         for (range, tickers) in batches {
             match range {
                 FetchRange::Trades(..) => {
+                    // Aggregate sources move in lockstep with the base so no venue skips a range.
+                    let busy = tickers.iter().any(|ticker| {
+                        self.request_handlers
+                            .get(ticker)
+                            .is_some_and(RequestHandler::has_pending_trade_fetch)
+                    });
+                    if busy {
+                        continue;
+                    }
                     for ticker_info in tickers {
                         self.queue_trade_fetch(ticker_info, range, &mut requests);
                     }

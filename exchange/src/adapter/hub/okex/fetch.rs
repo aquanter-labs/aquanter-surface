@@ -408,3 +408,167 @@ pub(super) async fn fetch_historical_oi(
 
     Ok(open_interest)
 }
+
+const OKX_ARCHIVE_BASE: &str = "https://www.okx.com/cdn/okex/traderecords/trades/daily";
+const OKX_DAY_MS: u64 = 86_400_000;
+const OKX_ARCHIVE_OFFSET_MS: u64 = 8 * 3_600_000;
+
+/// Past days come from OKX daily archives (cut at UTC+8 midnight, so one UTC
+/// day spans two files); whatever they don't cover is paged from the REST
+/// history endpoint, which reaches back about three months.
+pub(super) async fn fetch_trades(
+    hub: &mut HttpHub<OkexLimiter>,
+    ticker_info: TickerInfo,
+    from_time: UnixMs,
+    until: UnixMs,
+    data_path: Option<std::path::PathBuf>,
+) -> Result<Vec<crate::Trade>, AdapterError> {
+    if until <= from_time {
+        return Ok(Vec::new());
+    }
+    let mut trades = Vec::new();
+    let mut rest_from = from_time;
+    if until <= UnixMs::now().floor_to(Timeframe::D1)
+        && let Some(data_path) = data_path
+    {
+        let shifted = from_time.as_u64() + OKX_ARCHIVE_OFFSET_MS;
+        let mut day_start = shifted - shifted % OKX_DAY_MS - OKX_ARCHIVE_OFFSET_MS;
+        while day_start < until.as_u64() {
+            match okx_archive_trades(hub, ticker_info, day_start, &data_path).await {
+                Ok(day) => {
+                    trades.extend(
+                        day.into_iter()
+                            .filter(|trade| trade.time >= from_time && trade.time < until),
+                    );
+                    rest_from = UnixMs::new(day_start + OKX_DAY_MS).min(until);
+                }
+                Err(error) => {
+                    log::debug!("OKX archive unavailable, falling back to REST: {error}");
+                    break;
+                }
+            }
+            day_start += OKX_DAY_MS;
+        }
+    }
+    if rest_from < until {
+        trades.extend(okx_rest_trades(hub, ticker_info, rest_from, until).await?);
+    }
+    trades.sort_by_key(|trade| trade.time);
+    Ok(trades)
+}
+
+async fn okx_archive_trades(
+    hub: &mut HttpHub<OkexLimiter>,
+    ticker_info: TickerInfo,
+    day_start: u64,
+    data_path: &std::path::Path,
+) -> Result<Vec<crate::Trade>, AdapterError> {
+    let date = chrono::DateTime::from_timestamp_millis((day_start + OKX_ARCHIVE_OFFSET_MS) as i64)
+        .ok_or_else(|| AdapterError::ParseError("Invalid timestamp".into()))?
+        .date_naive();
+    let (inst_id, market) = ticker_info.ticker.to_full_symbol_and_type();
+    let file = format!("{inst_id}-trades-{}.zip", date.format("%Y-%m-%d"));
+    let path = data_path.join(&inst_id).join(&file);
+    let url = format!("{OKX_ARCHIVE_BASE}/{}/{file}", date.format("%Y%m%d"));
+    crate::adapter::hub::cached_download(hub.client(), &url, &path).await?;
+
+    let qty_norm = okx_trade_qty_norm(ticker_info, market);
+    let archive = std::fs::File::open(&path)
+        .map_err(|e| AdapterError::ParseError(format!("Failed to open {path:?}: {e}")))?;
+    let mut archive = zip::ZipArchive::new(archive)
+        .map_err(|e| AdapterError::ParseError(format!("Failed to unzip {path:?}: {e}")))?;
+    let mut trades = Vec::new();
+    for index in 0..archive.len() {
+        let csv_file = archive
+            .by_index(index)
+            .map_err(|e| AdapterError::ParseError(format!("Failed to read csv: {e}")))?;
+        // instrument_name,trade_id,side,price,size,created_time,...
+        let mut reader = csv::Reader::from_reader(std::io::BufReader::new(csv_file));
+        trades.extend(reader.records().filter_map(|record| {
+            let record = record.ok()?;
+            Some(okx_trade(
+                ticker_info,
+                qty_norm,
+                record.get(5)?.parse().ok()?,
+                record.get(2)?,
+                record.get(3)?.parse().ok()?,
+                record.get(4)?.parse().ok()?,
+            ))
+        }));
+    }
+    Ok(trades)
+}
+
+async fn okx_rest_trades(
+    hub: &mut HttpHub<OkexLimiter>,
+    ticker_info: TickerInfo,
+    from_time: UnixMs,
+    until: UnixMs,
+) -> Result<Vec<crate::Trade>, AdapterError> {
+    const PAGE: usize = 100;
+    let (inst_id, market) = ticker_info.ticker.to_full_symbol_and_type();
+    let qty_norm = okx_trade_qty_norm(ticker_info, market);
+    let mut trades = Vec::new();
+    // Newest first: start below `until` by time, then walk back by trade id.
+    let mut cursor = format!("type=2&after={}", until.as_u64());
+    loop {
+        let url = format!(
+            "{REST_API_BASE}/market/history-trades?instId={inst_id}&limit={PAGE}&{cursor}"
+        );
+        let doc: Value = hub.http_json_with_limiter(&url, 1, None, None).await?;
+        if doc["code"].as_str() != Some("0") {
+            return Err(AdapterError::ParseError(format!(
+                "OKX trade history request failed: {} ({})",
+                doc["msg"], doc["code"]
+            )));
+        }
+        let rows = doc["data"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let mut reached_start = false;
+        for row in rows {
+            let Some(time) = row["ts"].as_str().and_then(|ts| ts.parse::<u64>().ok()) else {
+                continue;
+            };
+            if time < from_time.as_u64() {
+                reached_start = true;
+                continue;
+            }
+            let price = row["px"].as_str().and_then(|v| v.parse().ok());
+            let size = row["sz"].as_str().and_then(|v| v.parse().ok());
+            if let (Some(price), Some(size), Some(side)) = (price, size, row["side"].as_str())
+                && time < until.as_u64()
+            {
+                trades.push(okx_trade(ticker_info, qty_norm, time, side, price, size));
+            }
+        }
+        let last_id = rows.last().and_then(|row| row["tradeId"].as_str());
+        match last_id {
+            Some(id) if !reached_start && rows.len() >= PAGE => cursor = format!("type=1&after={id}"),
+            _ => break,
+        }
+    }
+    Ok(trades)
+}
+
+fn okx_trade_qty_norm(ticker_info: TickerInfo, market: MarketKind) -> QtyNormalization {
+    QtyNormalization::with_raw_qty_unit(
+        volume_size_unit() == SizeUnit::Quote,
+        ticker_info,
+        raw_qty_unit_from_market_type(market),
+    )
+}
+
+fn okx_trade(
+    ticker_info: TickerInfo,
+    qty_norm: QtyNormalization,
+    time: u64,
+    side: &str,
+    price: f64,
+    size: f64,
+) -> crate::Trade {
+    crate::Trade {
+        time: time.into(),
+        is_sell: side.eq_ignore_ascii_case("sell"),
+        price: Price::from_f64(price).round_to_min_tick(ticker_info.min_ticksize),
+        qty: qty_norm.normalize_qty(size, price),
+    }
+}

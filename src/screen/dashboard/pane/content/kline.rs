@@ -1204,6 +1204,7 @@ impl KlineChart {
     }
 
     fn request_fetch_action(&mut self, allow_trade: bool) -> Option<Vec<FetchSpec>> {
+        self.sync_aggregate_sources();
         let horizontal_offset = self.viewport.horizontal_world.offset();
         let visible_points = self.visible_points();
         let active_indicators = self.selected_indicators();
@@ -1229,9 +1230,15 @@ impl KlineChart {
         let mut batches = input.desired_fetch_batches();
 
         if allow_trade && let Some(range) = input.desired_trade_fetch_range(base_ticker) {
+            let sources = self
+                .data
+                .aggregate_sources()
+                .iter()
+                .copied()
+                .filter(|source| crate::connector::fetcher::has_trade_history(source.exchange()));
             batches.push(FetchBatch {
                 range,
-                tickers: vec![base_ticker],
+                tickers: std::iter::once(base_ticker).chain(sources).collect(),
             });
         }
 
@@ -2140,6 +2147,27 @@ impl KlineChart {
         }
     }
 
+    /// Pro: the same coin on other venues while venue aggregation is on.
+    fn aggregate_peers(&self) -> Vec<TickerInfo> {
+        if !self.options.pro.aggregate_venues || !self.basis.is_time() {
+            return Vec::new();
+        }
+        exchange::directory::aggregate_peers(self.data.base_ticker())
+    }
+
+    /// A changed source set invalidates merged order flow: reload like a basis change.
+    // ponytail: full reload even when sources are only added; refetch just the new sources' history if reloads get annoying.
+    fn sync_aggregate_sources(&mut self) {
+        if !self.data.set_aggregate_sources(self.aggregate_peers()) {
+            return;
+        }
+        self.data.reset_for_basis(self.basis, false);
+        self.fetch.rebuild_handlers(&self.data.selected_tickers());
+        self.indicators
+            .mark_rebuild_pending(IndicatorRebuildReason::BasisChanged);
+        self.render_invalidation.invalidate();
+    }
+
     pub fn desired_streams(&self) -> Vec<StreamKind> {
         let mut streams = match self.basis {
             Basis::Time(timeframe) => {
@@ -2149,6 +2177,11 @@ impl KlineChart {
                     streams.push(StreamKind::Trades {
                         ticker_info: self.data.base_ticker(),
                     });
+                    streams.extend(
+                        self.aggregate_peers()
+                            .into_iter()
+                            .map(|ticker_info| StreamKind::Trades { ticker_info }),
+                    );
                 }
                 streams.extend(self.data.selected_tickers().into_iter().map(|ticker_info| {
                     StreamKind::Kline {

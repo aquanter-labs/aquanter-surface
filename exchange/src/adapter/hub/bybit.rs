@@ -158,6 +158,24 @@ impl BybitHandle {
             .await
     }
 
+    pub async fn fetch_trades(
+        &self,
+        ticker: TickerInfo,
+        from_time: UnixMs,
+        until: UnixMs,
+        data_path: Option<std::path::PathBuf>,
+    ) -> Result<Vec<crate::Trade>, AdapterError> {
+        self.request_port
+            .request(move |reply| BybitCommand::Trades {
+                ticker,
+                from_time,
+                until,
+                data_path,
+                reply,
+            })
+            .await
+    }
+
     pub fn connect_depth_stream(
         self,
         ticker_info: TickerInfo,
@@ -245,6 +263,18 @@ impl super::FetchCommandHandler<MarketKind> for Worker {
     ) -> futures::future::BoxFuture<'_, Result<Vec<OpenInterest>, AdapterError>> {
         Box::pin(async move {
             fetch::fetch_historical_oi(&mut self.hub, ticker_info, range, timeframe).await
+        })
+    }
+
+    fn fetch_trades(
+        &mut self,
+        ticker_info: TickerInfo,
+        from_time: UnixMs,
+        until: UnixMs,
+        data_path: Option<std::path::PathBuf>,
+    ) -> futures::future::BoxFuture<'_, Result<Vec<crate::Trade>, AdapterError>> {
+        Box::pin(async move {
+            fetch::fetch_trades(&mut self.hub, ticker_info, from_time, until, data_path).await
         })
     }
 }

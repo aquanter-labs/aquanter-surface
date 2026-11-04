@@ -381,3 +381,68 @@ pub(super) async fn fetch_historical_oi(
 
     Ok(open_interest)
 }
+
+/// Past UTC days come from public.bybit.com daily archives, cached on disk.
+// ponytail: Bybit has no paged trade history API, so today stays empty until
+// the live stream fills it; add a recorder/server source if that gap matters.
+pub(super) async fn fetch_trades(
+    hub: &mut HttpHub<BybitLimiter>,
+    ticker_info: TickerInfo,
+    from_time: UnixMs,
+    until: UnixMs,
+    data_path: Option<std::path::PathBuf>,
+) -> Result<Vec<crate::Trade>, AdapterError> {
+    if until <= from_time || from_time >= UnixMs::now().floor_to(Timeframe::D1) {
+        return Ok(Vec::new());
+    }
+    let data_path = data_path.ok_or_else(|| {
+        AdapterError::InvalidRequest("Bybit trades fetch requires data_path".to_string())
+    })?;
+    let date = chrono::DateTime::from_timestamp_millis(from_time.as_u64() as i64)
+        .ok_or_else(|| AdapterError::ParseError("Invalid timestamp".into()))?
+        .format("%Y-%m-%d");
+    let (symbol, market) = ticker_info.ticker.to_full_symbol_and_type();
+    let is_spot = market == MarketKind::Spot;
+    let (dir, file) = if is_spot {
+        ("spot", format!("{symbol}_{date}.csv.gz"))
+    } else {
+        ("trading", format!("{symbol}{date}.csv.gz"))
+    };
+    let path = data_path.join(dir).join(&symbol).join(&file);
+    let url = format!("https://public.bybit.com/{dir}/{symbol}/{file}");
+    super::super::cached_download(hub.client(), &url, &path).await?;
+
+    let file = std::fs::File::open(&path)
+        .map_err(|e| AdapterError::ParseError(format!("Failed to open {path:?}: {e}")))?;
+    let qty_norm = QtyNormalization::with_raw_qty_unit(
+        volume_size_unit() == SizeUnit::Quote,
+        ticker_info,
+        raw_qty_unit_from_market_type(market),
+    );
+    let mut reader = csv::Reader::from_reader(std::io::BufReader::new(
+        flate2::read::GzDecoder::new(file),
+    ));
+    let mut trades = reader
+        .records()
+        .filter_map(|record| {
+            let record = record.ok()?;
+            // spot: id,timestamp(ms),price,volume,side; perps: timestamp(s),symbol,side,size,price
+            let (time, side, price, qty) = if is_spot {
+                (record.get(1)?.parse::<u64>().ok()?, record.get(4)?, record.get(2)?, record.get(3)?)
+            } else {
+                let seconds = record.get(0)?.parse::<f64>().ok()?;
+                ((seconds * 1000.0).round() as u64, record.get(2)?, record.get(4)?, record.get(3)?)
+            };
+            let price = price.parse::<f64>().ok()?;
+            Some(crate::Trade {
+                time: time.into(),
+                is_sell: side.eq_ignore_ascii_case("sell"),
+                price: Price::from_f64(price).round_to_min_tick(ticker_info.min_ticksize),
+                qty: qty_norm.normalize_qty(qty.parse::<f64>().ok()?, price),
+            })
+        })
+        .filter(|trade| trade.time >= from_time && trade.time < until)
+        .collect::<Vec<_>>();
+    trades.sort_by_key(|trade| trade.time);
+    Ok(trades)
+}

@@ -951,6 +951,22 @@ impl AdapterHandles {
                     .fetch_trades(ticker_info, from_time, until, data_path)
                     .await
             }
+            Venue::Bybit => {
+                let Some(handle) = self.bybit.as_ref() else {
+                    return Err(Self::missing_venue_error(exchange.venue()));
+                };
+                handle
+                    .fetch_trades(ticker_info, from_time, until, data_path)
+                    .await
+            }
+            Venue::Okex => {
+                let Some(handle) = self.okex.as_ref() else {
+                    return Err(Self::missing_venue_error(exchange.venue()));
+                };
+                handle
+                    .fetch_trades(ticker_info, from_time, until, data_path)
+                    .await
+            }
             _ => Err(AdapterError::InvalidRequest(format!(
                 "Trade fetch not available for {exchange}"
             ))),

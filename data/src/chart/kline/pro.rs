@@ -154,6 +154,8 @@ pub struct ProConfig {
     pub show_footprint_summary: bool,
     /// Pick the tick multiplier from the zoom level so footprint rows stay readable.
     pub auto_tick_size: bool,
+    /// Merge the same coin's trades from every venue into the footprint (Coinglass-style aggregation).
+    pub aggregate_venues: bool,
     pub show_footprint_orderbook: bool,
     pub quantity_format: QuantityFormat,
     pub session_vwap: SessionVwapConfig,
@@ -179,6 +181,7 @@ impl Default for ProConfig {
             data_labels_always_visible: false,
             show_footprint_summary: false,
             auto_tick_size: true,
+            aggregate_venues: false,
             show_footprint_orderbook: false,
             quantity_format: QuantityFormat::default(),
             session_vwap: SessionVwapConfig::default(),

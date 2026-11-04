@@ -41,6 +41,8 @@ pub struct KlineData {
     base_ticker: TickerInfo,
     series_index: FxHashMap<TickerInfo, usize>,
     tick_multiplier: TickMultiplier,
+    /// Pro: other venues whose trades merge into the base series' order flow.
+    aggregate_sources: Vec<TickerInfo>,
 }
 
 impl KlineData {
@@ -51,7 +53,47 @@ impl KlineData {
             base_ticker,
             series_index: FxHashMap::default(),
             tick_multiplier,
+            aggregate_sources: Vec::new(),
         }
+    }
+
+    pub fn aggregate_sources(&self) -> &[TickerInfo] {
+        &self.aggregate_sources
+    }
+
+    /// Returns `true` when the source set changed.
+    pub fn set_aggregate_sources(&mut self, sources: Vec<TickerInfo>) -> bool {
+        let changed = self.aggregate_sources != sources;
+        self.aggregate_sources = sources;
+        changed
+    }
+
+    /// Trades from an aggregate source, re-targeted at the base series.
+    /// Trades priced outside 0.5x..2x of the base close are dropped: that
+    /// catches unit mismatches such as `1000PEPE` vs `PEPE`.
+    pub fn aggregate_source_trades(
+        &self,
+        ticker_info: &TickerInfo,
+        trades: &[Trade],
+    ) -> Option<(TickerInfo, Vec<Trade>)> {
+        if self.series_index.contains_key(ticker_info)
+            || !self.aggregate_sources.contains(ticker_info)
+        {
+            return None;
+        }
+        let close = self
+            .base_series()
+            .and_then(|series| series.latest_point())
+            .map(|point| point.kline.close.to_f64())
+            .filter(|close| *close > 0.0);
+        let trades = close.map_or_else(Vec::new, |close| {
+            trades
+                .iter()
+                .filter(|trade| (0.5..=2.0).contains(&(trade.price.to_f64() / close)))
+                .copied()
+                .collect()
+        });
+        Some((self.base_ticker, trades))
     }
 
     pub fn base_ticker(&self) -> TickerInfo {
@@ -425,7 +467,16 @@ impl KlineData {
         let open_interest = base_series
             .open_interest()
             .and_then(|series| series.latest_at_or_before(time));
-        base_series.indicator_frame(index, time, open_interest, trade_data_enabled)
+        let mut frame = base_series.indicator_frame(index, time, open_interest, trade_data_enabled);
+        if !self.aggregate_sources.is_empty()
+            && let Some(trade) = frame.chart.trade
+        {
+            frame.chart.buy_qty = trade.buy_qty;
+            frame.chart.sell_qty = trade.sell_qty;
+            frame.chart.volume = Some(trade.buy_qty + trade.sell_qty);
+            frame.chart.directional_volume_available = true;
+        }
+        frame
     }
 
     fn closed_trade_correction_start(
@@ -677,5 +728,36 @@ impl KlineData {
         recurring_intervals.sort_unstable();
         recurring_intervals.dedup();
         recurring_intervals
+    }
+}
+
+#[cfg(test)]
+mod aggregate_tests {
+    use super::KlineData;
+    use crate::chart::Basis;
+    use exchange::adapter::Exchange;
+    use exchange::unit::{Price, Qty};
+    use exchange::{Kline, Ticker, TickMultiplier, TickerInfo, Timeframe, Trade, Volume};
+
+    #[test]
+    fn source_trades_retarget_to_base_and_drop_mismatched_prices() {
+        let base = TickerInfo::new(Ticker::new("BTCUSDT", Exchange::BinanceLinear), 0.1, 0.001, None);
+        let source =
+            TickerInfo::new(Ticker::new("BTC-USDT-SWAP", Exchange::OkexLinear), 0.1, 0.01, Some(0.01));
+        let basis = Basis::Time(Timeframe::M1);
+        let mut data = KlineData::new(base, TickMultiplier(1));
+        data.add_ticker(base, basis);
+        let kline = Kline::new(0u64, 100.0, 100.0, 100.0, 100.0, Volume::TotalOnly(Qty::from_f64(1.0)), base.min_ticksize);
+        data.insert_historical_klines(base, &[kline], basis);
+        let trade = |price| Trade { time: 1u64.into(), is_sell: false, price: Price::from_f64(price), qty: Qty::from_f64(1.0) };
+
+        assert!(data.aggregate_source_trades(&source, &[trade(100.0)]).is_none());
+        data.set_aggregate_sources(vec![source]);
+        let (target, trades) = data
+            .aggregate_source_trades(&source, &[trade(101.0), trade(100_000.0)])
+            .expect("source trades are re-targeted");
+        assert_eq!(target, base);
+        assert_eq!(trades.len(), 1);
+        assert!(data.aggregate_source_trades(&base, &[trade(100.0)]).is_none());
     }
 }

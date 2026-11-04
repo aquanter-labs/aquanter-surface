@@ -44,6 +44,25 @@ pub fn is_trade_fetch_enabled() -> bool {
     trade_fetch_mode() != TradeFetchMode::Off
 }
 
+/// Venues whose own API serves historical trades.
+pub fn venue_has_trade_history(exchange: Exchange) -> bool {
+    matches!(
+        exchange.venue(),
+        exchange::adapter::Venue::Binance
+            | exchange::adapter::Venue::Bybit
+            | exchange::adapter::Venue::Okex
+    )
+}
+
+/// Whether a historical trade fetch for `exchange` can succeed right now.
+pub fn has_trade_history(exchange: Exchange) -> bool {
+    match trade_fetch_mode() {
+        TradeFetchMode::Off => false,
+        TradeFetchMode::Server => true,
+        TradeFetchMode::Exchange => venue_has_trade_history(exchange),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum FetchedData {
     Trades {
@@ -594,13 +613,13 @@ pub fn request_fetch(
                 });
 
             if let Some(trade_stream @ StreamKind::Trades { ticker_info }) = trade_stream {
-                let is_binance = matches!(
-                    ticker_info.exchange(),
-                    Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse
-                );
+                let has_venue_history = venue_has_trade_history(ticker_info.exchange());
                 let mode = trade_fetch_mode();
                 let server = sources.server.clone();
-                let data_path = data::data_path(Some("market_data/binance/"));
+                let data_path = data::data_path(Some(&format!(
+                    "market_data/{}/",
+                    format!("{:?}", ticker_info.exchange().venue()).to_lowercase()
+                )));
 
                 if let Some(ref client) = server {
                     log::debug!(
@@ -617,20 +636,20 @@ pub fn request_fetch(
                         error: "Server mode selected but the server URL is invalid.".to_string(),
                         req_id: Some(req_id),
                     });
-                } else if is_binance {
+                } else if has_venue_history {
                     log::debug!(
                         "Trade fetch: using direct exchange API for {}",
                         ticker_info.exchange()
                     );
                 } else {
                     log::warn!(
-                        "Trade fetch via exchange API is only supported for Binance, got {}",
+                        "Trade fetch via exchange API is only supported for Binance, Bybit and OKX, got {}",
                         ticker_info.exchange()
                     );
                     return Task::done(FetchUpdate::Error {
                         pane_id,
                         error: format!(
-                            "Trade fetch via exchange API is only supported for Binance, got {}",
+                            "Trade fetch via exchange API is only supported for Binance, Bybit and OKX, got {}",
                             ticker_info.exchange()
                         ),
                         req_id: Some(req_id),

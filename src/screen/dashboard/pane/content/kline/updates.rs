@@ -152,19 +152,24 @@ impl DataUpdate<'_> {
                 ticker_info,
                 trades,
             } => {
+                let aggregated = data.aggregate_source_trades(ticker_info, trades);
+                let (ticker_info, trades) = match &aggregated {
+                    Some((base, trades)) => (*base, trades.as_slice()),
+                    None => (**ticker_info, *trades),
+                };
                 let update_indicator_ids = if data.has_closed_trade_correction(trades, basis) {
                     indicator_ids
                         .iter()
                         .copied()
                         .filter(|id| {
-                            !indicators.trade_request_affects_indicator(*id, data, **ticker_info)
+                            !indicators.trade_request_affects_indicator(*id, data, ticker_info)
                         })
                         .collect::<Vec<_>>()
                 } else {
                     indicator_ids
                 };
                 let Some(update) = data.insert_live_trades(
-                    ticker_info,
+                    &ticker_info,
                     trades,
                     basis,
                     &update_indicator_ids,
@@ -180,9 +185,9 @@ impl DataUpdate<'_> {
                         IndicatorRebuildReason::HistoricalDataChanged(scope)
                     };
                     if basis.is_time() {
-                        indicators.mark_for_trade_ticker(data, **ticker_info, reason);
+                        indicators.mark_for_trade_ticker(data, ticker_info, reason);
                     } else {
-                        indicators.mark_for_candle_ticker(data, **ticker_info, reason);
+                        indicators.mark_for_candle_ticker(data, ticker_info, reason);
                     }
                 }
                 apply_live_state(
@@ -204,12 +209,19 @@ impl DataUpdate<'_> {
                     return DataUpdateEffect::Unchanged;
                 }
 
+                // Fetch bookkeeping stays on the source; aggregated trades land on the base.
+                let fetched_from = *ticker_info;
+                let aggregated = data.aggregate_source_trades(ticker_info, trades);
+                let (ticker_info, trades) = match &aggregated {
+                    Some((base, trades)) => (base, trades.as_slice()),
+                    None => (ticker_info, *trades),
+                };
                 let change =
                     data.insert_historical_trades(*ticker_info, trades, *is_batches_done, basis);
                 if let Some(req_id) = req_id {
                     fetch.record_trade_batch(*req_id, trades.len());
                 }
-                fetch.complete_trade_fetch(*ticker_info, *req_id, *is_batches_done);
+                fetch.complete_trade_fetch(fetched_from, *req_id, *is_batches_done);
                 if !change {
                     return DataUpdateEffect::Unchanged;
                 }

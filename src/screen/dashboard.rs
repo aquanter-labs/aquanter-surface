@@ -1427,10 +1427,13 @@ impl Dashboard {
         main_window: window::Id,
     ) -> Task<Message> {
         let mut tasks = vec![];
+        let mut streams_changed = false;
 
         let mut tick_state =
             |window: window::Id, pane_id: pane_grid::Pane, state: &mut pane::State| {
                 let (action, indicator_task) = state.tick(now, pane_id);
+                // Pro: venue aggregation can gain sources once ticker metadata loads.
+                streams_changed |= state.sync_kline_streams();
                 match action {
                     Some(pane::Action::Chart(action)) => match action {
                         pane::ChartAction::RequestFetch(reqs) => {
@@ -1477,6 +1480,9 @@ impl Dashboard {
             }
         }
 
+        if streams_changed {
+            tasks.push(self.refresh_streams(main_window));
+        }
         Task::batch(tasks)
     }
 

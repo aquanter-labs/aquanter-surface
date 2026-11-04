@@ -594,7 +594,7 @@ impl FetchForm {
 
         if self.draft_active {
             let exchange_radio = container(radio(
-                "Exchange (Binance only)",
+                "Exchange (Binance, Bybit, OKX)",
                 FetchModeTag::Exchange,
                 selected_tag,
                 FetchMsg::SelectFetchMode,

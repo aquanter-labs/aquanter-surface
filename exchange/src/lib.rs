@@ -1,5 +1,6 @@
 pub mod adapter;
 pub mod depth;
+pub mod directory;
 mod error;
 mod serde_util;
 pub mod unit;

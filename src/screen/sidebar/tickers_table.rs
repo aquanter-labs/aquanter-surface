@@ -313,6 +313,7 @@ impl TickersTable {
                 return Some(Action::ErrorOccurred(err));
             }
             Message::UpdateMetadata(venue, info, source) => {
+                exchange::directory::ingest(info.values().flatten().copied());
                 self.metadata.ingest(venue, &info, source);
 
                 if !matches!(

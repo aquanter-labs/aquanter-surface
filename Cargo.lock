@@ -1434,6 +1434,7 @@ dependencies = [
  "csv",
  "enum-map",
  "fastwebsockets",
+ "flate2",
  "futures",
  "http-body-util",
  "hyper",

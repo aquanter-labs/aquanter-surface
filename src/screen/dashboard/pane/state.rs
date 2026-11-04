@@ -161,7 +161,7 @@ impl State {
         })
     }
 
-    fn sync_kline_streams(&mut self) -> bool {
+    pub(crate) fn sync_kline_streams(&mut self) -> bool {
         let Some(desired) = (match &self.content {
             Content::Kline {
                 chart: Some(chart), ..
