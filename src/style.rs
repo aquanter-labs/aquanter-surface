@@ -141,7 +141,6 @@ pub enum LucideIcon {
     ChevronUp = 57456,
     FileText = 57548,
     Plus = 57661,
-    Minus = 57628,
     RefreshCw = 57669,
     Trash2 = 57742,
     TrendingUp = 57745,
@@ -151,7 +150,6 @@ pub enum LucideIcon {
     Braces = 58218,
     Sparkles = 58386,
     KeyRound = 58531,
-    PencilRuler = 58609,
 }
 
 pub fn lucide_icon_text<'a>(icon: LucideIcon, size: u16) -> Text<'a, Theme, Renderer> {
@@ -861,6 +859,7 @@ pub fn chart_toolbar(theme: &Theme) -> Style {
     }
 }
 
+#[allow(dead_code)] // ponytail: upstream helper; Pro renders fetch status via fetch_status_lines
 pub fn chart_info_tooltip(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 
