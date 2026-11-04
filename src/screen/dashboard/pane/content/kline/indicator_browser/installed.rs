@@ -7,7 +7,7 @@ use crate::widget::inspector::{InspectorContent, InspectorSection};
 use data::chart::kline::IndicatorId;
 use data::chart::kline::{
     IndicatorUnsupportedReason, KlineStudy, StudyDataSource,
-    indicators::all_indicators,
+    indicators::{IndicatorInputSource, all_indicators, declared_input_requirements},
 };
 use iced::{
     Alignment, Element, Length,
@@ -41,60 +41,79 @@ struct AvailableIndicator {
     active_count: usize,
 }
 
-/// Menu sections, listed in declaration order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum MenuGroup {
-    Trend,
-    Vwap,
-    Oscillators,
-    OrderFlow,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IndicatorInputGroup {
+    Candles,
+    CandlesOrTrades,
+    CandlesAndTrades,
+    Trades,
     OpenInterest,
-    Profiles,
-    Other,
+    CandlesAndOi,
+    CandlesOrTradesAndOi,
+    TradesAndOi,
+    CandlesTradesAndOi,
+    NoExternalData,
 }
 
-impl MenuGroup {
+impl IndicatorInputGroup {
+    const ALL: [Self; 10] = [
+        Self::Candles,
+        Self::CandlesOrTrades,
+        Self::CandlesAndTrades,
+        Self::Trades,
+        Self::OpenInterest,
+        Self::CandlesAndOi,
+        Self::CandlesOrTradesAndOi,
+        Self::TradesAndOi,
+        Self::CandlesTradesAndOi,
+        Self::NoExternalData,
+    ];
+
     fn for_indicator(indicator: &IndicatorId) -> Self {
-        match indicator.id() {
-            "core.moving-averages" | "core.bollinger-bands" => Self::Trend,
-            "core.vwap" | "core.anchored-vwap" => Self::Vwap,
-            "core.rsi" | "pro.stoch-rsi" => Self::Oscillators,
-            "core.volume" | "core.cumulative-volume-delta" | "pro.pro-cvd" | "core.bar-analysis"
-            | "pro.order-flow-bias" => Self::OrderFlow,
-            "core.open-interest" | "pro.pro-open-interest" | "pro.oi-weighted-delta"
-            | "pro.oi-flow-net" | "pro.oi-delta-divergence" | "pro.liquidation-pressure" => {
-                Self::OpenInterest
-            }
-            _ => Self::Other,
-        }
-    }
+        let requirements = declared_input_requirements(indicator);
+        let requires = |source| {
+            requirements
+                .iter()
+                .any(|requirement| requirement.source == source && requirement.is_required())
+        };
 
-    fn for_study(study: KlineStudy) -> Self {
-        match study {
-            KlineStudy::VolumeProfile { .. } | KlineStudy::TpoProfile { .. } => Self::Profiles,
-            KlineStudy::BigTrades { .. } => Self::OrderFlow,
+        let requires_directional_volume = requires(IndicatorInputSource::DirectionalVolume);
+        if requires_directional_volume {
+            return if requires(IndicatorInputSource::OpenInterest) {
+                Self::CandlesOrTradesAndOi
+            } else {
+                Self::CandlesOrTrades
+            };
         }
-    }
 
-    fn for_pro(id: &str) -> Self {
-        match id {
-            "SessionVwap" | "AnchoredVwap" => Self::Vwap,
-            "VolumeProfile" | "FixedVolumeProfile" => Self::Profiles,
-            "OrderBook" => Self::OrderFlow,
-            "LiquidationHeatmap" => Self::OpenInterest,
-            _ => Self::Other,
+        match (
+            requires(IndicatorInputSource::Klines),
+            requires(IndicatorInputSource::Trades),
+            requires(IndicatorInputSource::OpenInterest),
+        ) {
+            (true, false, false) => Self::Candles,
+            (true, true, false) => Self::CandlesAndTrades,
+            (false, true, false) => Self::Trades,
+            (false, false, true) => Self::OpenInterest,
+            (true, false, true) => Self::CandlesAndOi,
+            (false, true, true) => Self::TradesAndOi,
+            (true, true, true) => Self::CandlesTradesAndOi,
+            (false, false, false) => Self::NoExternalData,
         }
     }
 
     const fn label(self) -> &'static str {
         match self {
-            Self::Trend => "Trend",
-            Self::Vwap => "VWAP",
-            Self::Oscillators => "Oscillators",
-            Self::OrderFlow => "Volume & Order Flow",
-            Self::OpenInterest => "Open Interest & Liquidations",
-            Self::Profiles => "Profiles",
-            Self::Other => "Other",
+            Self::Candles => "Candles",
+            Self::CandlesOrTrades => "Candles or trades",
+            Self::CandlesAndTrades => "Candles + trades",
+            Self::Trades => "Trades",
+            Self::OpenInterest => "OI",
+            Self::CandlesAndOi => "Candles + OI",
+            Self::CandlesOrTradesAndOi => "Candles or trades + OI",
+            Self::TradesAndOi => "Trades + OI",
+            Self::CandlesTradesAndOi => "Candles + trades + OI",
+            Self::NoExternalData => "No external data",
         }
     }
 }
@@ -171,7 +190,8 @@ impl ViewState {
             .filter(|available| self.matches_query(&available.study.to_string()))
             .collect();
 
-        let available_column = available_column(chart, self, available_indicators, available_studies);
+        let pro_group = pro_group_view(chart, self);
+        let available_column = available_column(available_indicators, available_studies, pro_group);
 
         let search = text_input("Search indicators and studies...", self.search_query())
             .style(|theme, status| style::validated_text_input(theme, status, true))
@@ -210,99 +230,76 @@ impl ViewState {
     }
 }
 
-fn pro_row(chart: &KlineChart, id: &'static str, label: &'static str) -> Element<'static, BrowserMessage> {
-    let active = chart.pro_config().is_enabled(id);
-    let toggle = button(
-        row![
-            iced::widget::text(label).size(crate::style::text_size::BODY),
-            space::horizontal(),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center)
-        .width(Length::Fill),
-    )
-    .width(Length::Fill)
-    .style(move |theme, status| style::button::indicator_row(theme, status, active))
-    .on_press(BrowserMessage::TogglePro(id));
-    let mut row = row![toggle].spacing(2).width(Length::Fill);
-    if id != "OrderBook" {
-        let settings = button(icon_text(Icon::Cog, 12))
-            .style(move |theme, status| style::button::transparent(theme, status, false))
-            .on_press(BrowserMessage::ConfigurePro(id));
-        row = row.push(settings);
-    }
-    row.into()
-}
-
 fn available_column(
-    chart: &KlineChart,
-    picker: &ViewState,
     indicators: Vec<AvailableIndicator>,
     studies: Vec<AvailableStudy>,
+    pro_group: Option<Element<'static, BrowserMessage>>,
 ) -> Element<'static, BrowserMessage> {
-    let groups = indicator_group_views(chart, picker, indicators, studies);
-    let sections = vec![InspectorSection::new(
+    let mut indicator_groups = indicator_group_views(indicators);
+    indicator_groups.extend(pro_group);
+    let study_groups = study_group_views(studies);
+
+    let mut sections = Vec::with_capacity(2);
+    sections.push(InspectorSection::new(
         indicators_title(),
-        iced::widget::Column::with_children(groups)
+        iced::widget::Column::with_children(indicator_groups)
             .spacing(10)
             .width(Length::Fill),
-    )];
+    ));
+    if !study_groups.is_empty() {
+        sections.push(InspectorSection::new(
+            crate::widget::text::title("Studies"),
+            iced::widget::Column::with_children(study_groups)
+                .spacing(10)
+                .width(Length::Fill),
+        ));
+    }
 
     InspectorContent::new(sections).into_element()
 }
 
-fn indicator_group_views(
-    chart: &KlineChart,
-    picker: &ViewState,
-    indicators: Vec<AvailableIndicator>,
-    studies: Vec<AvailableStudy>,
-) -> Vec<Element<'static, BrowserMessage>> {
-    let mut entries: Vec<(MenuGroup, String, Element<'static, BrowserMessage>)> = Vec::new();
-    for available in indicators {
-        let label = available.indicator.to_string();
-        let group = MenuGroup::for_indicator(&available.indicator);
-        let row = indicator_row(
-            available.indicator,
-            available.unavailable_reason,
-            available.active_count,
-        );
-        entries.push((group, label, row));
+/// Pro built-ins are config toggles, not catalog indicators, so they sit in their own group.
+fn pro_group_view(chart: &KlineChart, state: &ViewState) -> Option<Element<'static, BrowserMessage>> {
+    let rows = crate::screen::dashboard::pane::content::kline::settings::pro_indicators::ITEMS
+        .iter()
+        .filter(|(_, label)| state.matches_query(label))
+        .map(|&(id, label)| pro_row(chart, id, label))
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        return None;
     }
-    for available in studies {
-        entries.push((
-            MenuGroup::for_study(available.study),
-            available.study.to_string(),
-            study_row(available.study, available.availability, available.active),
-        ));
-    }
-    for (id, label) in crate::screen::dashboard::pane::content::kline::settings::pro_indicators::ITEMS {
-        if picker.matches_query(label) {
-            entries.push((MenuGroup::for_pro(id), (*label).to_owned(), pro_row(chart, id, label)));
-        }
-    }
-    entries.sort_by_cached_key(|(group, label, _)| (*group, label.to_lowercase()));
+    Some(
+        column![
+            crate::widget::text::emphasis("Pro"),
+            iced::widget::Column::with_children(rows)
+                .spacing(2)
+                .width(Length::Fill),
+        ]
+        .padding([0, 4])
+        .spacing(4)
+        .width(Length::Fill)
+        .into(),
+    )
+}
 
-    let mut views = Vec::new();
-    let mut entries = entries.into_iter().peekable();
-    while let Some((group, _, row)) = entries.next() {
-        let mut rows = vec![row];
-        while let Some((_, _, row)) = entries.next_if(|(next, ..)| *next == group) {
-            rows.push(row);
-        }
-        views.push(
-            column![
-                crate::widget::text::emphasis(group.label()),
-                iced::widget::Column::with_children(rows)
-                    .spacing(2)
-                    .width(Length::Fill),
-            ]
-            .padding([0, 4])
-            .spacing(4)
-            .width(Length::Fill)
-            .into(),
+fn pro_row(chart: &KlineChart, id: &'static str, label: &'static str) -> Element<'static, BrowserMessage> {
+    let active = chart.pro_config().is_enabled(id);
+    let toggle = picker_button(
+        row![iced::widget::text(label).size(crate::style::text_size::BODY), space::horizontal()]
+            .align_y(Alignment::Center)
+            .width(Length::Fill),
+        Some(BrowserMessage::TogglePro(id)),
+        active,
+    );
+    let mut row = row![toggle].spacing(2).width(Length::Fill);
+    if id != "OrderBook" {
+        row = row.push(
+            button(icon_text(Icon::Cog, 12))
+                .style(|theme, status| style::button::transparent(theme, status, false))
+                .on_press(BrowserMessage::ConfigurePro(id)),
         );
     }
-    views
+    row.into()
 }
 
 fn indicators_title() -> Element<'static, BrowserMessage> {
@@ -321,6 +318,111 @@ fn indicators_title() -> Element<'static, BrowserMessage> {
     ]
     .align_y(Alignment::Center)
     .into()
+}
+
+fn indicator_group_views(
+    indicators: Vec<AvailableIndicator>,
+) -> Vec<Element<'static, BrowserMessage>> {
+    let mut grouped: Vec<(IndicatorInputGroup, Vec<AvailableIndicator>)> = IndicatorInputGroup::ALL
+        .into_iter()
+        .map(|group| (group, Vec::new()))
+        .collect();
+
+    for available in indicators {
+        let group = IndicatorInputGroup::for_indicator(&available.indicator);
+        if let Some((_, entries)) = grouped
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == group)
+        {
+            entries.push(available);
+        }
+    }
+
+    grouped
+        .into_iter()
+        .filter_map(|(group, mut indicators)| {
+            if indicators.is_empty() {
+                return None;
+            }
+
+            indicators
+                .sort_by_cached_key(|available| available.indicator.to_string().to_lowercase());
+
+            let rows = indicators
+                .into_iter()
+                .map(|available| {
+                    indicator_row(
+                        available.indicator,
+                        available.unavailable_reason,
+                        available.active_count,
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            Some(
+                column![
+                    crate::widget::text::emphasis(group.label()),
+                    iced::widget::Column::with_children(rows)
+                        .spacing(2)
+                        .width(Length::Fill),
+                ]
+                .padding([0, 4])
+                .spacing(4)
+                .width(Length::Fill)
+                .into(),
+            )
+        })
+        .collect()
+}
+
+fn study_group_views(studies: Vec<AvailableStudy>) -> Vec<Element<'static, BrowserMessage>> {
+    let mut grouped: Vec<(StudyDataSource, Vec<AvailableStudy>)> =
+        [StudyDataSource::Kline, StudyDataSource::Trades]
+            .into_iter()
+            .map(|source| (source, Vec::new()))
+            .collect();
+
+    for available in studies {
+        let source = available.study.source();
+        if let Some((_, entries)) = grouped
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == source)
+        {
+            entries.push(available);
+        }
+    }
+
+    grouped
+        .into_iter()
+        .filter_map(|(source, mut studies)| {
+            if studies.is_empty() {
+                return None;
+            }
+
+            studies.sort_by_cached_key(|available| available.study.to_string().to_lowercase());
+
+            let rows = studies
+                .into_iter()
+                .map(|available| {
+                    study_row(available.study, available.availability, available.active)
+                })
+                .collect::<Vec<_>>();
+            let label = source_label(source);
+
+            Some(
+                column![
+                    crate::widget::text::emphasis(label),
+                    iced::widget::Column::with_children(rows)
+                        .spacing(2)
+                        .width(Length::Fill),
+                ]
+                .padding([0, 4])
+                .spacing(4)
+                .width(Length::Fill)
+                .into(),
+            )
+        })
+        .collect()
 }
 
 fn group_active_indicators(indicators: &[IndicatorId]) -> Vec<ActiveIndicator> {
