@@ -8,11 +8,13 @@ use super::{
     state::{Event, Message},
 };
 use crate::{
+    connector::fetcher::FetchSpec,
     screen::dashboard::pane::settings::{
         self, heatmap_shader_cfg_view, ladder_cfg_view, timesales_cfg_view,
     },
     widget::inspector::InspectorContent,
 };
+use data::chart::kline::indicators::manifest;
 use data::{
     PaneSettingsSnapshot, PaneSettingsTransfer,
     chart::{Basis, kline::OpenInterestSeries},
@@ -20,14 +22,14 @@ use data::{
 };
 use exchange::{Kline, TickerInfo, Timeframe, Trade, UnixMs, adapter::StreamKind, depth::Depth};
 use iced::{
-    Alignment,
+    Alignment, Element,
     task::Handle,
     widget::{button, pane_grid, row, space},
 };
 use std::time::Instant;
 
 use heatmap::HeatmapContent;
-use kline::{Action as KlineAction, ChartCommand, DataUpdate, FetchUpdate, KlineChart};
+use kline::{ChartCommand, DataUpdate, FetchUpdate, KlineChart};
 use ladder::Ladder;
 use timesales::TimeAndSales;
 
@@ -166,7 +168,7 @@ impl Content {
     pub fn apply_settings_snapshot(
         &mut self,
         snapshot: &PaneSettingsSnapshot,
-    ) -> Option<KlineAction> {
+    ) -> Option<Vec<FetchSpec>> {
         match (self, snapshot) {
             (Content::ShaderHeatmap(heatmap), PaneSettingsSnapshot::Heatmap(snapshot)) => {
                 heatmap.set_indicator_config(snapshot.indicators.clone());
@@ -521,6 +523,25 @@ impl Content {
             Content::Ladder(panel) => panel.is_some(),
             Content::Starter | Content::AiAnalysis | Content::Trading(_) => true,
         }
+    }
+
+    pub(super) fn indicators_view<'a>(
+        &'a self,
+        pane: pane_grid::Pane,
+        catalog: &'a manifest::State,
+    ) -> Option<Element<'a, Message>> {
+        let Self::Kline {
+            chart: Some(chart), ..
+        } = self
+        else {
+            return None;
+        };
+
+        Some(
+            chart
+                .indicator_browser_view(catalog)
+                .map(move |message| Message::PaneEvent(pane, Event::KlineInteraction(message))),
+        )
     }
 
     pub(super) fn pane_settings_content<'a>(

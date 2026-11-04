@@ -1,10 +1,11 @@
 pub mod pane;
 
 use super::DashboardError;
+use crate::layout::{ChartResourcesMessage, SharedChartResources};
 use crate::{
     connector::{
         client::DataSources,
-        fetcher::{self, FetchedData},
+        fetcher::{self, FetchSpec, FetchedData},
         stream::ResolvedStream,
     },
     screen::sidebar::tickers_table::TickersTable,
@@ -15,8 +16,8 @@ use crate::{
 };
 use data::{
     UserTimezone,
-    chart::kline::ChartSettings,
-    layout::{WindowSpec, pane::ContentKind},
+    chart::kline::{ChartSettings, indicators::manifest},
+    layout::{WindowSpec, pane::ContentKind, presets},
     stream::PersistStreamKind,
 };
 use exchange::{
@@ -80,16 +81,17 @@ pub enum Event {
     OpenUrlRequested(String),
     OpenNetworkSettings,
     Notification(Toast),
-    DistributeFetchedData {
-        pane_id: uuid::Uuid,
-        data: FetchedData,
-        stream: StreamKind,
-    },
     ResolveStreams {
         pane_id: uuid::Uuid,
         streams: Vec<PersistStreamKind>,
     },
     RequestPalette,
+    PresetCommand {
+        window: window::Id,
+        pane: pane_grid::Pane,
+        command: presets::Command,
+    },
+    IndicatorCatalog(manifest::Message),
 }
 
 fn market_label(market: exchange::adapter::MarketKind) -> &'static str {
@@ -503,6 +505,7 @@ impl Dashboard {
         message: Message,
         main_window: &Window,
         data_sources: &DataSources,
+        chart_resources: &SharedChartResources,
     ) -> (Task<Message>, Option<Event>) {
         match message {
             Message::Trading(pane, message) => {
@@ -536,8 +539,8 @@ impl Dashboard {
                 }
                 _ => {
                     return (
-                        Task::done(Message::Notification(Toast::error(err.to_string()))),
-                        None,
+                        Task::none(),
+                        Some(Event::Notification(Toast::error(err.to_string()))),
                     );
                 }
             },
@@ -676,54 +679,15 @@ impl Dashboard {
                     let mut chart_settings = self.chart_settings;
                     let effect = self
                         .get_mut_pane(main_window.id, window, pane)
-                        .map(|state| state.update(event, &mut chart_settings));
+                        .map(|state| state.update(event, &mut chart_settings, chart_resources));
                     self.chart_settings = chart_settings;
-                    let Some(effect) = effect.flatten() else {
-                        return (Task::none(), None);
-                    };
-
-                    match effect {
-                        pane::Effect::Ai(message) => return (Task::none(), Some(Event::Ai(message))),
-                        pane::Effect::Trading(pane, message) => {
-                            return (Task::done(Message::Trading(pane, message)), None);
-                        }
-                        pane::Effect::TradingLevelDragged(source, id, price, finished) => {
-                            return (Task::done(Message::TradingLevelDragged(source, id, price, finished)), None);
-                        }
-                        pane::Effect::RefreshStreams => {
-                            return (self.refresh_streams(main_window.id), None);
-                        }
-                        pane::Effect::RequestFetch(reqs) => {
-                            let Some(state) = self.get_mut_pane(main_window.id, window, pane)
-                            else {
-                                return (Task::none(), None);
-                            };
-                            let task = state
-                                .request_fetch(data_sources, reqs)
-                                .map(Message::from)
-                                .chain(self.refresh_streams(main_window.id));
-                            return (task, None);
-                        }
-                        pane::Effect::SwitchTickersInGroup(ticker_info) => {
-                            return (
-                                self.switch_tickers_in_group(
-                                    data_sources,
-                                    main_window.id,
-                                    ticker_info,
-                                ),
-                                None,
-                            );
-                        }
-                        pane::Effect::FocusWidget(id) => {
-                            return (iced::widget::operation::focus(id), None);
-                        }
-                        pane::Effect::OpenNetworkSettings => {
-                            return (Task::none(), Some(Event::OpenNetworkSettings));
-                        }
-                        pane::Effect::OpenUrl(url) => {
-                            return (Task::none(), Some(Event::OpenUrlRequested(url)));
-                        }
-                    }
+                    return self.dispatch_pane_effect(
+                        effect.flatten(),
+                        main_window.id,
+                        window,
+                        pane,
+                        data_sources,
+                    );
                 }
             },
             Message::RequestPalette => {
@@ -735,12 +699,8 @@ impl Dashboard {
                 stream,
             } => {
                 return (
-                    Task::none(),
-                    Some(Event::DistributeFetchedData {
-                        pane_id,
-                        data,
-                        stream,
-                    }),
+                    self.distribute_fetched_data(main_window.id, pane_id, data, stream),
+                    None,
                 );
             }
             Message::ResolveStreams(pane_id, streams) => {
@@ -965,6 +925,7 @@ impl Dashboard {
         pixel_ratio: PixelRatio,
         theme: &'a ThemeState,
         ai_agent: &'a crate::ai::Agent,
+        chart_resources: &'a SharedChartResources,
     ) -> Element<'a, Message> {
         let pane_grid: Element<_> = PaneGrid::new(&self.panes, |id, pane, maximized| {
             let is_focused = self.focus == Some((main_window.id, id));
@@ -980,6 +941,7 @@ impl Dashboard {
                 tickers_table,
                 theme,
                 ai_agent,
+                chart_resources,
             )
         })
         .min_size(240)
@@ -1002,6 +964,7 @@ impl Dashboard {
         pixel_ratio: PixelRatio,
         theme: &'a ThemeState,
         ai_agent: &'a crate::ai::Agent,
+        chart_resources: &'a SharedChartResources,
     ) -> Element<'a, Message> {
         if let Some((state, _)) = self.popout.get(&window) {
             let content = container(
@@ -1018,7 +981,8 @@ impl Dashboard {
                         pixel_ratio,
                         tickers_table,
                         theme,
-                ai_agent,
+                        ai_agent,
+                        chart_resources,
                     )
                 })
                 .on_click(pane::Message::PaneClicked),
@@ -1658,23 +1622,98 @@ impl Dashboard {
         let Some(state) = self.get_mut_pane(main_window, window, pane) else {
             return Task::none();
         };
-        let Some(effect) = state.apply_settings_snapshot(snapshot) else {
+
+        match state.apply_settings_snapshot(snapshot) {
+            Some(requests) => self.request_fetch(main_window, window, pane, requests, data_sources),
+            None => self.refresh_streams(main_window),
+        }
+    }
+
+    fn request_fetch(
+        &mut self,
+        main_window: window::Id,
+        window: window::Id,
+        pane: pane_grid::Pane,
+        requests: Vec<FetchSpec>,
+        data_sources: &DataSources,
+    ) -> Task<Message> {
+        let Some(state) = self.get_mut_pane(main_window, window, pane) else {
             return Task::none();
         };
 
+        state
+            .request_fetch(data_sources, requests)
+            .map(Message::from)
+            .chain(self.refresh_streams(main_window))
+    }
+
+    pub fn reconcile_selected_presets(
+        &mut self,
+        main_window: window::Id,
+        presets: &presets::Library,
+    ) {
+        for (_, _, state) in self.iter_all_panes_mut(main_window) {
+            state.clear_missing_preset(presets);
+        }
+    }
+
+    pub fn preset_command_completed(
+        &mut self,
+        main_window: window::Id,
+        window: window::Id,
+        pane: pane_grid::Pane,
+        response: Result<Option<uuid::Uuid>, String>,
+    ) {
+        if let Some(state) = self.get_mut_pane(main_window, window, pane) {
+            state.preset_command_completed(response);
+        }
+    }
+
+    fn dispatch_pane_effect(
+        &mut self,
+        effect: Option<pane::Effect>,
+        main_window: window::Id,
+        window: window::Id,
+        pane: pane_grid::Pane,
+        data_sources: &DataSources,
+    ) -> (Task<Message>, Option<Event>) {
         match effect {
-            pane::Effect::RefreshStreams => self.refresh_streams(main_window),
-            pane::Effect::RequestFetch(reqs) => state
-                .request_fetch(data_sources, reqs)
-                .map(Message::from)
-                .chain(self.refresh_streams(main_window)),
-            pane::Effect::Ai(_)
-            | pane::Effect::Trading(_, _)
-            | pane::Effect::TradingLevelDragged(_, _, _, _)
-            | pane::Effect::SwitchTickersInGroup(_)
-            | pane::Effect::FocusWidget(_)
-            | pane::Effect::OpenUrl(_)
-            | pane::Effect::OpenNetworkSettings => Task::none(),
+            Some(pane::Effect::Ai(message)) => (Task::none(), Some(Event::Ai(message))),
+            Some(pane::Effect::Trading(pane, message)) => {
+                (Task::done(Message::Trading(pane, message)), None)
+            }
+            Some(pane::Effect::TradingLevelDragged(source, id, price, finished)) => (
+                Task::done(Message::TradingLevelDragged(source, id, price, finished)),
+                None,
+            ),
+            Some(pane::Effect::RefreshStreams) => (self.refresh_streams(main_window), None),
+            Some(pane::Effect::RequestFetch(requests)) => (
+                self.request_fetch(main_window, window, pane, requests, data_sources),
+                None,
+            ),
+            Some(pane::Effect::SwitchTickersInGroup(ticker_info)) => (
+                self.switch_tickers_in_group(data_sources, main_window, ticker_info),
+                None,
+            ),
+            Some(pane::Effect::FocusWidget(id)) => (iced::widget::operation::focus(id), None),
+            Some(pane::Effect::OpenNetworkSettings) => {
+                (Task::none(), Some(Event::OpenNetworkSettings))
+            }
+            Some(pane::Effect::OpenUrl(url)) => (Task::none(), Some(Event::OpenUrlRequested(url))),
+            Some(pane::Effect::SharedChartResources(message)) => match *message {
+                ChartResourcesMessage::Presets(command) => (
+                    Task::none(),
+                    Some(Event::PresetCommand {
+                        window,
+                        pane,
+                        command,
+                    }),
+                ),
+                ChartResourcesMessage::IndicatorCatalog(message) => {
+                    (Task::none(), Some(Event::IndicatorCatalog(message)))
+                }
+            },
+            None => (Task::none(), None),
         }
     }
 

@@ -17,6 +17,7 @@ mod widget;
 mod window;
 
 use connector::client::DataSources;
+use data::chart::kline::indicators::manifest;
 use data::config::theme::default_theme;
 use data::{layout::WindowSpec, sidebar};
 use layout::{LayoutId, configuration};
@@ -143,6 +144,7 @@ enum Message {
     ThemeEditor(modal::theme_editor::Message),
     NetworkEditor(modal::network_editor::Message),
     Layouts(modal::layout_manager::Message),
+    SharedChartResources(manifest::Message),
     AudioStream(modal::audio::Message),
 }
 
@@ -557,26 +559,8 @@ impl Flowsurface {
                 let additional_task = match event {
                     Some(dashboard::Event::Ai(message)) => Task::done(Message::Ai(message)),
                     Some(dashboard::Event::OpenUrlRequested(url)) => {
-                        Task::done(Message::OpenUrlRequested(Cow::Owned(url)))
-                    }
-                    Some(dashboard::Event::DistributeFetchedData {
-                        pane_id,
-                        data,
-                        stream,
-                    }) => {
-                        let task = self
-                            .layout_manager
-                            .mut_dashboard(layout_id)
-                            .map(|dashboard| {
-                                dashboard.distribute_fetched_data(
-                                    main_window.id,
-                                    pane_id,
-                                    data,
-                                    stream,
-                                )
-                            })
-                            .unwrap_or_else(Task::none);
-                        self.map_dashboard_task(task, Some(layout_id))
+                        self.open_url(&url);
+                        Task::none()
                     }
                     Some(dashboard::Event::Notification(toast)) => {
                         self.notifications.push(toast);
@@ -654,6 +638,23 @@ impl Flowsurface {
 
                         Task::none()
                     }
+                    Some(dashboard::Event::PresetCommand {
+                        window,
+                        pane,
+                        command,
+                    }) => {
+                        self.layout_manager.apply_preset_command(
+                            main_window.id,
+                            layout_id,
+                            window,
+                            pane,
+                            command,
+                        );
+                        Task::none()
+                    }
+                    Some(dashboard::Event::IndicatorCatalog(message)) => {
+                        self.update_shared_chart_resources(message)
+                    }
                     None => Task::none(),
                 };
 
@@ -674,6 +675,9 @@ impl Flowsurface {
                 if let Some(task) = self.sidebar.force_refresh_metadata() {
                     return task.map(Message::Sidebar);
                 }
+            }
+            Message::SharedChartResources(message) => {
+                return self.update_shared_chart_resources(message);
             }
             Message::ScaleFactorChanged(value) => {
                 self.ui_scale_factor = value;
@@ -772,12 +776,7 @@ impl Flowsurface {
                         .push(Toast::error(format!("Failed to open data folder: {err}")));
                 }
             }
-            Message::OpenUrlRequested(url) => {
-                if let Err(err) = data::open_url(url.as_ref()) {
-                    self.notifications
-                        .push(Toast::error(format!("Failed to open link: {err}")));
-                }
-            }
+            Message::OpenUrlRequested(url) => self.open_url(url.as_ref()),
             Message::ThemeEditor(msg) => {
                 let action = self.theme_editor.update(msg, self.theme.current());
 
@@ -949,6 +948,7 @@ impl Flowsurface {
                     pixel_ratio,
                     &self.theme,
                     &self.ai_agent,
+                    self.layout_manager.chart_resources(),
                 )
                 .map(move |msg| Message::Dashboard {
                     layout_id: None,
@@ -1000,6 +1000,7 @@ impl Flowsurface {
                         pixel_ratio,
                         &self.theme,
                         &self.ai_agent,
+                        self.layout_manager.chart_resources(),
                     )
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
@@ -1090,6 +1091,12 @@ impl Flowsurface {
             .expect("No active dashboard")
     }
 
+    fn update_shared_chart_resources(&mut self, message: manifest::Message) -> Task<Message> {
+        self.layout_manager
+            .update_chart_resources(message, &self.data_sources.catalog_http)
+            .map(Message::SharedChartResources)
+    }
+
     fn map_dashboard_task(
         &self,
         task: Task<dashboard::Message>,
@@ -1107,6 +1114,13 @@ impl Flowsurface {
             layout_id: Some(layout_id),
             event,
         })
+    }
+
+    fn open_url(&mut self, url: &str) {
+        if let Err(err) = data::open_url(url) {
+            self.notifications
+                .push(Toast::error(format!("Failed to open link: {err}")));
+        }
     }
 
     fn replace_theme(&mut self, theme: iced_core::Theme) {
@@ -1710,6 +1724,7 @@ impl Flowsurface {
         }
 
         let layouts = data::Layouts {
+            chart_presets: self.layout_manager.presets().entries().to_vec(),
             layouts: ser_layouts,
             active_layout: self
                 .layout_manager

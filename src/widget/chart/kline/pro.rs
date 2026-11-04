@@ -715,8 +715,7 @@ mod tests {
     fn scene(mode: PanelScaleMode, inverted: bool) -> Scene {
         let mut composition = ChartComposition::prototype_kline();
         let mut auxiliary = composition.panels[0].clone();
-        auxiliary.id = data::chart::kline::composition::PanelId(2);
-        auxiliary.role = data::chart::kline::composition::PanelRole::Auxiliary;
+        auxiliary.id = data::chart::kline::composition::PanelId::Aux(uuid::Uuid::from_u64_pair(0, 2));
         auxiliary.base_layer = None;
         auxiliary.layers.clear();
         composition.panels.push(auxiliary);

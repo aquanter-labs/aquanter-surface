@@ -1,10 +1,15 @@
+use crate::connector::catalog;
 use crate::modal::layout_manager::LayoutManager;
 use crate::screen::dashboard::{Dashboard, pane};
 use data::{
     UserTimezone,
-    layout::{WindowSpec, pane::Axis},
+    chart::kline::indicators::manifest::{
+        self, Message as CatalogMessage, SourceAction, SourceChange, Trigger,
+    },
+    layout::{WindowSpec, pane::Axis, presets},
 };
 
+use iced::Task;
 use iced::widget::pane_grid::{self, Configuration};
 use std::vec;
 use uuid::Uuid;
@@ -18,6 +23,98 @@ pub struct Layout {
 pub struct LayoutId {
     pub unique: Uuid,
     pub name: String,
+}
+
+#[derive(Default)]
+pub struct SharedChartResources {
+    presets: presets::Library,
+    indicator_catalog: manifest::State,
+}
+
+#[derive(Debug, Clone)]
+pub enum ChartResourcesMessage {
+    Presets(presets::Command),
+    IndicatorCatalog(manifest::Message),
+}
+
+impl SharedChartResources {
+    pub fn from_config(presets: Vec<data::chart::kline::ChartPreset>) -> Self {
+        Self {
+            presets: presets::Library::from_config(presets),
+            indicator_catalog: manifest::State::default(),
+        }
+    }
+
+    pub fn presets(&self) -> &presets::Library {
+        &self.presets
+    }
+
+    pub fn indicator_catalog(&self) -> &manifest::State {
+        &self.indicator_catalog
+    }
+
+    pub fn update(
+        &mut self,
+        message: CatalogMessage,
+        catalog_http: &reqwest::Client,
+    ) -> Task<CatalogMessage> {
+        let fetch = |started: bool| {
+            if started {
+                Task::perform(
+                    catalog::fetch(catalog_http.clone()),
+                    CatalogMessage::Fetched,
+                )
+            } else {
+                Task::none()
+            }
+        };
+
+        match message {
+            CatalogMessage::Open => fetch(self.indicator_catalog.begin_load(Trigger::Open)),
+            CatalogMessage::Refresh => fetch(self.indicator_catalog.begin_load(Trigger::Refresh)),
+            CatalogMessage::ToggleSource(id) => match self.indicator_catalog.begin_toggle(&id) {
+                Some(SourceAction::Remove(target)) => {
+                    Task::perform(catalog::remove(target.clone()), move |result| {
+                        CatalogMessage::SourceChanged {
+                            id: target,
+                            change: SourceChange::Removed,
+                            result,
+                        }
+                    })
+                }
+                Some(SourceAction::Install { entry, base }) => {
+                    let id = entry.id.clone();
+                    Task::perform(
+                        catalog::install(entry, base, catalog_http.clone()),
+                        move |result| CatalogMessage::SourceChanged {
+                            id,
+                            change: SourceChange::Installed,
+                            result,
+                        },
+                    )
+                }
+                None => Task::none(),
+            },
+            CatalogMessage::Fetched(result) => {
+                match result {
+                    Ok(fetched) => self.indicator_catalog.loaded(fetched),
+                    Err(error) => self.indicator_catalog.failed(error),
+                }
+                Task::none()
+            }
+            CatalogMessage::SourceChanged { id, change, result } => {
+                match result {
+                    Ok(()) => self.indicator_catalog.operation_succeeded(id, change),
+                    Err(error) => self.indicator_catalog.operation_failed(id, error),
+                }
+                Task::none()
+            }
+        }
+    }
+
+    pub fn update_presets(&mut self, command: presets::Command) -> Result<Option<Uuid>, String> {
+        self.presets.update(command)
+    }
 }
 
 pub struct SavedState {
@@ -326,22 +423,24 @@ pub fn load_saved_state() -> SavedState {
                     log::error!(
                         "Saved state contained no layouts. Starting with a default layout."
                     );
-                    LayoutManager::new()
-                } else {
-                    let active_layout =
-                        state
-                            .layout_manager
-                            .active_layout
-                            .as_ref()
-                            .and_then(|target_name| {
-                                layouts
-                                    .iter()
-                                    .find(|layout| layout.id.name == *target_name)
-                                    .map(|layout| layout.id.clone())
-                            });
-
-                    LayoutManager::from_config(layouts, active_layout)
                 }
+
+                let active_layout =
+                    state
+                        .layout_manager
+                        .active_layout
+                        .as_ref()
+                        .and_then(|target_name| {
+                            layouts
+                                .iter()
+                                .find(|layout| layout.id.name == *target_name)
+                                .map(|layout| layout.id.clone())
+                        });
+                LayoutManager::from_config(
+                    layouts,
+                    active_layout,
+                    state.layout_manager.chart_presets.clone(),
+                )
             };
 
             // Hydrate secrets from keychain into the network config
