@@ -139,7 +139,7 @@ const FOOTPRINT_TEXT_VERTICAL_INSET_PX: f32 = 1.0;
 const FOOTPRINT_TEXT_SIZE_STEP_PX: f32 = 1.0;
 const FOOTPRINT_TEXT_MIN_WIDTH_CHARS: usize = 4;
 // Pro: hide instead of shrinking into unreadable text; allow slightly larger cells.
-const FOOTPRINT_TEXT_MIN_SIZE_PX: f32 = 9.0;
+const FOOTPRINT_TEXT_MIN_SIZE_PX: f32 = 8.0;
 const FOOTPRINT_TEXT_MAX_SIZE_PX: f32 = 13.0;
 
 #[derive(Clone, Copy, Debug)]
@@ -352,13 +352,19 @@ impl FootprintColumnLayout {
 fn resolve_footprint_text_mode(
     column_width: f32,
     reserve_marker_lanes: bool,
+    single_lane: bool,
     minimum_row_height: Option<f32>,
     maximum_content_chars: usize,
 ) -> FootprintTextMode {
     let layout = FootprintColumnLayout::new(0.0, column_width, reserve_marker_lanes);
+    let lane_width = if single_lane {
+        layout.profile_cluster.width
+    } else {
+        layout.minimum_cluster_width()
+    };
     let required_width = FOOTPRINT_TEXT_HORIZONTAL_INSET_PX * 2.0
         + FOOTPRINT_TEXT_MIN_WIDTH_CHARS as f32 * (CHAR_W / TEXT_SIZE) * FOOTPRINT_TEXT_MIN_SIZE_PX;
-    if layout.minimum_cluster_width() < required_width {
+    if lane_width < required_width {
         return FootprintTextMode::Hidden;
     }
 
@@ -369,7 +375,7 @@ fn resolve_footprint_text_mode(
         return FootprintTextMode::Hidden;
     }
 
-    let available_width = layout.minimum_cluster_width() - FOOTPRINT_TEXT_HORIZONTAL_INSET_PX * 2.0;
+    let available_width = lane_width - FOOTPRINT_TEXT_HORIZONTAL_INSET_PX * 2.0;
     let available_height = minimum_row_height - FOOTPRINT_TEXT_VERTICAL_INSET_PX;
     if available_width <= 0.0 || available_height <= 0.0 {
         return FootprintTextMode::Hidden;
@@ -1060,6 +1066,7 @@ impl FootprintRenderer<'_> {
         let primary_plot_bottom = primary_plot.y + primary_plot.height;
         let mut minimum_row_height: Option<f32> = None;
         let mut maximum_content_chars = 0;
+        let mut maximum_delta_chars = 0;
         if draw_clusters && !coalesce {
             scene.for_each_bar(self.series, |series_index, _, _series, x_unit, point| {
                 if series_index != 0 || !in_visible_range(x_unit) {
@@ -1082,6 +1089,13 @@ impl FootprintRenderer<'_> {
                         minimum_row_height.map_or(row_height, |minimum| minimum.min(row_height)),
                     );
 
+                    let [delta_chars, _] = footprint_text_content_lengths(
+                        ClusterKind::DeltaProfile,
+                        group.sell_qty.to_f64(),
+                        group.buy_qty.to_f64(),
+                        self.quantity_format,
+                    );
+                    maximum_delta_chars = maximum_delta_chars.max(delta_chars);
                     let [sell_chars, buy_chars] = footprint_text_content_lengths(
                         self.footprint.cluster_kind,
                         group.sell_qty.to_f64(),
@@ -1097,12 +1111,29 @@ impl FootprintRenderer<'_> {
                 }
             });
         }
-        let text_mode = resolve_footprint_text_mode(
+        let single_lane = |kind| matches!(kind, ClusterKind::VolumeProfile | ClusterKind::DeltaProfile);
+        let mut cluster_kind = self.footprint.cluster_kind;
+        let mut text_mode = resolve_footprint_text_mode(
             footprint_width,
             imbalance.is_some(),
+            single_lane(cluster_kind),
             minimum_row_height,
             maximum_content_chars,
         );
+        // Pro: two-sided cells that no longer fit collapse to one delta per row (Coinglass-style).
+        if text_mode.size().is_none() && !single_lane(cluster_kind) {
+            let delta_mode = resolve_footprint_text_mode(
+                footprint_width,
+                imbalance.is_some(),
+                true,
+                minimum_row_height,
+                maximum_delta_chars,
+            );
+            if delta_mode.size().is_some() {
+                cluster_kind = ClusterKind::DeltaProfile;
+                text_mode = delta_mode;
+            }
+        }
         let draw_candlesticks = self.candlestick.visible
             && matches!(scene.primary.mark, MarkKind::Candle | MarkKind::Bar(_));
 
@@ -1167,9 +1198,10 @@ impl FootprintRenderer<'_> {
                             );
                         }
                     } else if draw_clusters && !coalesce {
+                        // ponytail: global scale stays the max-side qty in delta fallback; bars run shorter but stay proportional.
                         let cluster_scale = self.footprint.cluster_scaling.effective_qty(
                             max_cluster_qty,
-                            footprint.max_cluster_qty_all(self.footprint.cluster_kind),
+                            footprint.max_cluster_qty_all(cluster_kind),
                         );
                         for (price, group) in &footprint.trades {
                             let row_height =
@@ -1186,7 +1218,7 @@ impl FootprintRenderer<'_> {
                             }
                             draw_footprint_cluster_row(
                                 frame,
-                                self.footprint.cluster_kind,
+                                cluster_kind,
                                 layout,
                                 y,
                                 row_height,
@@ -1385,3 +1417,17 @@ impl FootprintRenderer<'_> {
 }
 
 const FOOTPRINT_CELL_INSET_PX: f32 = 2.0;
+
+#[cfg(test)]
+mod pro_text_tests {
+    use super::*;
+
+    #[test]
+    fn narrow_columns_still_fit_a_single_delta_lane() {
+        // 40px column, 16px rows, 4-char numbers: each bid/ask half is too narrow, one delta lane fits.
+        let two_sided = resolve_footprint_text_mode(40.0, false, false, Some(16.0), 4);
+        let delta = resolve_footprint_text_mode(40.0, false, true, Some(16.0), 4);
+        assert!(two_sided.size().is_none());
+        assert!(delta.size().is_some_and(|size| size >= FOOTPRINT_TEXT_MIN_SIZE_PX));
+    }
+}
