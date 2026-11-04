@@ -223,6 +223,7 @@ pub enum KlineWidgetEvent {
     HorizontalWorldChanged(HorizontalWorld),
     HorizontalOffsetChanged(f32),
     PlotWidthChanged(f32),
+    AutoTickMultiplier(exchange::TickMultiplier),
     PrimaryAutoscaleDisabled,
     PrimaryAutoscaleToggled,
     PrimaryScaleModeCycleRequested,
@@ -2473,6 +2474,9 @@ where
                             shell.publish(M::from(KlineWidgetEvent::PanelInteraction(
                                 PanelInteraction::YViewportChanged { panel_id, range },
                             )));
+                        }
+                        if let Some(multiplier) = self.pro_auto_tick(scene) {
+                            shell.publish(M::from(KlineWidgetEvent::AutoTickMultiplier(multiplier)));
                         }
                     }
                     let utc_ms = chrono::Utc::now().timestamp_millis() as u64;

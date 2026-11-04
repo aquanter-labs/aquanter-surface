@@ -26,7 +26,7 @@ const CUSTOM_TIMEFRAME_MIN: u16 = 2;
 const CUSTOM_TIMEFRAME_MAX: u16 = 1440;
 
 const TICK_MULTIPLIER_MIN: u16 = 1;
-const TICK_MULTIPLIER_MAX: u16 = 2000;
+const TICK_MULTIPLIER_MAX: u16 = 10000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub enum ModifierKind {
@@ -144,6 +144,7 @@ pub enum SelectedTab {
 pub enum Action {
     BasisSelected(Basis),
     TicksizeSelected(TickMultiplier),
+    TicksizeAuto,
     TabSelected(SelectedTab),
 }
 
@@ -153,6 +154,7 @@ pub enum Message {
     TabSelected(SelectedTab),
     TicksizeInputChanged(String),
     TicksizeSelected(TickMultiplier),
+    TicksizeAuto,
     TickCountInputChanged(String),
     TimeframeInputChanged(String),
 }
@@ -171,6 +173,9 @@ pub struct Modifier {
     parsed_timeframe: Option<Timeframe>,
     #[serde(default = "default_true")]
     timeframe_input_is_valid: bool,
+    /// `Some` when the pane supports Auto tick size (Pro kline charts).
+    #[serde(default)]
+    auto_ticksize: Option<bool>,
 }
 
 fn default_true() -> bool {
@@ -201,7 +206,13 @@ impl Modifier {
                 .map_or_else(NumericInput::default, NumericInput::from_timeframe),
             parsed_timeframe: selected_timeframe,
             timeframe_input_is_valid: true,
+            auto_ticksize: None,
         }
+    }
+
+    pub fn with_auto_ticksize(mut self, auto: bool) -> Self {
+        self.auto_ticksize = Some(auto);
+        self
     }
 
     pub fn with_view_mode(mut self, view_mode: ViewMode) -> Self {
@@ -298,7 +309,14 @@ impl Modifier {
                     }
                 }
             },
+            Message::TicksizeAuto => {
+                self.auto_ticksize = Some(true);
+                Some(Action::TicksizeAuto)
+            }
             Message::TicksizeSelected(new_ticksize) => {
+                if self.auto_ticksize.is_some() {
+                    self.auto_ticksize = Some(false);
+                }
                 if let ViewMode::TicksizeSelection {
                     ref mut raw_input_buf,
                     ref mut parsed_input,
@@ -656,7 +674,7 @@ impl Modifier {
 
                     let tick_multiplier_grid = modifiers_grid(
                         &allowed_tm,
-                        Some(ticksize),
+                        (self.auto_ticksize != Some(true)).then_some(ticksize),
                         Message::TicksizeSelected,
                         &create_button,
                         3,
@@ -679,6 +697,13 @@ impl Modifier {
                         };
 
                         ticksizes_column = ticksizes_column.push(custom_input);
+                    }
+                    if let Some(auto) = self.auto_ticksize {
+                        ticksizes_column = ticksizes_column.push(create_button(
+                            text("Auto (fit zoom)"),
+                            Some(Message::TicksizeAuto),
+                            auto,
+                        ));
                     }
                     ticksizes_column = ticksizes_column.push(tick_multiplier_grid);
 

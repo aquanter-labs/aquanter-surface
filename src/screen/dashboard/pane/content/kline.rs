@@ -443,6 +443,11 @@ impl KlineChart {
                             self.viewport.horizontal_world.with_offset(offset);
                         self.render_invalidation.invalidate();
                     }
+                    KlineWidgetEvent::AutoTickMultiplier(multiplier) => {
+                        if self.options.pro.auto_tick_size {
+                            self.apply_tick_multiplier(multiplier);
+                        }
+                    }
                     KlineWidgetEvent::PlotWidthChanged(plot_width) => {
                         if self.viewport.plot_width == Some(plot_width) {
                             return None;
@@ -1439,6 +1444,20 @@ impl KlineChart {
             self.data.base_ticker().min_ticksize.as_f64(),
             price,
         );
+        self.apply_tick_multiplier(next);
+    }
+
+    pub fn auto_tick(&self) -> bool {
+        self.options.pro.auto_tick_size
+    }
+
+    pub fn enable_auto_tick(&mut self) {
+        self.options.pro.auto_tick_size = true;
+        self.render_invalidation.invalidate();
+    }
+
+    /// Rebuilds rows for a new multiplier without touching the manual/auto mode.
+    fn apply_tick_multiplier(&mut self, next: TickMultiplier) {
         let had_points = self
             .data
             .base_series()
@@ -1637,6 +1656,7 @@ impl KlineChart {
             }
             ChartCommand::SetTickMultiplier { multiplier } => {
                 self.tick_step_automatic = false;
+                self.options.pro.auto_tick_size = false;
                 self.data
                     .set_tick_multiplier(multiplier)
                     .then_some(UpdatePolicy::ImmediateReconfigure)

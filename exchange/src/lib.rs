@@ -750,7 +750,7 @@ impl std::fmt::Display for TickMultiplier {
 }
 
 impl TickMultiplier {
-    pub const ALL: [TickMultiplier; 9] = [
+    pub const ALL: [TickMultiplier; 12] = [
         TickMultiplier(1),
         TickMultiplier(2),
         TickMultiplier(5),
@@ -760,6 +760,9 @@ impl TickMultiplier {
         TickMultiplier(100),
         TickMultiplier(200),
         TickMultiplier(500),
+        TickMultiplier(1000),
+        TickMultiplier(2000),
+        TickMultiplier(5000),
     ];
 
     pub fn is_custom(&self) -> bool {

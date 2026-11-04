@@ -152,6 +152,8 @@ pub struct ProConfig {
     pub data_labels_always_visible: bool,
     // Whether to show the footprint per-bar summary below each candle.
     pub show_footprint_summary: bool,
+    /// Pick the tick multiplier from the zoom level so footprint rows stay readable.
+    pub auto_tick_size: bool,
     pub show_footprint_orderbook: bool,
     pub quantity_format: QuantityFormat,
     pub session_vwap: SessionVwapConfig,
@@ -176,6 +178,7 @@ impl Default for ProConfig {
             enabled: Vec::new(),
             data_labels_always_visible: false,
             show_footprint_summary: false,
+            auto_tick_size: false,
             show_footprint_orderbook: false,
             quantity_format: QuantityFormat::default(),
             session_vwap: SessionVwapConfig::default(),
@@ -468,10 +471,12 @@ pub enum VolumeProfileRange {
     #[default]
     Visible,
     PastDuration,
+    /// Everything loaded for the series.
+    Loaded,
 }
 
 impl VolumeProfileRange {
-    pub const ALL: [Self; 2] = [Self::Visible, Self::PastDuration];
+    pub const ALL: [Self; 3] = [Self::Visible, Self::PastDuration, Self::Loaded];
 }
 
 impl std::fmt::Display for VolumeProfileRange {
@@ -479,6 +484,7 @@ impl std::fmt::Display for VolumeProfileRange {
         match self {
             Self::Visible => write!(f, "Visible"),
             Self::PastDuration => write!(f, "Past Duration"),
+            Self::Loaded => write!(f, "All Loaded"),
         }
     }
 }
@@ -529,7 +535,7 @@ pub struct VolumeProfileConfig {
     pub range: VolumeProfileRange,
     pub past_duration_end: VolumeProfilePastEnd,
     pub display: VolumeProfileDisplay,
-    pub timeframe_multiplier: u8,
+    pub timeframe_multiplier: u16,
     pub rows: u16,
     pub max_width_percent: u8,
 }

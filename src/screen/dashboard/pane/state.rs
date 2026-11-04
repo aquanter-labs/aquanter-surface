@@ -615,6 +615,7 @@ impl State {
                         modifier,
                         ModifierKind::Orderbook(basis, tick_multiply),
                         exchange,
+                        None,
                     );
 
                     top_left_buttons = top_left_buttons.push(modifiers);
@@ -643,6 +644,7 @@ impl State {
                             modifier,
                             kind,
                             Some(ticker_info.exchange()),
+                            Some(chart.auto_tick()),
                         ),
                     ]
                     .spacing(4);
@@ -692,7 +694,8 @@ impl State {
                             tick_multiply,
                             modifier,
                             kind,
-                            exchange
+                            exchange,
+                            None,
                         ),
                     ]
                     .spacing(4);
@@ -854,6 +857,11 @@ impl State {
                         match action {
                             modal::stream::Action::TabSelected(tab) => {
                                 modifier.tab = tab;
+                            }
+                            modal::stream::Action::TicksizeAuto => {
+                                if let Content::Kline { chart: Some(c), .. } = &mut self.content {
+                                    c.enable_auto_tick();
+                                }
                             }
                             modal::stream::Action::TicksizeSelected(tm) => {
                                 modifier.update_kind_with_multiplier(tm);
@@ -1755,14 +1763,18 @@ fn ticksize_modifier<'a>(
     modifier: Option<modal::stream::Modifier>,
     kind: ModifierKind,
     exchange: Option<exchange::adapter::Exchange>,
+    auto: Option<bool>,
 ) -> Element<'a, Message> {
-    let modifier_modal =
-        Modal::StreamModifier(modal::stream::Modifier::new(kind).with_ticksize_view(
-            price_step,
-            min_ticksize,
-            multiplier,
-            exchange,
-        ));
+    let mut stream_modifier = modal::stream::Modifier::new(kind).with_ticksize_view(
+        price_step,
+        min_ticksize,
+        multiplier,
+        exchange,
+    );
+    if let Some(auto) = auto {
+        stream_modifier = stream_modifier.with_auto_ticksize(auto);
+    }
+    let modifier_modal = Modal::StreamModifier(stream_modifier);
 
     let is_active = modifier.is_some_and(|m| {
         matches!(
@@ -1771,7 +1783,12 @@ fn ticksize_modifier<'a>(
         )
     });
 
-    button(text(multiplier.to_string()).align_y(Alignment::Center))
+    let label = if auto == Some(true) {
+        format!("Auto {multiplier}")
+    } else {
+        multiplier.to_string()
+    };
+    button(text(label).align_y(Alignment::Center))
         .style(move |theme, status| style::button::modifier(theme, status, !is_active))
         .on_press(Message::PaneEvent(id, Event::ShowModal(modifier_modal)))
         .height(widget::PANE_CONTROL_BTN_HEIGHT)

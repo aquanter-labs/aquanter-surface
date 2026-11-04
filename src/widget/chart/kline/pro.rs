@@ -120,6 +120,23 @@ fn paint_footprint_summary(
     }
 }
 
+/// Smallest 1-2-5 multiplier whose rows reach 16px, given the current row height.
+fn auto_tick_multiplier(current: u16, row_px: f32) -> u16 {
+    const TARGET_PX: f64 = 16.0;
+    const MAX: f64 = 10_000.0;
+    let wanted = f64::from(current) * TARGET_PX / f64::from(row_px);
+    let mut base = 1.0;
+    loop {
+        for mantissa in [1.0, 2.0, 5.0] {
+            let value = mantissa * base;
+            if value >= wanted || value >= MAX {
+                return value.min(MAX) as u16;
+            }
+        }
+        base *= 10.0;
+    }
+}
+
 #[cfg(test)]
 fn price_row_span(scene: &Scene, price: f64, tick: f64) -> Option<(f32, f32)> {
     let price = exchange::unit::Price::from_f64(price);
@@ -144,6 +161,21 @@ impl<'a> KlineWidget<'a> {
     pub(crate) fn with_pro_liquidations(mut self, liquidations: &'a [exchange::Liquidation]) -> Self {
         self.pro_liquidations = liquidations;
         self
+    }
+
+    /// Auto tick: keep the step while footprint rows are 10-40px, else jump to
+    /// the smallest 1-2-5 multiplier giving rows of at least 16px.
+    pub(super) fn pro_auto_tick(&self, scene: &Scene) -> Option<exchange::TickMultiplier> {
+        let (config, _) = self.pro_market?;
+        if !config.auto_tick_size || !self.footprint.visible { return None; }
+        let series = self.series.first()?;
+        let tick = series.tick_size();
+        let (_, height) = tick_row(scene, series.latest_point()?.kline.close, tick)?;
+        if !height.is_finite() || height <= 0.0 || (10.0..=40.0).contains(&height) { return None; }
+        let min_units = exchange::unit::PriceStep::from(series.ticker_info.min_ticksize).units.max(1);
+        let current = (tick.units / min_units).max(1) as u16;
+        let next = auto_tick_multiplier(current, height);
+        (next != current).then_some(exchange::TickMultiplier(next))
     }
 
     pub(super) fn pro_main_bounds(&self, scene: &Scene) -> Rectangle {
@@ -232,7 +264,9 @@ impl<'a> KlineWidget<'a> {
                 let step = match self.basis { Basis::Time(timeframe) => timeframe.to_milliseconds(), _ => 60_000 };
                 end.saturating_sub(step.saturating_mul(u64::from(profile.timeframe_multiplier.max(1))))
             }
+            data::chart::kline::pro::VolumeProfileRange::Loaded => 0,
         };
+        let end = if profile.range == data::chart::kline::pro::VolumeProfileRange::Loaded { latest } else { end };
         let mut points = series.points().filter(|point| {
             let time = point.kline.time.as_u64();
             time >= start && time <= end
@@ -704,6 +738,19 @@ mod tests {
     use super::*;
     use super::super::scene::{ChromeScene, SceneInteraction};
     use data::chart::kline::{ChartStepMs, pro::ProConfig};
+
+    #[test]
+    fn auto_tick_lands_rows_in_the_readable_band() {
+        assert_eq!(auto_tick_multiplier(1, 4.0), 5);
+        assert_eq!(auto_tick_multiplier(10, 2.0), 100);
+        assert_eq!(auto_tick_multiplier(100, 80.0), 20);
+        assert_eq!(auto_tick_multiplier(1, 0.0001), 10_000);
+        for (current, px) in [(1u16, 3.3f32), (25, 7.0), (50, 90.0), (200, 41.0)] {
+            let next = auto_tick_multiplier(current, px);
+            let rows = px * f32::from(next) / f32::from(current);
+            assert!((16.0..=40.0).contains(&rows), "{current}@{px}px -> {next} gives {rows}px");
+        }
+    }
 
     #[test]
     fn fixed_profiles_follow_the_visible_range() {
