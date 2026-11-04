@@ -178,7 +178,7 @@ impl Default for ProConfig {
             enabled: Vec::new(),
             data_labels_always_visible: false,
             show_footprint_summary: false,
-            auto_tick_size: false,
+            auto_tick_size: true,
             show_footprint_orderbook: false,
             quantity_format: QuantityFormat::default(),
             session_vwap: SessionVwapConfig::default(),

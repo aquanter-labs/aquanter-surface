@@ -1421,7 +1421,7 @@ impl KlineChart {
     }
 
     fn align_automatic_tick_step(&mut self, update: &DataUpdate<'_>) {
-        if !self.tick_step_automatic {
+        if !self.tick_step_automatic || self.options.pro.auto_tick_size {
             return;
         }
         let price = match update {
@@ -1444,6 +1444,8 @@ impl KlineChart {
             self.data.base_ticker().min_ticksize.as_f64(),
             price,
         );
+        // One-shot default: re-aligning on live klines flipped the step near 1-2-5 boundaries.
+        self.tick_step_automatic = false;
         self.apply_tick_multiplier(next);
     }
 
@@ -1451,7 +1453,12 @@ impl KlineChart {
         self.options.pro.auto_tick_size
     }
 
+    pub fn disable_auto_tick(&mut self) {
+        self.options.pro.auto_tick_size = false;
+    }
+
     pub fn enable_auto_tick(&mut self) {
+        self.tick_step_automatic = false;
         self.options.pro.auto_tick_size = true;
         self.render_invalidation.invalidate();
     }
@@ -1656,7 +1663,6 @@ impl KlineChart {
             }
             ChartCommand::SetTickMultiplier { multiplier } => {
                 self.tick_step_automatic = false;
-                self.options.pro.auto_tick_size = false;
                 self.data
                     .set_tick_multiplier(multiplier)
                     .then_some(UpdatePolicy::ImmediateReconfigure)

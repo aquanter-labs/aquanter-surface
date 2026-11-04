@@ -883,6 +883,7 @@ impl State {
                                             );
                                         }
                                         Content::Kline { chart: Some(c), .. } => {
+                                            c.disable_auto_tick();
                                             let _ =
                                                 c.apply_command(ChartCommand::SetTickMultiplier {
                                                     multiplier: tm,

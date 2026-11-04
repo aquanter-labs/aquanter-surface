@@ -138,7 +138,9 @@ const FOOTPRINT_TEXT_HORIZONTAL_INSET_PX: f32 = 2.0;
 const FOOTPRINT_TEXT_VERTICAL_INSET_PX: f32 = 1.0;
 const FOOTPRINT_TEXT_SIZE_STEP_PX: f32 = 1.0;
 const FOOTPRINT_TEXT_MIN_WIDTH_CHARS: usize = 4;
-const FOOTPRINT_TEXT_MIN_SIZE_PX: f32 = 5.0;
+// Pro: hide instead of shrinking into unreadable text; allow slightly larger cells.
+const FOOTPRINT_TEXT_MIN_SIZE_PX: f32 = 9.0;
+const FOOTPRINT_TEXT_MAX_SIZE_PX: f32 = 13.0;
 
 #[derive(Clone, Copy, Debug)]
 enum FootprintTextMode {
@@ -170,7 +172,7 @@ impl FootprintTextMode {
     fn bar_alpha(self) -> f32 {
         match self {
             Self::Hidden => 1.0,
-            Self::FixedSize(_) => 0.25,
+            Self::FixedSize(_) => 0.35,
         }
     }
 }
@@ -376,7 +378,7 @@ fn resolve_footprint_text_mode(
     let width_per_size = maximum_content_chars as f32 * (CHAR_W / TEXT_SIZE);
     let text_size = available_height
         .min(available_width / width_per_size)
-        .min(TEXT_SIZE);
+        .min(FOOTPRINT_TEXT_MAX_SIZE_PX);
     let text_size = (text_size / FOOTPRINT_TEXT_SIZE_STEP_PX).floor() * FOOTPRINT_TEXT_SIZE_STEP_PX;
 
     if text_size >= FOOTPRINT_TEXT_MIN_SIZE_PX {
@@ -467,7 +469,7 @@ fn draw_footprint_bid_ask_row(
         );
     }
 
-    let text_color = palette.background.weakest.text;
+    let text_color = palette.background.base.text;
     if let (Some(content), Some(text_size)) = (sell_text, text_size) {
         draw_footprint_text(
             frame,
@@ -852,7 +854,7 @@ fn draw_footprint_row_text(
         quantity_format.format(quantity),
         position,
         text_size,
-        palette.background.weakest.text,
+        palette.background.base.text,
         align_x,
     );
 }
