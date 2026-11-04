@@ -1177,7 +1177,15 @@ impl IndicatorState {
                 .kind
                 .definition()
                 .uses(IndicatorInputSource::OpenInterest),
-            data::chart::kline::FetchRange::Trades(..) => self.trade_request_affects(id),
+            data::chart::kline::FetchRange::Trades(..) => {
+                let definition = instance.kind.definition();
+                // Kline taker volume already satisfies DirectionalVolume; only raw-trade consumers wait.
+                definition.uses(IndicatorInputSource::Trades)
+                    || (definition.uses(IndicatorInputSource::DirectionalVolume)
+                        && !data
+                            .base_series()
+                            .is_some_and(|series| series.has_directional_volume(false)))
+            }
         }
     }
 

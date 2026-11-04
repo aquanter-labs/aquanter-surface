@@ -52,6 +52,74 @@ fn price_y(scene: &Scene, price: f64) -> Option<f32> {
     scene.map_primary_plot_with_anchor(price, scene.primary.anchor).map(|y| scene.layout.regions.plot.y + y)
 }
 
+/// Bottom-docked Δ / Vol strip, one cell per bar, so labels never sit on the candles.
+fn paint_footprint_summary(
+    frame: &mut PaintInputs,
+    plot: Rectangle,
+    time_x: impl Fn(u64) -> Option<f32>,
+    points: &[data::chart::kline::series::KlineSeriesPoint<'_>],
+    config: &data::chart::kline::pro::ProConfig,
+    palette: &Extended,
+) {
+    let cells = points
+        .iter()
+        .filter_map(|point| {
+            let summary = point.footprint.trade_summary()?;
+            let x = time_x(point.kline.time.as_u64())?;
+            let (buy, sell) = (summary.buy_qty.to_f64(), summary.sell_qty.to_f64());
+            Some((x, buy - sell, buy + sell))
+        })
+        .filter(|(x, ..)| *x >= plot.x - 50.0 && *x <= plot.x + plot.width + 50.0)
+        .collect::<Vec<_>>();
+    if cells.is_empty() {
+        return;
+    }
+    let step = cells
+        .windows(2)
+        .map(|pair| (pair[1].0 - pair[0].0).abs())
+        .filter(|width| *width > 0.0)
+        .fold(f32::INFINITY, f32::min);
+    let cell_width = if step.is_finite() { step } else { 60.0 };
+    let font = (cell_width / 4.5).clamp(10.0, 13.0);
+    let row = font + 6.0;
+    let strip = Rectangle { x: plot.x, y: plot.y + plot.height - row * 2.0, width: plot.width, height: row * 2.0 };
+    frame.fill_rectangle(strip.position(), strip.size(), palette.background.base.color.scale_alpha(0.94));
+    frame.stroke(
+        &canvas::Path::line(strip.position(), Point::new(strip.x + strip.width, strip.y)),
+        canvas::Stroke::default().with_color(palette.background.strong.color).with_width(1.0),
+    );
+    let max_delta = cells.iter().map(|(_, delta, _)| delta.abs()).fold(0.0, f64::max).max(f64::EPSILON);
+    // ponytail: monospace width estimate (0.62em/char); measure glyphs if labels clip.
+    let fits = |text: &str| text.chars().count() as f32 * font * 0.62 <= cell_width - 2.0;
+    for (x, delta, volume) in cells {
+        let left = x - cell_width / 2.0;
+        let color = if delta >= 0.0 { palette.success.base.color } else { palette.danger.base.color };
+        let strength = (delta.abs() / max_delta) as f32;
+        frame.fill_rectangle(Point::new(left + 0.5, strip.y + 1.0), Size::new((cell_width - 1.0).max(1.0), row - 1.0), color.scale_alpha(0.08 + 0.32 * strength));
+        for (index, (text, text_color)) in [
+            (config.quantity_format.format(delta), color),
+            (config.quantity_format.format(volume), palette.background.base.text),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if !fits(&text) {
+                continue;
+            }
+            frame.fill_text(canvas::Text {
+                content: text,
+                position: Point::new(x, strip.y + row * (index as f32 + 0.5)),
+                align_x: iced::alignment::Horizontal::Center.into(),
+                align_y: iced::alignment::Vertical::Center.into(),
+                size: font.into(),
+                color: text_color,
+                font: style::AZERET_MONO,
+                ..Default::default()
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 fn price_row_span(scene: &Scene, price: f64, tick: f64) -> Option<(f32, f32)> {
     let price = exchange::unit::Price::from_f64(price);
@@ -267,7 +335,10 @@ impl<'a> KlineWidget<'a> {
                 }
             }
             if config.is_enabled("AnchoredVwap") {
-                if let Some(anchor) = config.anchored_vwap.anchor.map(|time| time.as_u64()) {
+                // No anchor set: anchor at the first visible bar, like SessionVwap's Visible mode.
+                let anchor = config.anchored_vwap.anchor.map(|time| time.as_u64())
+                    .or_else(|| scene.time_for_x_unit(scene.x.min_unit).map(|time| time.as_u64()));
+                if let Some(anchor) = anchor {
                     let vwap = vwap_for_series(series.points(), VwapMode::Anchor { time_ms: anchor });
                     paint_vwap_line(frame, scene, self, &vwap, config.anchored_vwap.color, config.anchored_vwap.line_width, config.anchored_vwap.deviation_bands);
                 }
@@ -286,31 +357,7 @@ impl<'a> KlineWidget<'a> {
                 }
             }
             if config.show_footprint_summary && self.footprint.visible {
-                for point in &points {
-                    let Some(summary) = point.footprint.trade_summary() else { continue; };
-                    let Some(x) = self.pro_time_x(scene, point.kline.time.as_u64()) else { continue; };
-                    let Some(y) = price_y(scene, point.kline.low.to_f64()) else { continue; };
-                    let delta = summary.buy_qty.to_f64() - summary.sell_qty.to_f64();
-                    // Sit a full caption-gap outside the wick, not on the tip.
-                    let outward = price_y(scene, point.kline.high.to_f64())
-                        .map(|high_y| if y >= high_y { 1.0 } else { -1.0 })
-                        .unwrap_or(1.0);
-                    let align_y = if outward > 0.0 {
-                        iced::alignment::Vertical::Top
-                    } else {
-                        iced::alignment::Vertical::Bottom
-                    };
-                    frame.fill_text(canvas::Text {
-                        content: config.quantity_format.format(delta),
-                        position: Point::new(x, y + outward * 16.0),
-                        align_x: iced::alignment::Horizontal::Center.into(),
-                        align_y: align_y.into(),
-                        size: 9.0.into(),
-                        color: if delta >= 0.0 { palette.success.base.color } else { palette.danger.base.color },
-                        font: style::AZERET_MONO,
-                        ..Default::default()
-                    });
-                }
+                paint_footprint_summary(frame, plot, |time| self.pro_time_x(scene, time), &points, config, palette);
             }
             if config.is_enabled("FixedVolumeProfile") {
                 paint_fixed_profiles(frame, scene, self, config, &points, palette);

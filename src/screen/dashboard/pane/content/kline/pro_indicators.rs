@@ -44,7 +44,7 @@ pub(crate) fn inputs(name: &str, config: &ProConfig) -> Element<'static, Message
             controls = controls.push(number(config, "VWAP bands", f32::from(config.session_vwap.deviation_bands), 0.0, 6.0, 1.0, |c, v| c.session_vwap.deviation_bands = v as u8));
         }
         "AnchoredVwap" => {
-            controls = controls.push(text_input("Anchor Unix milliseconds", &config.anchored_vwap.anchor.map(|anchor| anchor.as_u64().to_string()).unwrap_or_default()).on_input(move |value| { let mut c = anchor.clone(); if value.is_empty() { c.anchored_vwap.anchor = None; } else if let Ok(parsed) = value.parse() { c.anchored_vwap.anchor = Some(exchange::UnixMs::new(parsed)); } Message::ProConfigChanged(c) }));
+            controls = controls.push(text_input("Anchor Unix ms (empty = first visible bar)", &config.anchored_vwap.anchor.map(|anchor| anchor.as_u64().to_string()).unwrap_or_default()).on_input(move |value| { let mut c = anchor.clone(); if value.is_empty() { c.anchored_vwap.anchor = None; } else if let Ok(parsed) = value.parse() { c.anchored_vwap.anchor = Some(exchange::UnixMs::new(parsed)); } Message::ProConfigChanged(c) }));
             controls = controls.push(number(config, "Bands", f32::from(config.anchored_vwap.deviation_bands), 0.0, 6.0, 1.0, |c, v| c.anchored_vwap.deviation_bands = v as u8));
         }
         "LiquidationHeatmap" => {}
