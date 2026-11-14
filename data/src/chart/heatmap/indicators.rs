@@ -173,6 +173,8 @@ impl std::fmt::Display for DepthDistance {
 pub struct HeatmapIndicatorConfig {
     pub volume: bool,
     pub volume_profile: Option<ProfileKind>,
+    /// Volume profile shows |buy - sell| per level, colored by the dominant side.
+    pub volume_profile_delta: bool,
     pub spread: bool,
     pub spread_unit: SpreadUnit,
     pub depth: bool,
@@ -186,6 +188,7 @@ impl Default for HeatmapIndicatorConfig {
         Self {
             volume: true,
             volume_profile: Some(ProfileKind::default()),
+            volume_profile_delta: false,
             spread: false,
             spread_unit: SpreadUnit::default(),
             depth: false,

@@ -16,6 +16,7 @@ use iced::{Element, widget::button};
 pub enum HeatmapIndicatorMessage {
     SpreadUnit(data::chart::heatmap::indicators::SpreadUnit),
     VolumeProfile(data::chart::heatmap::ProfileKind),
+    VolumeProfileDelta(bool),
     Enabled(data::chart::heatmap::indicators::HeatmapIndicator, bool),
     DistanceEdited(String),
     DistanceSubmitted,

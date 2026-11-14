@@ -3,6 +3,7 @@ use crate::widget::chart::heatmap::{
     scene::{
         Scene,
         depth_grid::{GridRing, HeatmapPalette},
+        pipeline::circle::CircleInstance,
     },
     ui::{
         CanvasCaches, CanvasInvalidation, axisx::AxisXLabelCanvas, axisy::AxisYLabelCanvas,
@@ -110,6 +111,10 @@ pub struct HeatmapShader {
     depth_distance_input: String,
     replay: BackgroundJob<HeatmapReplay, HistoricalDepth, DepthReplayResult>,
     replay_requested: Option<HeatmapReplay>,
+    /// Pro: pulled / absorbing wall markers.
+    walls: data::chart::walls::WallTracker,
+    /// Pro: last-5m wall event counts shown in the overlay corner.
+    wall_summary: Option<String>,
 }
 
 impl HeatmapShader {
@@ -156,6 +161,8 @@ impl HeatmapShader {
             canvas_invalidation: CanvasInvalidation::default(),
             depth_grid: GridRing::default(),
             depth_norm: view::DepthNormCache::new(),
+            walls: Default::default(),
+            wall_summary: None,
             data_gen: 1,
             rebuild_policy: view::RebuildPolicy::Idle,
             anchor: view::Anchor::default(),
@@ -391,6 +398,7 @@ impl HeatmapShader {
             volume_strip_max_qty: self.instances.volume_strip_scale_max_qty,
             depth_profile_max_qty: self.instances.depth_profile_scale_max_qty,
             volume_profile_max_qty: self.instances.volume_profile_scale_max_qty,
+            wall_summary: self.wall_summary.as_deref(),
         };
 
         let chart = HeatmapShaderWidget::new(
@@ -464,6 +472,7 @@ impl HeatmapShader {
             DepthSnapshotUpdate::Continuous => None,
             DepthSnapshotUpdate::Gap { start } => Some(start),
         };
+        self.walls.on_depth(depth, update_t, self.step);
 
         self.indicators.ingest(
             HeatmapPanel::Spread,
@@ -549,6 +558,7 @@ impl HeatmapShader {
 
         self.trades
             .ingest_trades_bucket(rounded_t, buffer, self.step);
+        self.walls.on_trades(buffer, self.step);
 
         self.canvas_invalidation.mark_overlay_tooltip();
         self.canvas_invalidation.mark_overlay_scale_labels();
@@ -579,7 +589,8 @@ impl HeatmapShader {
         }
 
         let overlays_changed = self.indicator_config().volume != config.volume
-            || self.indicator_config().volume_profile != config.volume_profile;
+            || self.indicator_config().volume_profile != config.volume_profile
+            || self.indicator_config().volume_profile_delta != config.volume_profile_delta;
 
         if self.indicator_config().distance != config.distance {
             self.depth_distance_input = config.distance.to_string();
@@ -663,6 +674,7 @@ impl HeatmapShader {
         match message {
             HeatmapIndicatorMessage::SpreadUnit(unit) => config.spread_unit = unit,
             HeatmapIndicatorMessage::VolumeProfile(kind) => config.volume_profile = Some(kind),
+            HeatmapIndicatorMessage::VolumeProfileDelta(delta) => config.volume_profile_delta = delta,
             HeatmapIndicatorMessage::Enabled(kind, enabled) => config.set_enabled(kind, enabled),
             HeatmapIndicatorMessage::DistanceEdited(value) => {
                 self.depth_distance_input = value;
@@ -695,7 +707,9 @@ impl HeatmapShader {
             prev.order_size_filter.to_bits() != self.config.order_size_filter.to_bits();
         let trade_visual_changed = prev.trade_size_filter.to_bits()
             != self.config.trade_size_filter.to_bits()
-            || prev.trade_size_scale != self.config.trade_size_scale;
+            || prev.trade_size_scale != self.config.trade_size_scale
+            || prev.wall_min_strength.to_bits() != self.config.wall_min_strength.to_bits()
+            || prev.wall_min_count != self.config.wall_min_count;
 
         self.canvas_invalidation.mark_overlay_tooltip();
         self.canvas_invalidation.mark_overlay_scale_labels();
@@ -829,11 +843,63 @@ impl HeatmapShader {
             &self.config,
             &self.ticker_info.market_type(),
             self.indicators.config().volume_profile.as_ref(),
+            self.indicators.config().volume_profile_delta,
             self.indicators
                 .config()
                 .is_enabled(HeatmapIndicator::Volume),
         );
 
+        let mut built = built;
+        let y_anchor = self.depth_grid.y_anchor_price();
+        let market_type = self.ticker_info.market_type();
+        let size_in_quote_ccy =
+            exchange::unit::qty::volume_size_unit() == exchange::SizeUnit::Quote;
+        let strong_marks = self
+            .walls
+            .marks
+            .iter()
+            .filter(|mark| {
+                mark.strength >= self.config.wall_min_strength
+                    && mark.count >= self.config.wall_min_count
+                    && market_type.qty_in_quote_value(mark.qty, mark.price, size_in_quote_ccy)
+                        as f32
+                        > self.config.order_size_filter
+            })
+            .collect::<Vec<_>>();
+
+        let since = effective_window.latest_vis.saturating_sub(5 * 60_000);
+        let mut counts = [0usize; 4];
+        for mark in strong_marks.iter().filter(|mark| {
+            (since..=effective_window.latest_vis).contains(&mark.time.as_u64())
+        }) {
+            let absorbed = mark.event == data::chart::walls::WallEvent::Absorbed;
+            counts[usize::from(absorbed) * 2 + usize::from(!mark.is_bid)] += 1;
+        }
+        self.wall_summary = Some(format!(
+            "5m pulled   bid {:>2}  ask {:>2}
+5m absorbed bid {:>2}  ask {:>2}",
+            counts[0], counts[1], counts[2], counts[3]
+        ));
+
+        built.circles.extend(
+            strong_marks
+                .into_iter()
+                .filter(|mark| {
+                    (effective_window.earliest..=effective_window.latest_vis)
+                        .contains(&mark.time.as_u64())
+                        && (effective_window.lowest..=effective_window.highest).contains(&mark.price)
+                })
+                .map(|mark| {
+                    CircleInstance::wall_marker(
+                        mark,
+                        effective_window.y_center_for_price_texture_aligned(
+                            mark.price, base_price, self.step, y_anchor,
+                        ),
+                        (mark.time.as_u64() / effective_window.aggr_time) as i64
+                            - self.anchor.scroll_ref_bucket(),
+                    )
+                }),
+        );
         let draw_list = built.draw_list();
 
         self.scene.set_circles(built.circles);

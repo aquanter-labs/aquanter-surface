@@ -7,6 +7,7 @@ struct VertexInput {
     @location(3) x_frac: f32,
     @location(4) radius_px: f32,
     @location(5) color: vec4<f32>,
+    @location(6) ring_px: f32,
 };
 
 struct VertexOutput {
@@ -15,6 +16,7 @@ struct VertexOutput {
     @location(1) color: vec4<f32>,
     @location(2) world_x: f32,
     @location(3) radius_px: f32,
+    @location(4) ring_px: f32,
 };
 
 @vertex
@@ -41,6 +43,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     out.color = input.color;
     out.world_x = world_pos.x;
     out.radius_px = input.radius_px;
+    out.ring_px = input.ring_px;
 
     return out;
 }
@@ -54,7 +57,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let inner = max(r - feather_px, 0.0);
     let outer = max(r, 1e-6);
 
-    let a = 1.0 - smoothstep(inner, outer, d_px);
+    var a = 1.0 - smoothstep(inner, outer, d_px);
+    if (input.ring_px > 0.0) {
+        let hole = max(r - input.ring_px, 0.0);
+        a = a * smoothstep(hole - feather_px, hole, d_px);
+    }
     if (a <= 0.0) {
         discard;
     }

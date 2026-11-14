@@ -3,6 +3,7 @@ pub mod heatmap;
 pub mod kline;
 pub mod ticks;
 pub mod value;
+pub mod walls;
 
 use exchange::{Timeframe, unit::PriceStep};
 use serde::{Deserialize, Serialize};

@@ -156,6 +156,8 @@ pub struct OverlayCanvas<'a> {
     pub volume_profile_max_qty: Option<Qty>,
 
     pub is_paused: bool,
+    /// Pro: wall event counts, drawn top-left.
+    pub wall_summary: Option<&'a str>,
 }
 
 impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
@@ -216,6 +218,36 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     .unwrap_or(0.0)
                     .clamp(0.0, bounds.height);
                 let strip_top_y = (bounds.height - strip_h_px).clamp(0.0, bounds.height);
+
+                // Wall summary: top-center, one row per line on an opaque box.
+                if let Some(summary) = self.wall_summary {
+                    let size = OVERLAY_SCALE_LABEL_TEXT_SIZE;
+                    let line_h = size + 4.0;
+                    let lines = summary.lines().collect::<Vec<_>>();
+                    // Generous monospace advance so the box always covers the text.
+                    let longest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+                    let w = longest as f32 * size * 0.75 + 16.0;
+                    let h = lines.len() as f32 * line_h + 8.0;
+                    let center = bounds.width * 0.5;
+                    let top = OVERLAY_LABEL_PAD_PX;
+                    frame.fill_rectangle(
+                        Point::new(center - w * 0.5, top),
+                        iced::Size::new(w, h),
+                        palette.background.base.color,
+                    );
+                    for (i, line) in lines.iter().enumerate() {
+                        frame.fill_text(canvas::Text {
+                            content: (*line).to_owned(),
+                            position: Point::new(center, top + 4.0 + i as f32 * line_h),
+                            size: iced::Pixels(size),
+                            color: palette.background.base.text.scale_alpha(0.85),
+                            font: style::AZERET_MONO,
+                            align_x: Alignment::Center.into(),
+                            align_y: Alignment::Start.into(),
+                            ..canvas::Text::default()
+                        });
+                    }
+                }
 
                 // Volume strip denom label:
                 // HUD-anchored to the overlay bounds (top-right of the whole overlay).

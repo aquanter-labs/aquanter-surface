@@ -14,11 +14,36 @@ pub struct CircleInstance {
     pub x_bin_rel: i32,
     pub x_frac: f32,
     pub radius_px: f32,
-    _pad: f32,
+    /// Stroke width of a hollow ring; 0 draws a filled disc.
+    ring_px: f32,
     pub color: [f32; 4],
 }
 
 impl CircleInstance {
+    /// Pro: amber = wall pulled (spoof), violet = wall absorbing flow.
+    pub fn wall_marker(mark: &data::chart::walls::WallMark, y_world: f32, x_bin_rel: i64) -> Self {
+        // Color = side: orange bid, yellow ask. Shape = event: hollow pulled, filled absorbed.
+        let color = if mark.is_bid {
+            [1.0, 0.5, 0.1, 0.95]
+        } else {
+            [1.0, 0.95, 0.35, 0.95]
+        };
+        let ring_px = match mark.event {
+            data::chart::walls::WallEvent::Pulled => 1.5,
+            data::chart::walls::WallEvent::Absorbed => 0.0,
+        };
+        Self {
+            y_world,
+            x_bin_rel: x_bin_rel.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+            x_frac: 0.0,
+            // 4px at the 4x detection floor, growing with log strength.
+            // 4px..9px with log strength; small so the book underneath stays readable.
+            radius_px: (4.0 + 2.0 * (mark.strength / 4.0).max(1.0).ln()).min(9.0),
+            ring_px,
+            color,
+        }
+    }
+
     pub const R_MIN_PX: f32 = 1.5;
     const R_MAX_PX: f32 = 25.0;
     const ALPHA: f32 = 0.8;
@@ -71,7 +96,7 @@ impl CircleInstance {
             x_bin_rel,
             x_frac,
             radius_px,
-            _pad: 0.0,
+            ring_px: 0.0,
             color: rgba,
         }
     }

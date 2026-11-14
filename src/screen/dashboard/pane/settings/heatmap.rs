@@ -80,7 +80,43 @@ pub fn heatmap_shader_cfg_view<'a>(
         )
     });
 
-    let size_filters = column![trade_size_slider, order_size_slider].spacing(8);
+    let wall_slider = classic_slider_row(
+        Some(text("Wall")),
+        4.0..=40.0,
+        cfg.wall_min_strength,
+        move |value| Message::VisualConfigChanged {
+            config: VisualConfig::Heatmap(heatmap::Config {
+                wall_min_strength: value,
+                ..cfg
+            }),
+            sync_all: false,
+        },
+        |value| format!(">{value:.0}x median"),
+        Some(1.0),
+    );
+
+    let wall_count_slider = classic_slider_row(
+        Some(text("Repeats")),
+        1.0..=6.0,
+        cfg.wall_min_count as f32,
+        move |value| Message::VisualConfigChanged {
+            config: VisualConfig::Heatmap(heatmap::Config {
+                wall_min_count: value as u32,
+                ..cfg
+            }),
+            sync_all: false,
+        },
+        |value| format!(">= {value:.0} in 30s"),
+        Some(1.0),
+    );
+
+    let size_filters = column![
+        trade_size_slider,
+        order_size_slider,
+        wall_slider,
+        wall_count_slider
+    ]
+    .spacing(8);
 
     let trade_viz_column = {
         let dyn_checkbox = checkbox(cfg.trade_size_scale.is_some())
@@ -145,7 +181,7 @@ pub fn heatmap_shader_cfg_view<'a>(
                 HeatmapIndicator::Volume => None,
                 HeatmapIndicator::VolumeProfile => indicators
                     .volume_profile
-                    .map(|kind| volume_profile_controls(kind, basis)),
+                    .map(|kind| volume_profile_controls(kind, indicators.volume_profile_delta, basis)),
 
                 HeatmapIndicator::Spread => Some(
                     column![
@@ -233,6 +269,7 @@ pub fn heatmap_shader_cfg_view<'a>(
 
 fn volume_profile_controls<'a>(
     kind: ProfileKind,
+    delta: bool,
     basis: data::chart::Basis,
 ) -> iced::Element<'a, Message> {
     let interval_ms = match basis {
@@ -263,6 +300,9 @@ fn volume_profile_controls<'a>(
             on_change
         ),
         radio(fixed_window_label, fixed_window, Some(kind), on_change),
+        checkbox(delta).label("Delta (buy - sell)").on_toggle(|delta| {
+            Message::HeatmapIndicator(HeatmapIndicatorMessage::VolumeProfileDelta(delta))
+        }),
     ]
     .spacing(4);
 

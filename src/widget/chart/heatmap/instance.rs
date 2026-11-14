@@ -111,6 +111,7 @@ impl InstanceBuilder {
         config: &Config,
         market_type: &MarketKind,
         profile_kind: Option<&ProfileKind>,
+        profile_delta: bool,
         show_volume_strip: bool,
     ) -> OverlayBuild {
         // Reset denoms each rebuild to avoid stale overlay labels
@@ -160,6 +161,7 @@ impl InstanceBuilder {
                 y_anchor,
                 latest_time,
                 kind,
+                profile_delta,
                 palette,
                 &mut rects,
             );
@@ -184,6 +186,7 @@ impl InstanceBuilder {
         y_anchor: Option<Price>,
         latest_time: u64,
         profile_kind: &ProfileKind,
+        delta: bool,
         palette: &HeatmapPalette,
         rects: &mut Vec<RectInstance>,
     ) {
@@ -244,9 +247,12 @@ impl InstanceBuilder {
                     self.volume_profile_bid_acc[i] += t.qty;
                 }
 
-                let total = self.volume_profile_bid_acc[i] + self.volume_profile_ask_acc[i];
-                max_total = max_total.max(total);
             }
+        }
+        // Scale by the widest bar: total volume, or |buy - sell| in delta mode.
+        let bar = |buy: Qty, sell: Qty| if delta { buy.abs_diff(sell) } else { buy + sell };
+        for (buy, sell) in self.volume_profile_bid_acc.iter().zip(&self.volume_profile_ask_acc) {
+            max_total = max_total.max(bar(*buy, *sell));
         }
 
         if max_total.is_zero() {
@@ -265,6 +271,22 @@ impl InstanceBuilder {
             let total = buy_qty + sell_qty;
 
             if total.is_zero() {
+                continue;
+            }
+
+            if delta {
+                let delta_w = (bar(buy_qty, sell_qty).to_f32_lossy() / max_total_f32)
+                    * w.volume_profile_max_width;
+                if delta_w > 0.0 {
+                    let rgb = if buy_qty > sell_qty { palette.buy_rgb } else { palette.sell_rgb };
+                    rects.push(RectInstance::volume_profile_split_bar(
+                        y_world,
+                        delta_w,
+                        w.left_edge_world,
+                        w,
+                        rgb,
+                    ));
+                }
                 continue;
             }
 

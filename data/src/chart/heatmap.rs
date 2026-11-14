@@ -19,6 +19,20 @@ pub struct Config {
     pub order_size_filter: f32,
     pub trade_size_scale: Option<i32>,
     pub coalescing: Option<CoalesceKind>,
+    /// Pro: hide wall markers weaker than this multiple of the median nearby level.
+    #[serde(default = "default_wall_min_strength")]
+    pub wall_min_strength: f32,
+    /// Pro: hide wall markers whose 30s same-side burst is smaller than this; one-off pulls are noise.
+    #[serde(default = "default_wall_min_count")]
+    pub wall_min_count: u32,
+}
+
+fn default_wall_min_count() -> u32 {
+    2
+}
+
+fn default_wall_min_strength() -> f32 {
+    8.0
 }
 
 impl Default for Config {
@@ -28,6 +42,8 @@ impl Default for Config {
             order_size_filter: 0.0,
             trade_size_scale: Some(100),
             coalescing: Some(CoalesceKind::Average(0.15)),
+            wall_min_strength: default_wall_min_strength(),
+            wall_min_count: default_wall_min_count(),
         }
     }
 }
