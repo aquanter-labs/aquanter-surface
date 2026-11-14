@@ -1,4 +1,4 @@
-use chrono::{DateTime, Datelike, Months, TimeZone};
+use chrono::{DateTime, Datelike, Months, Offset, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -9,6 +9,8 @@ pub enum UserTimezone {
     #[default]
     Utc,
     Local,
+    /// An IANA zone (e.g. `Asia/Shanghai`), DST-aware.
+    Named(chrono_tz::Tz),
 }
 
 /// Specifies the *purpose* of a timestamp label when requesting a formatted
@@ -29,6 +31,24 @@ pub enum TimeLabelKind<'a> {
 }
 
 impl UserTimezone {
+    /// Every selectable timezone: UTC, the system zone, then the IANA regional zones.
+    pub fn all() -> Vec<Self> {
+        const REGIONS: [&str; 9] = [
+            "Africa/", "America/", "Antarctica/", "Asia/", "Atlantic/", "Australia/", "Europe/",
+            "Indian/", "Pacific/",
+        ];
+        let mut named = chrono_tz::TZ_VARIANTS
+            .iter()
+            .filter(|tz| REGIONS.iter().any(|region| tz.name().starts_with(region)))
+            .copied()
+            .collect::<Vec<_>>();
+        named.sort_by_key(|tz| tz.name());
+        [Self::Utc, Self::Local]
+            .into_iter()
+            .chain(named.into_iter().map(Self::Named))
+            .collect()
+    }
+
     pub fn to_user_datetime(
         &self,
         datetime: DateTime<chrono::Utc>,
@@ -68,6 +88,7 @@ impl UserTimezone {
         let time_with_zone = match self {
             UserTimezone::Local => datetime.with_timezone(&chrono::Local).fixed_offset(),
             UserTimezone::Utc => datetime.fixed_offset(),
+            UserTimezone::Named(tz) => datetime.with_timezone(tz).fixed_offset(),
         };
 
         formatter(time_with_zone)
@@ -115,6 +136,7 @@ impl UserTimezone {
         match self {
             UserTimezone::Utc => datetime.date_naive(),
             UserTimezone::Local => datetime.with_timezone(&chrono::Local).date_naive(),
+            UserTimezone::Named(tz) => datetime.with_timezone(tz).date_naive(),
         }
     }
 
@@ -126,6 +148,10 @@ impl UserTimezone {
         let utc = match self {
             UserTimezone::Utc => midnight.and_utc(),
             UserTimezone::Local => chrono::Local
+                .from_local_datetime(&midnight)
+                .earliest()?
+                .with_timezone(&chrono::Utc),
+            UserTimezone::Named(tz) => tz
                 .from_local_datetime(&midnight)
                 .earliest()?
                 .with_timezone(&chrono::Utc),
@@ -233,6 +259,11 @@ impl fmt::Display for UserTimezone {
                 let minutes = (local_offset % 3600) / 60;
                 write!(f, "Local (UTC {hours:+03}:{minutes:02})")
             }
+            UserTimezone::Named(tz) => {
+                let offset = chrono::Utc::now().with_timezone(tz).offset().fix().local_minus_utc();
+                let (hours, minutes) = (offset / 3600, (offset.abs() % 3600) / 60);
+                write!(f, "{} (UTC {hours:+03}:{minutes:02})", tz.name())
+            }
         }
     }
 }
@@ -246,7 +277,10 @@ impl<'de> Deserialize<'de> for UserTimezone {
         match timezone_str.to_lowercase().as_str() {
             "utc" => Ok(UserTimezone::Utc),
             "local" => Ok(UserTimezone::Local),
-            _ => Err(serde::de::Error::custom("Invalid UserTimezone")),
+            _ => timezone_str
+                .parse::<chrono_tz::Tz>()
+                .map(UserTimezone::Named)
+                .map_err(|_| serde::de::Error::custom("Invalid UserTimezone")),
         }
     }
 }
@@ -259,6 +293,23 @@ impl Serialize for UserTimezone {
         match self {
             UserTimezone::Utc => serializer.serialize_str("UTC"),
             UserTimezone::Local => serializer.serialize_str("Local"),
+            UserTimezone::Named(tz) => serializer.serialize_str(tz.name()),
         }
+    }
+}
+
+#[cfg(test)]
+mod named_zone_tests {
+    use super::UserTimezone;
+
+    #[test]
+    fn named_zone_round_trips_and_follows_dst() {
+        let tz: UserTimezone = serde_json::from_str("\"America/New_York\"").unwrap();
+        assert_eq!(serde_json::to_string(&tz).unwrap(), "\"America/New_York\"");
+        // 2026-01-15 12:00 UTC is EST (-5); 2026-07-15 12:00 UTC is EDT (-4).
+        let winter = tz.format_with_kind(1_768_478_400_000, super::TimeLabelKind::Custom("%H"));
+        let summer = tz.format_with_kind(1_784_116_800_000, super::TimeLabelKind::Custom("%H"));
+        assert_eq!((winter.as_deref(), summer.as_deref()), (Some("07"), Some("08")));
+        assert!(UserTimezone::all().contains(&tz));
     }
 }

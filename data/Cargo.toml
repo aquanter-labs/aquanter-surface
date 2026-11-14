@@ -12,6 +12,7 @@ serde_json.workspace = true
 serde.workspace = true
 iced_core.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
 regex.workspace = true
 palette.workspace = true
 enum-map.workspace = true
