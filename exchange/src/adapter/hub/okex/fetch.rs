@@ -8,7 +8,10 @@ use super::{
     HttpHub, MarketKind, OkexLimiter, REST_API_BASE, exchange_from_market_type,
     raw_qty_unit_from_market_type, timeframe_to_okx_bar,
 };
-use crate::adapter::hub::AdapterError;
+use crate::adapter::hub::{
+    AdapterError, HOUR_MS, RawTrade, hour_cache_path, open_hour_start, read_hour_cache,
+    write_hour_cache,
+};
 use crate::adapter::{KlinePage, kline_page_end};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -429,12 +432,12 @@ pub(super) async fn fetch_trades(
     let mut trades = Vec::new();
     let mut rest_from = from_time;
     if until <= UnixMs::now().floor_to(Timeframe::D1)
-        && let Some(data_path) = data_path
+        && let Some(data_path) = &data_path
     {
         let shifted = from_time.as_u64() + OKX_ARCHIVE_OFFSET_MS;
         let mut day_start = shifted - shifted % OKX_DAY_MS - OKX_ARCHIVE_OFFSET_MS;
         while day_start < until.as_u64() {
-            match okx_archive_trades(hub, ticker_info, day_start, &data_path).await {
+            match okx_archive_trades(hub, ticker_info, day_start, data_path).await {
                 Ok(day) => {
                     trades.extend(
                         day.into_iter()
@@ -451,7 +454,14 @@ pub(super) async fn fetch_trades(
         }
     }
     if rest_from < until {
-        trades.extend(okx_rest_trades(hub, ticker_info, rest_from, until).await?);
+        let (inst_id, market) = ticker_info.ticker.to_full_symbol_and_type();
+        let cache_dir = data_path.map(|path| path.join(&inst_id));
+        let qty_norm = okx_trade_qty_norm(ticker_info, market);
+        let raw = okx_rest_cached(hub, &inst_id, rest_from.as_u64(), until.as_u64(), cache_dir.as_deref())
+            .await?;
+        trades.extend(raw.into_iter().map(|t| {
+            okx_trade(ticker_info, qty_norm, t.time, if t.is_sell { "sell" } else { "buy" }, t.price, t.qty)
+        }));
     }
     trades.sort_by_key(|trade| trade.time);
     Ok(trades)
@@ -470,7 +480,9 @@ async fn okx_archive_trades(
     let file = format!("{inst_id}-trades-{}.zip", date.format("%Y-%m-%d"));
     let path = data_path.join(&inst_id).join(&file);
     let url = format!("{OKX_ARCHIVE_BASE}/{}/{file}", date.format("%Y%m%d"));
-    crate::adapter::hub::cached_download(hub.client(), &url, &path).await?;
+    if !crate::adapter::hub::cached_download(hub.client(), &url, &path).await? {
+        return Ok(Vec::new());
+    }
 
     let qty_norm = okx_trade_qty_norm(ticker_info, market);
     let archive = std::fs::File::open(&path)
@@ -499,18 +511,52 @@ async fn okx_archive_trades(
     Ok(trades)
 }
 
-async fn okx_rest_trades(
+/// REST history in `[from, until)`; fully closed UTC hours are cached in `cache_dir`,
+/// so a restart re-pages only the still-open hour.
+async fn okx_rest_cached(
     hub: &mut HttpHub<OkexLimiter>,
-    ticker_info: TickerInfo,
-    from_time: UnixMs,
-    until: UnixMs,
-) -> Result<Vec<crate::Trade>, AdapterError> {
+    inst_id: &str,
+    from: u64,
+    until: u64,
+    cache_dir: Option<&std::path::Path>,
+) -> Result<Vec<RawTrade>, AdapterError> {
+    let closed_until = open_hour_start();
+    let mut trades = Vec::new();
+    let mut t = from;
+    while t < until {
+        let hour = t / HOUR_MS * HOUR_MS;
+        let path = cache_dir
+            .filter(|_| hour + HOUR_MS <= closed_until)
+            .and_then(|dir| hour_cache_path(dir, inst_id, hour));
+        let Some(path) = path else {
+            trades.extend(okx_rest_raw(hub, inst_id, t, until).await?);
+            break;
+        };
+        let hour_trades = match read_hour_cache(&path) {
+            Some(cached) => cached,
+            None => {
+                let fetched = okx_rest_raw(hub, inst_id, hour, hour + HOUR_MS).await?;
+                write_hour_cache(&path, &fetched);
+                fetched
+            }
+        };
+        let end = (hour + HOUR_MS).min(until);
+        trades.extend(hour_trades.into_iter().filter(|x| x.time >= t && x.time < end));
+        t = hour + HOUR_MS;
+    }
+    Ok(trades)
+}
+
+async fn okx_rest_raw(
+    hub: &mut HttpHub<OkexLimiter>,
+    inst_id: &str,
+    from: u64,
+    until: u64,
+) -> Result<Vec<RawTrade>, AdapterError> {
     const PAGE: usize = 100;
-    let (inst_id, market) = ticker_info.ticker.to_full_symbol_and_type();
-    let qty_norm = okx_trade_qty_norm(ticker_info, market);
     let mut trades = Vec::new();
     // Newest first: start below `until` by time, then walk back by trade id.
-    let mut cursor = format!("type=2&after={}", until.as_u64());
+    let mut cursor = format!("type=2&after={until}");
     loop {
         let url = format!(
             "{REST_API_BASE}/market/history-trades?instId={inst_id}&limit={PAGE}&{cursor}"
@@ -528,16 +574,16 @@ async fn okx_rest_trades(
             let Some(time) = row["ts"].as_str().and_then(|ts| ts.parse::<u64>().ok()) else {
                 continue;
             };
-            if time < from_time.as_u64() {
+            if time < from {
                 reached_start = true;
                 continue;
             }
             let price = row["px"].as_str().and_then(|v| v.parse().ok());
             let size = row["sz"].as_str().and_then(|v| v.parse().ok());
             if let (Some(price), Some(size), Some(side)) = (price, size, row["side"].as_str())
-                && time < until.as_u64()
+                && time < until
             {
-                trades.push(okx_trade(ticker_info, qty_norm, time, side, price, size));
+                trades.push(RawTrade { time, price, qty: size, is_sell: side.eq_ignore_ascii_case("sell") });
             }
         }
         let last_id = rows.last().and_then(|row| row["tradeId"].as_str());

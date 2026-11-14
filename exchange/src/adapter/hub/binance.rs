@@ -106,6 +106,7 @@ type BinanceCommand = super::FetchCommand<BinanceMarketScope>;
 #[derive(Clone)]
 pub struct BinanceHandle {
     request_port: RequestPort<BinanceCommand>,
+    client: reqwest::Client,
     proxy_cfg: Option<crate::proxy::Proxy>,
 }
 
@@ -114,11 +115,12 @@ impl BinanceHandle {
         client: reqwest::Client,
         proxy_cfg: Option<&crate::proxy::Proxy>,
     ) -> Result<Self, AdapterError> {
-        let worker = Worker::new(client)?;
+        let worker = Worker::new(client.clone())?;
         let request_port = super::spawn_fetch_worker(worker);
 
         Ok(Self {
             request_port,
+            client,
             proxy_cfg: proxy_cfg.cloned(),
         })
     }
@@ -216,9 +218,7 @@ impl BinanceHandle {
     }
 
     pub async fn fetch_depth_snapshot(&self, ticker: Ticker) -> Result<DepthPayload, AdapterError> {
-        self.request_port
-            .request(move |reply| BinanceCommand::DepthSnapshot { ticker, reply })
-            .await
+        fetch::fetch_depth_snapshot(&self.client, ticker).await
     }
 
     pub fn connect_depth_stream(
@@ -372,7 +372,7 @@ impl super::FetchCommandHandler<BinanceMarketScope> for Worker {
     ) -> futures::future::BoxFuture<'_, Result<DepthPayload, AdapterError>> {
         let market = ticker.market_type();
         Box::pin(
-            async move { fetch::fetch_depth_snapshot(self.hub_for_market(market), ticker).await },
+            async move { fetch::fetch_depth_snapshot(self.hub_for_market(market).client(), ticker).await },
         )
     }
 

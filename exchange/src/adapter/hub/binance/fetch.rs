@@ -11,7 +11,10 @@ use super::{
     BinanceLimiter, HttpHub, INVERSE_PERP_DOMAIN, LINEAR_PERP_DOMAIN, MarketKind, SPOT_DOMAIN,
     THIRTY_DAYS_MS, exchange_from_market_type, raw_qty_unit_from_market_type,
 };
-use crate::adapter::hub::AdapterError;
+use crate::adapter::hub::{
+    AdapterError, HOUR_MS, RawTrade, hour_cache_path, open_hour_start, read_hour_cache,
+    write_hour_cache,
+};
 use crate::adapter::{KlinePage, kline_page_end};
 use csv::ReaderBuilder;
 use serde::Deserialize;
@@ -81,8 +84,11 @@ struct FetchedSpotDepth {
     asks: Vec<DeOrder>,
 }
 
+/// Bypasses the fetch queue and limiter: a resync must not wait behind a long trade
+/// backfill (perp aggTrades cost 20 weight per page and can hold the queue for minutes).
+// ponytail: unmetered, fine for rare resyncs; meter it if snapshots ever get frequent.
 pub(super) async fn fetch_depth_snapshot(
-    hub: &mut HttpHub<BinanceLimiter>,
+    client: &reqwest::Client,
     ticker: Ticker,
 ) -> Result<DepthPayload, AdapterError> {
     let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
@@ -105,32 +111,15 @@ pub(super) async fn fetch_depth_snapshot(
         depth_limit
     );
 
-    let weight = match market_type {
-        MarketKind::Spot => match depth_limit {
-            ..=100_i32 => 5,
-            101_i32..=500_i32 => 25,
-            501_i32..=1000_i32 => 50,
-            1001_i32..=5000_i32 => 250,
-            _ => {
-                return Err(AdapterError::InvalidRequest(format!(
-                    "Unsupported depth limit for spot market: {depth_limit}"
-                )));
-            }
-        },
-        MarketKind::LinearPerps | MarketKind::InversePerps => match depth_limit {
-            ..100 => 2,
-            100 => 5,
-            500 => 10,
-            1000 => 20,
-            _ => {
-                return Err(AdapterError::InvalidRequest(format!(
-                    "Unsupported depth limit for perps market: {depth_limit}"
-                )));
-            }
-        },
-    };
-
-    let text = hub.http_text_with_limiter(&url, weight, None, None).await?;
+    let text = client
+        .get(&url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(AdapterError::from)?
+        .text()
+        .await
+        .map_err(AdapterError::from)?;
 
     match market_type {
         MarketKind::Spot => {
@@ -568,13 +557,14 @@ pub(super) async fn fetch_historical_oi(
     Ok(open_interest)
 }
 
-/// Every aggTrade in `[from, until)`, paged forward by trade ID so trades that
-/// share a millisecond across page boundaries are not dropped.
+/// Every aggTrade in `[from, until)`. Fully closed UTC hours are cached on disk next
+/// to the daily archives, so a restart re-pages only the still-open hour.
 async fn fetch_intraday_trades(
     hub: &mut HttpHub<BinanceLimiter>,
     ticker_info: TickerInfo,
     from: UnixMs,
     until: UnixMs,
+    cache_dir: Option<&std::path::Path>,
 ) -> Result<Vec<Trade>, AdapterError> {
     let ticker = ticker_info.ticker;
     let (symbol_str, market_type) = ticker.to_full_symbol_and_type();
@@ -584,19 +574,22 @@ async fn fetch_intraday_trades(
         MarketKind::LinearPerps => (format!("{LINEAR_PERP_DOMAIN}/fapi/v1/aggTrades"), 20),
         MarketKind::InversePerps => (format!("{INVERSE_PERP_DOMAIN}/dapi/v1/aggTrades"), 20),
     };
+    let base_url = format!("{base_url}?symbol={symbol_str}&limit=1000");
 
     let until_ms = until.as_u64();
-    let mut url = format!(
-        "{base_url}?symbol={symbol_str}&limit=1000&startTime={}",
-        from.as_u64()
-    );
+    let closed_until = open_hour_start();
     let mut de_trades: Vec<DeTrade> = Vec::new();
-    loop {
-        let page: Vec<DeTrade> = hub.http_json_with_limiter(&url, weight, None, None).await?;
-        let Some(from_id) = append_trade_page(&mut de_trades, page, until_ms)? else {
+    let mut t = from.as_u64();
+    while t < until_ms {
+        let hour = t / HOUR_MS * HOUR_MS;
+        let Some(dir) = cache_dir.filter(|_| hour + HOUR_MS <= closed_until) else {
+            de_trades.extend(fetch_trade_pages(hub, &base_url, weight, t, until_ms).await?);
             break;
         };
-        url = format!("{base_url}?symbol={symbol_str}&limit=1000&fromId={from_id}");
+        let end = (hour + HOUR_MS).min(until_ms);
+        let hour_trades = cached_hour_trades(hub, &base_url, weight, dir, &symbol_str, hour).await?;
+        de_trades.extend(hour_trades.into_iter().filter(|x| x.time >= t && x.time < end));
+        t = hour + HOUR_MS;
     }
 
     let qty_norm = QtyNormalization::with_raw_qty_unit(
@@ -616,6 +609,63 @@ async fn fetch_intraday_trades(
         .collect();
 
     Ok(trades)
+}
+
+/// Pages aggTrades forward by trade ID so trades that share a millisecond across
+/// page boundaries are not dropped.
+async fn fetch_trade_pages(
+    hub: &mut HttpHub<BinanceLimiter>,
+    base_url: &str,
+    weight: usize,
+    from_ms: u64,
+    until_ms: u64,
+) -> Result<Vec<DeTrade>, AdapterError> {
+    let mut url = format!("{base_url}&startTime={from_ms}");
+    let mut de_trades: Vec<DeTrade> = Vec::new();
+    loop {
+        let page: Vec<DeTrade> = hub.http_json_with_limiter(&url, weight, None, None).await?;
+        let Some(from_id) = append_trade_page(&mut de_trades, page, until_ms)? else {
+            break;
+        };
+        url = format!("{base_url}&fromId={from_id}");
+    }
+    Ok(de_trades)
+}
+
+/// One closed UTC hour of raw aggTrades, read from `dir` or fetched and saved there.
+async fn cached_hour_trades(
+    hub: &mut HttpHub<BinanceLimiter>,
+    base_url: &str,
+    weight: usize,
+    dir: &std::path::Path,
+    symbol: &str,
+    hour: u64,
+) -> Result<Vec<DeTrade>, AdapterError> {
+    let path = hour_cache_path(dir, symbol, hour)
+        .ok_or_else(|| AdapterError::ParseError("Invalid timestamp".into()))?;
+    // Cached hours are never paged again, so the trade id is not kept.
+    if let Some(trades) = read_hour_cache(&path) {
+        return Ok(trades
+            .into_iter()
+            .map(|t| DeTrade { id: 0, time: t.time, price: t.price, qty: t.qty, is_sell: t.is_sell })
+            .collect());
+    }
+    let trades = fetch_trade_pages(hub, base_url, weight, hour, hour + HOUR_MS).await?;
+    let raw = trades
+        .iter()
+        .map(|t| RawTrade { time: t.time, price: t.price, qty: t.qty, is_sell: t.is_sell })
+        .collect::<Vec<_>>();
+    write_hour_cache(&path, &raw);
+    Ok(trades)
+}
+
+/// Archive directory for one symbol, shared by the daily zips and the hour cache.
+fn aggtrades_subpath(symbol: &str, market_type: MarketKind) -> String {
+    match market_type {
+        MarketKind::Spot => format!("data/spot/daily/aggTrades/{symbol}"),
+        MarketKind::LinearPerps => format!("data/futures/um/daily/aggTrades/{symbol}"),
+        MarketKind::InversePerps => format!("data/futures/cm/daily/aggTrades/{symbol}"),
+    }
 }
 
 /// Appends the part of `page` before `until_ms`; returns the `fromId` of the
@@ -655,11 +705,7 @@ async fn get_hist_trades_with_client(
     let ticker = ticker_info.ticker;
     let (symbol, market_type) = ticker.to_full_symbol_and_type();
 
-    let market_subpath = match market_type {
-        MarketKind::Spot => format!("data/spot/daily/aggTrades/{symbol}"),
-        MarketKind::LinearPerps => format!("data/futures/um/daily/aggTrades/{symbol}"),
-        MarketKind::InversePerps => format!("data/futures/cm/daily/aggTrades/{symbol}"),
-    };
+    let market_subpath = aggtrades_subpath(&symbol, market_type);
 
     let zip_file_name = format!(
         "{}-aggTrades-{}.zip",
@@ -789,8 +835,10 @@ pub(super) async fn fetch_trades(
     let from_ms = i64::try_from(from_time.as_u64())
         .map_err(|_| AdapterError::InvalidRequest("Timestamp exceeds i64 range".to_string()))?;
 
+    let (symbol, market_type) = ticker_info.ticker.to_full_symbol_and_type();
+    let cache_dir = data_path.join(aggtrades_subpath(&symbol, market_type));
     if from_ms >= today_midnight.timestamp_millis() {
-        return fetch_intraday_trades(hub, ticker_info, from_time, until).await;
+        return fetch_intraday_trades(hub, ticker_info, from_time, until, Some(&cache_dir)).await;
     }
 
     // Callers keep a historical range within one UTC day: one archive per call.
@@ -798,7 +846,7 @@ pub(super) async fn fetch_trades(
         .ok_or_else(|| AdapterError::ParseError("Invalid timestamp".into()))?
         .date_naive();
     let client = hub.client().clone();
-    match get_hist_trades_with_client(&client, ticker_info, from_date, data_path).await {
+    match get_hist_trades_with_client(&client, ticker_info, from_date, data_path.clone()).await {
         Ok(mut trades) => {
             trades.retain(|trade| trade.time >= from_time && trade.time < until);
             trades.sort_by_key(|trade| trade.time);
@@ -806,7 +854,7 @@ pub(super) async fn fetch_trades(
         }
         Err(error) => {
             log::warn!("Historical trades fetch failed: {error}, falling back to intraday fetch");
-            fetch_intraday_trades(hub, ticker_info, from_time, until).await
+            fetch_intraday_trades(hub, ticker_info, from_time, until, Some(&cache_dir)).await
         }
     }
 }

@@ -203,7 +203,8 @@ fn cleanup_directory(data_path: &PathBuf) -> usize {
     }
 
     let re =
-        regex::Regex::new(r".*-(\d{4}-\d{2}-\d{2})\.zip$").expect("Cleanup regex pattern is valid");
+        regex::Regex::new(r".*(\d{4}-\d{2}-\d{2})(?:-\d{2})?\.(?:zip|bin|csv\.gz)$")
+            .expect("Cleanup regex pattern is valid");
     let today = chrono::Local::now().date_naive();
     let mut deleted_files = Vec::new();
 
@@ -256,12 +257,15 @@ pub fn load_antialiasing() -> bool {
 }
 
 pub fn cleanup_old_market_data() -> usize {
-    let paths = ["um", "cm"].map(|market_type| {
-        data_path(Some(&format!(
-            "market_data/binance/data/futures/{}/daily/aggTrades",
-            market_type
-        )))
-    });
+    let paths = [
+        "binance/data/futures/um/daily/aggTrades",
+        "binance/data/futures/cm/daily/aggTrades",
+        "binance/data/spot/daily/aggTrades",
+        "bybit/trading",
+        "bybit/spot",
+        "okex",
+    ]
+    .map(|dir| data_path(Some(&format!("market_data/{dir}"))));
 
     let total_deleted: usize = paths.iter().map(cleanup_directory).sum();
 

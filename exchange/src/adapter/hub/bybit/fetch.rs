@@ -410,7 +410,9 @@ pub(super) async fn fetch_trades(
     };
     let path = data_path.join(dir).join(&symbol).join(&file);
     let url = format!("https://public.bybit.com/{dir}/{symbol}/{file}");
-    super::super::cached_download(hub.client(), &url, &path).await?;
+    if !super::super::cached_download(hub.client(), &url, &path).await? {
+        return Ok(Vec::new());
+    }
 
     let file = std::fs::File::open(&path)
         .map_err(|e| AdapterError::ParseError(format!("Failed to open {path:?}: {e}")))?;
