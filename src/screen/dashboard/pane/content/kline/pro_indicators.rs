@@ -22,8 +22,10 @@ pub(crate) fn footprint_view(config: &ProConfig) -> Element<'static, Message> {
     let summary = config.clone();
     let rounding = config.clone();
     let aggregate = config.clone();
+    let basis = config.clone();
     column![
-        checkbox(config.aggregate_venues).label("Aggregate all venues (same coin)").on_toggle(move |value| { let mut c=aggregate.clone();c.aggregate_venues=value;Message::ProConfigChanged(c) }),
+        checkbox(config.aggregate_venues).label("Aggregate venues (pick sources with Agg in the ticker selector)").on_toggle(move |value| { let mut c=aggregate.clone();c.aggregate_venues=value;Message::ProConfigChanged(c) }),
+        checkbox(config.aggregate_basis_adjust).label("Correct cross-venue price spread").on_toggle(move |value| { let mut c=basis.clone();c.aggregate_basis_adjust=value;Message::ProConfigChanged(c) }),
         checkbox(config.show_footprint_summary).label("Footprint summary").on_toggle(move |value| { let mut c=summary.clone();c.show_footprint_summary=value;Message::ProConfigChanged(c) }),
         number(config,"Quantity decimals",f32::from(config.quantity_format.decimals),0.0,6.0,1.0,|c,v|c.quantity_format.decimals=v as u8),
         pick_list(QuantityRounding::ALL,Some(config.quantity_format.rounding),move |value| { let mut c=rounding.clone();c.quantity_format.rounding=value;Message::ProConfigChanged(c) }),

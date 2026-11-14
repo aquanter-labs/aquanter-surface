@@ -1192,6 +1192,7 @@ impl TickersTable {
         on_scroll: FScroll,
         selected_tickers: Option<impl Iterator<Item = TickerInfo> + Clone>,
         base_ticker: Option<TickerInfo>,
+        add_label: &'static str,
     ) -> Element<'a, M>
     where
         M: 'a + Clone,
@@ -1240,6 +1241,7 @@ impl TickersTable {
             &rest_rows,
             on_select,
             selection_enabled,
+            add_label,
         );
 
         let mut content = column![top_bar]
@@ -1272,6 +1274,7 @@ impl TickersTable {
         rest_rows: &[&'a TickerRowData],
         on_select: FSelect,
         selection_enabled: bool,
+        add_label: &'static str,
     ) -> Element<'a, M>
     where
         M: 'a + Clone,
@@ -1306,7 +1309,7 @@ impl TickersTable {
             let (left_action, right_action) = if selection_enabled {
                 (
                     info_opt.map(RowSelection::Switch),
-                    Some(("Add", info_opt.map(RowSelection::Add))),
+                    Some((add_label, info_opt.map(RowSelection::Add))),
                 )
             } else {
                 (info_opt.map(RowSelection::Switch), None)

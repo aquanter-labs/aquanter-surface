@@ -154,8 +154,12 @@ pub struct ProConfig {
     pub show_footprint_summary: bool,
     /// Pick the tick multiplier from the zoom level so footprint rows stay readable.
     pub auto_tick_size: bool,
-    /// Merge the same coin's trades from every venue into the footprint (Coinglass-style aggregation).
+    /// Merge the trades of `aggregate_sources` into the footprint (Coinglass-style aggregation).
     pub aggregate_venues: bool,
+    /// Picked in the ticker selector; only those quoting the chart's own coin are merged.
+    pub aggregate_sources: Vec<exchange::TickerInfo>,
+    /// Shift each source's trade prices by its estimated spread to this chart's venue.
+    pub aggregate_basis_adjust: bool,
     pub show_footprint_orderbook: bool,
     pub quantity_format: QuantityFormat,
     pub session_vwap: SessionVwapConfig,
@@ -182,6 +186,8 @@ impl Default for ProConfig {
             show_footprint_summary: false,
             auto_tick_size: true,
             aggregate_venues: false,
+            aggregate_sources: Vec::new(),
+            aggregate_basis_adjust: false,
             show_footprint_orderbook: false,
             quantity_format: QuantityFormat::default(),
             session_vwap: SessionVwapConfig::default(),

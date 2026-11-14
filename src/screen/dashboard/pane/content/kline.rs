@@ -2147,18 +2147,47 @@ impl KlineChart {
         }
     }
 
-    /// Pro: the same coin on other venues while venue aggregation is on.
+    /// Pro: picked sources quoting this chart's coin, while venue aggregation is on.
     fn aggregate_peers(&self) -> Vec<TickerInfo> {
+        let base = self.data.base_ticker();
         if !self.options.pro.aggregate_venues || !self.basis.is_time() {
             return Vec::new();
         }
-        exchange::directory::aggregate_peers(self.data.base_ticker())
+        self.options
+            .pro
+            .aggregate_sources
+            .iter()
+            .copied()
+            .filter(|source| {
+                source.ticker != base.ticker
+                    && exchange::directory::same_asset(source.ticker, base.ticker)
+            })
+            .collect()
+    }
+
+    /// Pro: sources the ticker selector should manage; `None` when aggregation is off.
+    pub fn aggregate_selection(&self) -> Option<Vec<TickerInfo>> {
+        (self.options.pro.aggregate_venues && self.basis.is_time()).then(|| self.aggregate_peers())
+    }
+
+    /// Pro: adds or removes one aggregation source.
+    pub fn set_aggregate_source(&mut self, source: TickerInfo, add: bool) {
+        let mut config = self.options.pro.clone();
+        config.aggregate_sources.retain(|picked| picked.ticker != source.ticker);
+        if add && source.ticker != self.data.base_ticker().ticker {
+            config.aggregate_sources.push(source);
+        }
+        // The reload happens in `request_fetch_action`, same as toggling aggregation.
+        let _ = self.apply_command(ChartCommand::SetProConfig { config });
     }
 
     /// A changed source set invalidates merged order flow: reload like a basis change.
     // ponytail: full reload even when sources are only added; refetch just the new sources' history if reloads get annoying.
     fn sync_aggregate_sources(&mut self) {
-        if !self.data.set_aggregate_sources(self.aggregate_peers()) {
+        if !self
+            .data
+            .set_aggregate_sources(self.aggregate_peers(), self.options.pro.aggregate_basis_adjust)
+        {
             return;
         }
         self.data.reset_for_basis(self.basis, false);

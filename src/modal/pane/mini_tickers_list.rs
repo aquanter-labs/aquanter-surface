@@ -61,6 +61,7 @@ impl MiniPanel {
         table: &'a TickersTable,
         selected_tickers: Option<impl Iterator<Item = TickerInfo> + Clone + 'a>,
         base_ticker: Option<TickerInfo>,
+        add_label: &'static str,
     ) -> Element<'a, Message> {
         iced::widget::responsive(move |bounds| {
             table.view_compact_with(
@@ -73,6 +74,7 @@ impl MiniPanel {
                 Message::Scrolled,
                 selected_tickers.clone(),
                 base_ticker,
+                add_label,
             )
         })
         .into()

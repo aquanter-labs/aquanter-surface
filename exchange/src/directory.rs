@@ -15,27 +15,9 @@ pub fn ingest(infos: impl IntoIterator<Item = TickerInfo>) {
     }
 }
 
-/// Same base asset and market class (spot vs perps) on every known venue,
-/// across USDT/USDC/USD quotes, excluding `base` itself. Sorted for stable
-/// stream specs.
-pub fn aggregate_peers(base: TickerInfo) -> Vec<TickerInfo> {
-    let Some(key) = asset_key(base.ticker) else {
-        return Vec::new();
-    };
-    let Ok(map) = DIRECTORY.read() else {
-        return Vec::new();
-    };
-    let mut peers = map
-        .values()
-        .filter(|info| info.ticker != base.ticker)
-        .filter(|info| asset_key(info.ticker).as_ref() == Some(&key))
-        .copied()
-        .collect::<Vec<_>>();
-    peers.sort_by(|a, b| {
-        (a.ticker.exchange.venue() as u8, a.ticker.as_str())
-            .cmp(&(b.ticker.exchange.venue() as u8, b.ticker.as_str()))
-    });
-    peers
+/// True when both tickers quote the same base coin (spot and perps both count).
+pub fn same_asset(a: Ticker, b: Ticker) -> bool {
+    matches!((asset_key(a), asset_key(b)), (Some(a), Some(b)) if a.0 == b.0)
 }
 
 /// `(base asset, is_spot)`; `None` for dated futures and unknown quotes.

@@ -995,6 +995,13 @@ impl State {
                     self.modal = Some(Modal::MiniTickersList(mini_panel.clone()));
 
                     let crate::modal::pane::mini_tickers_list::Action::RowSelected(sel) = action;
+                    if let (RowSelection::Add(ti) | RowSelection::Remove(ti), Content::Kline { chart: Some(c), .. }) =
+                        (&sel, &mut self.content)
+                        && c.aggregate_selection().is_some()
+                    {
+                        c.set_aggregate_source(*ti, matches!(sel, RowSelection::Add(_)));
+                        return self.sync_kline_streams().then_some(Effect::RefreshStreams);
+                    }
                     match sel {
                         RowSelection::Add(ti) => {
                             if matches!(self.content, Content::TimeAndSales(Some(_))) {
@@ -1351,20 +1358,34 @@ impl State {
                             chart: Some(chart), ..
                         },
                         _,
+                    ) if let Some(sources) = chart.aggregate_selection() => panel.view(
+                        tickers_table,
+                        Some(sources.into_iter()),
+                        self.stream_pair(),
+                        "Agg",
+                    ),
+                    (
+                        Content::Kline {
+                            chart: Some(chart), ..
+                        },
+                        _,
                     ) if chart.basis().is_time() => panel.view(
                         tickers_table,
                         Some(chart.series().iter().map(|series| series.ticker_info)),
                         self.stream_pair(),
+                        "Add",
                     ),
                     (Content::TimeAndSales(Some(_)), ResolvedStream::Ready(streams)) => panel.view(
                         tickers_table,
                         Some(streams.iter().map(|stream| stream.ticker_info())),
                         self.stream_pair(),
+                        "Add",
                     ),
                     _ => panel.view(
                         tickers_table,
                         None::<std::iter::Empty<TickerInfo>>,
                         self.stream_pair(),
+                        "Add",
                     ),
                 }
                 .map(move |msg| Message::PaneEvent(pane, Event::MiniTickersListInteraction(msg)));
