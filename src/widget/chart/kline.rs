@@ -152,6 +152,7 @@ struct State {
     drawing: WidgetDrawingState,
     y_axis_gutter_width: f32,
     gutter_cache_key: Option<GutterCacheKey>,
+    seen_sync_gen: u64,
 }
 
 impl Default for State {
@@ -167,6 +168,7 @@ impl Default for State {
             legends: None,
             interaction: UserInteraction::default(),
             study_objects: StudyStates::default(),
+            seen_sync_gen: 0,
             drawing: WidgetDrawingState::default(),
             y_axis_gutter_width: Y_AXIS_GUTTER,
             gutter_cache_key: None,
@@ -1604,6 +1606,22 @@ impl<'a> KlineWidget<'a> {
             resolve_primary_scale(&fallback_domains)
         })?;
 
+        // Pro: fit-to-visible pins the latest close to an edge in a trend; keep it off the edges.
+        let (min_primary_unit, max_primary_unit) = match self.latest_close() {
+            Some(close)
+                if self.primary_viewport.is_auto() && primary_domain_display_override.is_none() =>
+            {
+                let (min, max) = keep_off_edges(
+                    min_primary_unit.0,
+                    max_primary_unit.0,
+                    primary_value_scale.value_to_unit(close).0,
+                    LATEST_EDGE_MARGIN,
+                );
+                (YUnit(min), YUnit(max))
+            }
+            _ => (min_primary_unit, max_primary_unit),
+        };
+
         let panel_controls =
             chrome::build_panel_control_hits(self.coordinates(), &panel_layout, primary_panel);
         let corner_controls = chrome::build_corner_control_hits(
@@ -1642,6 +1660,80 @@ impl<'a> KlineWidget<'a> {
             panel_controls,
             corner_controls,
         })
+    }
+
+    /// Pro: shares this chart's hovered time/price; true when the shared value changed.
+    fn publish_synced_cursor(
+        &self,
+        scene: &Scene,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> bool {
+        if !crosshair_sync::enabled() {
+            return false;
+        }
+        let own = cursor
+            .position_in(bounds)
+            .and(scene.interaction.cursor)
+            .filter(|_| !scene.interaction.synced);
+        let Some(info) = own else {
+            return crosshair_sync::clear(bounds);
+        };
+        let Some(time) = scene.time_for_x_unit(info.x_unit) else {
+            return crosshair_sync::clear(bounds);
+        };
+        let price = info.y_primary_unit.map(|unit| {
+            self.panel_value_scale(info.panel_index)
+                .unit_to_value_f32(unit)
+        });
+        crosshair_sync::publish(crosshair_sync::Shared {
+            owner: bounds,
+            time,
+            price,
+            ticker: self.base_ticker_info(),
+        })
+    }
+
+    /// Pro: mirrors another chart's crosshair (time always, price only on the same ticker).
+    fn apply_synced_cursor(
+        &self,
+        scene: &mut Scene,
+        bounds: Rectangle,
+        primary_panel: usize,
+        primary_plot: Rectangle,
+    ) {
+        let Some(shared) = crosshair_sync::get().filter(|shared| shared.owner != bounds) else {
+            return;
+        };
+        let Some(x_unit) = scene.x_unit_for_time(shared.time) else {
+            return;
+        };
+        if !(scene.x.min_unit..=scene.x.max_unit).contains(&x_unit) {
+            return;
+        }
+        let x_plot = scene.map_x_plot(x_unit);
+        let price = shared
+            .price
+            .filter(|_| shared.ticker.is_some() && shared.ticker == self.base_ticker_info());
+        let (y_primary_unit, y_plot) = price
+            .map(|price| {
+                (
+                    self.panel_value_scale(primary_panel)
+                        .value_to_unit_f32(price),
+                    scene.map_primary_plot_with_anchor_f32(price, scene.primary.anchor),
+                )
+            })
+            .filter(|(_, y)| (primary_plot.y..=primary_plot.y + primary_plot.height).contains(y))
+            .map_or((None, primary_plot.y), |(unit, y)| (Some(unit), y));
+        scene.interaction.cursor = Some(CursorInfo {
+            x_unit,
+            panel_index: primary_panel,
+            y_primary_unit,
+            y_indicator_unit: None,
+            x_plot,
+            y_plot,
+        });
+        scene.interaction.synced = true;
     }
 
     fn build_scene_from_base(
@@ -1719,6 +1811,9 @@ impl<'a> KlineWidget<'a> {
             activity,
             layers,
         );
+        if scene.interaction.cursor.is_none() {
+            self.apply_synced_cursor(&mut scene, root_bounds, primary_panel, primary_plot);
+        }
         Some(scene)
     }
 
@@ -1997,6 +2092,16 @@ where
         }
 
         let state = tree.state.downcast_mut::<State>();
+
+        // Pro: the owning chart re-renders after the pointer leaves so the shared crosshair clears.
+        if matches!(
+            event,
+            Event::Mouse(mouse::Event::CursorMoved { .. } | mouse::Event::CursorLeft)
+        ) && crosshair_sync::is_owner(layout.bounds())
+        {
+            state.scheduler.request(RenderRequest::Interaction);
+            shell.request_redraw();
+        }
 
         if self.handle_pro_pointer(event, state, layout, cursor, shell) {
             return;
@@ -2458,6 +2563,11 @@ where
                     && (state.scene_cache.get(self.version).is_some()
                         || state.scheduler.presentation().is_some())
                 {
+                    let sync_gen = crosshair_sync::generation();
+                    if state.seen_sync_gen != sync_gen {
+                        state.seen_sync_gen = sync_gen;
+                        state.scheduler.request(RenderRequest::Interaction);
+                    }
                     let request = state.scheduler.admit(
                         self.version,
                         *now,
@@ -2469,6 +2579,12 @@ where
                     let scene = (request != RenderRequest::None)
                         .then(|| self.cached_scene(state, layout, cursor))
                         .flatten();
+                    if let Some(scene) = scene.as_ref()
+                        && self.publish_synced_cursor(scene, layout.bounds(), cursor)
+                    {
+                        // Let the other charts pick up the new position.
+                        shell.request_redraw();
+                    }
                     if let Some(scene) = scene.as_ref() {
                         for (panel_id, range) in self.viewports().reconciled_y_ranges(scene) {
                             shell.publish(M::from(KlineWidgetEvent::PanelInteraction(
@@ -2476,7 +2592,8 @@ where
                             )));
                         }
                         if let Some(multiplier) = self.pro_auto_tick(scene) {
-                            shell.publish(M::from(KlineWidgetEvent::AutoTickMultiplier(multiplier)));
+                            shell
+                                .publish(M::from(KlineWidgetEvent::AutoTickMultiplier(multiplier)));
                         }
                     }
                     let utc_ms = chrono::Utc::now().timestamp_millis() as u64;
@@ -2767,5 +2884,103 @@ where
 {
     fn from(chart: KlineWidget<'a>) -> Self {
         Self::new(chart)
+    }
+}
+
+/// Pro: share of the auto range kept between the latest close and either edge.
+const LATEST_EDGE_MARGIN: f64 = 0.3;
+
+/// Extends `lo..hi` so `last` sits at least `margin` of the span from either edge.
+/// Never shrinks; leaves the range alone when `last` is outside it (scrolled into history).
+fn keep_off_edges(lo: i64, hi: i64, last: i64, margin: f64) -> (i64, i64) {
+    if lo >= hi || !(lo..=hi).contains(&last) {
+        return (lo, hi);
+    }
+    // Solve (last - lo') / (hi - lo') = margin with hi fixed, and the mirror for hi'.
+    let k = margin / (1.0 - margin);
+    let lo = lo.min(last - ((hi - last) as f64 * k).round() as i64);
+    let hi = hi.max(last + ((last - lo) as f64 * k).round() as i64);
+    (lo, hi)
+}
+
+#[cfg(test)]
+mod keep_off_edges_tests {
+    use super::keep_off_edges;
+
+    #[test]
+    fn latest_at_bottom_moves_up_into_band() {
+        let (lo, hi) = keep_off_edges(0, 700, 0, 0.3);
+        assert_eq!((lo, hi), (-300, 700));
+        assert!(((0 - lo) as f64 / (hi - lo) as f64 - 0.3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn centered_or_out_of_range_is_untouched() {
+        assert_eq!(keep_off_edges(0, 100, 50, 0.3), (0, 100));
+        assert_eq!(keep_off_edges(0, 100, 500, 0.3), (0, 100));
+    }
+}
+
+/// Pro: one crosshair shared by every kline chart while sync is on.
+// ponytail: process-wide and not persisted; the owner is identified by its pane bounds.
+pub mod crosshair_sync {
+    use exchange::{TickerInfo, UnixMs};
+    use iced::Rectangle;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub(super) struct Shared {
+        pub owner: Rectangle,
+        pub time: UnixMs,
+        pub price: Option<f32>,
+        pub ticker: Option<TickerInfo>,
+    }
+
+    static ENABLED: AtomicBool = AtomicBool::new(false);
+    static GENERATION: AtomicU64 = AtomicU64::new(0);
+    static SHARED: Mutex<Option<Shared>> = Mutex::new(None);
+
+    pub fn enabled() -> bool {
+        ENABLED.load(Ordering::Relaxed)
+    }
+
+    pub fn toggle() {
+        ENABLED.fetch_xor(true, Ordering::Relaxed);
+        set(None);
+    }
+
+    pub(super) fn generation() -> u64 {
+        GENERATION.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn get() -> Option<Shared> {
+        if !enabled() {
+            return None;
+        }
+        *SHARED.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(super) fn is_owner(bounds: Rectangle) -> bool {
+        get().is_some_and(|shared| shared.owner == bounds)
+    }
+
+    fn set(value: Option<Shared>) -> bool {
+        let mut shared = SHARED.lock().unwrap_or_else(|e| e.into_inner());
+        if *shared == value {
+            return false;
+        }
+        *shared = value;
+        GENERATION.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    pub(super) fn publish(value: Shared) -> bool {
+        set(Some(value))
+    }
+
+    /// Clears the shared crosshair only if `bounds` owns it.
+    pub(super) fn clear(bounds: Rectangle) -> bool {
+        is_owner(bounds) && set(None)
     }
 }

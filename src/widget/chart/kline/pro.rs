@@ -83,7 +83,7 @@ fn paint_footprint_summary(
     let font = (cell_width / 4.5).clamp(10.0, 13.0);
     let row = font + 6.0;
     let strip = Rectangle { x: plot.x, y: plot.y + plot.height - row * 2.0, width: plot.width, height: row * 2.0 };
-    frame.fill_rectangle(strip.position(), strip.size(), palette.background.base.color.scale_alpha(0.94));
+    frame.fill_rectangle(strip.position(), strip.size(), palette.background.weakest.color.scale_alpha(0.94));
     frame.stroke(
         &canvas::Path::line(strip.position(), Point::new(strip.x + strip.width, strip.y)),
         canvas::Stroke::default().with_color(palette.background.strong.color).with_width(1.0),

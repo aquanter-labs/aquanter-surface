@@ -283,6 +283,7 @@ impl DrawingState {
             Event::Tools(
                 message @ (DrawingMessage::SelectTool(_)
                 | DrawingMessage::ToggleMagnet
+                | DrawingMessage::ToggleCrosshairSync
                 | DrawingMessage::ShowToolsPage
                 | DrawingMessage::ShowObjectListPage
                 | DrawingMessage::ClearSelection
@@ -571,6 +572,7 @@ enum DrawingObjectChange {
 pub enum DrawingMessage {
     SelectTool(DrawingTool),
     ToggleMagnet,
+    ToggleCrosshairSync,
     ShowToolsPage,
     ShowObjectListPage,
     ClearSelection,
@@ -905,6 +907,10 @@ impl DrawingTools {
             }
             DrawingMessage::ToggleMagnet => {
                 self.magnet_enabled = !self.magnet_enabled;
+                DrawingUpdate::Visual
+            }
+            DrawingMessage::ToggleCrosshairSync => {
+                crate::widget::chart::kline::crosshair_sync::toggle();
                 DrawingUpdate::Visual
             }
             DrawingMessage::ShowToolsPage => {
@@ -1349,6 +1355,19 @@ impl DrawingTools {
         tools = tools.push(tooltip(
             magnet_button,
             Some("Magnet"),
+            TooltipPosition::Right,
+        ));
+
+        let sync_enabled = crate::widget::chart::kline::crosshair_sync::enabled();
+        let sync_button = iced::widget::button(
+            style::icon_text(style::Icon::Link, 16).align_x(iced::Alignment::Center),
+        )
+        .style(move |theme, status| style::button::transparent(theme, status, sync_enabled))
+        .width(iced::Length::Fill)
+        .on_press(on_sidebar_message(DrawingMessage::ToggleCrosshairSync));
+        tools = tools.push(tooltip(
+            sync_button,
+            Some("Sync crosshair across charts"),
             TooltipPosition::Right,
         ));
 

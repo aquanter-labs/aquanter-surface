@@ -127,10 +127,10 @@ impl OverlayView<'_> {
         pixels: PixelGeometry,
         drawing_magnet: bool,
     ) {
-        if scene.interaction.readouts_visible()
+        if (scene.interaction.readouts_visible() || scene.interaction.synced)
             && let Some(cursor) = scene.interaction.cursor
         {
-            let magnetic_anchor = drawing_magnet
+            let magnetic_anchor = (drawing_magnet && !scene.interaction.synced)
                 .then(|| self.drawing.primary_magnetic_drawing_anchor_at_cursor())
                 .flatten();
 
@@ -244,10 +244,10 @@ impl OverlayView<'_> {
         let frame = &mut before_timer;
         let mut badge_filter = AxisBadgeFilter::default();
 
-        if scene.interaction.readouts_visible()
+        if (scene.interaction.readouts_visible() || scene.interaction.synced)
             && let Some(cursor) = scene.interaction.cursor
         {
-            let magnetic_anchor = drawing_magnet
+            let magnetic_anchor = (drawing_magnet && !scene.interaction.synced)
                 .then(|| self.drawing.primary_magnetic_drawing_anchor_at_cursor())
                 .flatten();
             let gy = magnetic_anchor

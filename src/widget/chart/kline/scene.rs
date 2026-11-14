@@ -317,6 +317,8 @@ pub(super) struct SceneInteraction {
     pub(super) target: CursorTarget,
     pub(super) controls_visible_for_panel: Option<usize>,
     pub(super) cursor: Option<CursorInfo>,
+    /// Pro: `cursor` mirrors the crosshair of another chart (crosshair sync).
+    pub(super) synced: bool,
 }
 
 impl SceneInteraction {
