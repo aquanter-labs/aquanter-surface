@@ -1178,6 +1178,15 @@ impl Agent {
                     Ok(result) => match serde_json::from_str::<AnalysisResult>(&result) {
                         Ok(mut analysis) => {
                             analysis.normalize();
+                            // Entry is scored on bars after the signal bar, so a window shorter
+                            // than one bar (e.g. 120s on 10m) would mark every signal NoEntry.
+                            if analysis.valid_for_seconds > 0
+                                && let Some(snapshot) = &self.snapshot
+                            {
+                                analysis.valid_for_seconds = analysis
+                                    .valid_for_seconds
+                                    .max(snapshot.primary.timeframe_ms / 1_000);
+                            }
                             if self.mode == AnalysisMode::NextCandle
                                 && !matches!(
                                     analysis.action,
