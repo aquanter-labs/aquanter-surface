@@ -12,6 +12,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 type HmacSha256 = Hmac<Sha256>;
 
+mod event;
+pub use event::{EventContract, EventDuration};
+
 const MAINNET_URL: &str = "https://fapi.binance.com";
 const TESTNET_URL: &str = "https://demo-fapi.binance.com";
 // ponytail: simulation uses Binance's first maintenance tier; fetch signed leverage brackets for tiered cross-margin parity.
@@ -332,6 +335,9 @@ pub struct AccountSnapshot {
     pub open_orders: Vec<OpenOrder>,
     #[serde(default)]
     pub trade_history: Vec<TradeHistory>,
+    /// Simulated event contracts, open and settled.
+    #[serde(default)]
+    pub event_contracts: Vec<EventContract>,
     pub commission: CommissionRate,
     #[serde(default = "default_liquidation_fee_rate")]
     pub liquidation_fee_rate: f64,
@@ -382,6 +388,7 @@ pub struct PositionOverlay {
     pub unrealized_pnl: f64,
     pub orders: Vec<TradingOrderOverlay>,
     pub trade_history: Vec<TradeMarker>,
+    pub event_contracts: Vec<EventContract>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -517,6 +524,12 @@ pub enum Message {
     CancelAction,
     ActionCompleted(Result<String, String>),
     ChartLevelDragged(TradingLineId, f64, bool),
+    EventDurationChanged(EventDuration),
+    EventStakeChanged(String),
+    OpenEventContract(bool),
+    EventShowOpenChanged(bool),
+    EventShowHistoryChanged(bool),
+    EventTabChanged(bool),
 }
 
 pub struct Trader {
@@ -552,6 +565,8 @@ pub struct Trader {
     request_started: Option<std::time::Instant>,
     last_poll: Option<std::time::Instant>,
     proxy: Option<exchange::proxy::Proxy>,
+    event_duration: EventDuration,
+    event_stake: String,
 }
 
 impl Trader {
@@ -604,6 +619,8 @@ impl Trader {
             request_started: None,
             last_poll: None,
             proxy,
+            event_duration: EventDuration::default(),
+            event_stake: "50".to_string(),
         };
         if trader.is_simulation() {
             trader.snapshot = Some(load_simulated_snapshot(
@@ -640,6 +657,7 @@ impl Trader {
                 .map(|source| source.pane_id);
         }
         self.chart_sources = sources;
+        self.settle_event_contracts();
         if let Some(source) = self.selected_source().cloned() {
             self.config.symbol = source.symbol;
             if let Some(price) = source.latest_price {
@@ -710,7 +728,24 @@ impl Trader {
                 side: trade.side,
             })
             .collect::<Vec<_>>();
-        if position.is_none() && orders.is_empty() && trade_history.is_empty() {
+        let event_contracts = snapshot
+            .event_contracts
+            .iter()
+            .filter(|contract| {
+                contract.symbol == self.config.symbol
+                    && if contract.is_open() {
+                        self.config.event_show_open
+                    } else {
+                        self.config.event_show_history
+                    }
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if position.is_none()
+            && orders.is_empty()
+            && trade_history.is_empty()
+            && event_contracts.is_empty()
+        {
             return None;
         }
         Some(PositionOverlay {
@@ -733,6 +768,7 @@ impl Trader {
             unrealized_pnl: position.map_or(0.0, |position| position.unrealized_pnl),
             orders,
             trade_history,
+            event_contracts,
         })
     }
 
@@ -1188,6 +1224,12 @@ impl Trader {
                     return Task::done(Message::Refresh);
                 }
             }
+            Message::EventDurationChanged(duration) => self.event_duration = duration,
+            Message::EventStakeChanged(value) => self.event_stake = integer_input(value),
+            Message::OpenEventContract(up) => self.open_event_contract(up),
+            Message::EventShowOpenChanged(show) => self.config.event_show_open = show,
+            Message::EventShowHistoryChanged(show) => self.config.event_show_history = show,
+            Message::EventTabChanged(event_tab) => self.config.event_tab = event_tab,
             Message::ChartLevelDragged(id, price, finished) => {
                 let price = self
                     .selected_source()
@@ -1282,6 +1324,80 @@ impl Trader {
             && let Err(error) = save_simulated_snapshot(&self.config.account_id, snapshot)
         {
             log::error!("Failed to persist simulation account: {error}");
+        }
+    }
+
+    /// Settles expired event contracts of every charted symbol and credits wins.
+    fn settle_event_contracts(&mut self) {
+        if !self.is_simulation() {
+            return;
+        }
+        let Some(snapshot) = self.snapshot.as_mut() else {
+            return;
+        };
+        let now = local_time_ms();
+        let mut settled = false;
+        for source in &self.chart_sources {
+            let Some(price) = source.latest_price else {
+                continue;
+            };
+            if let Some(credit) =
+                event::settle_due(&mut snapshot.event_contracts, &source.symbol, price, now)
+            {
+                settled = true;
+                if let Some(usdt) = snapshot.balances.iter_mut().find(|b| b.asset == "USDT") {
+                    usdt.wallet += credit;
+                    usdt.available += credit;
+                }
+            }
+        }
+        if settled {
+            self.persist_simulation();
+        }
+    }
+
+    fn open_event_contract(&mut self, up: bool) {
+        if !self.is_simulation() {
+            self.status = "Event contracts are simulation only.".to_string();
+            return;
+        }
+        let price = self.selected_source().and_then(|source| source.latest_price);
+        let symbol = self.config.symbol.clone();
+        let duration = self.event_duration;
+        let stake = self.event_stake.parse::<f64>().unwrap_or(0.0);
+        let Some(snapshot) = self.snapshot.as_mut() else {
+            return;
+        };
+        let available = snapshot
+            .balances
+            .iter()
+            .find(|b| b.asset == "USDT")
+            .map_or(0.0, |b| b.available);
+        match event::open(
+            &snapshot.event_contracts,
+            &symbol,
+            up,
+            duration,
+            stake,
+            price.unwrap_or(0.0),
+            local_time_ms(),
+            available,
+        ) {
+            Ok(contract) => {
+                if let Some(usdt) = snapshot.balances.iter_mut().find(|b| b.asset == "USDT") {
+                    usdt.wallet -= stake;
+                    usdt.available -= stake;
+                }
+                self.status = format!(
+                    "Event {} {} {stake:.0} USDT @ {}",
+                    if up { "UP" } else { "DOWN" },
+                    duration,
+                    format_decimal(contract.open_price)
+                );
+                snapshot.event_contracts.push(contract);
+                self.persist_simulation();
+            }
+            Err(error) => self.status = error,
         }
     }
 
@@ -2007,6 +2123,26 @@ impl Trader {
         let positions = self.positions_view();
         let orders = self.orders_view();
         let history = self.history_view(timezone);
+        // Event contracts are simulation only; the tab bar exists only there.
+        let event_tab = self.is_simulation() && self.config.event_tab;
+        let tabs: Element<'_, Message> = if self.is_simulation() {
+            let tab = |label: &'static str, active: bool, event_tab: bool| {
+                button(text(label).align_x(Alignment::Center).width(Length::Fill))
+                    .on_press(Message::EventTabChanged(event_tab))
+                    .style(move |theme, status| {
+                        crate::style::button::transparent(theme, status, active)
+                    })
+                    .width(Length::Fill)
+            };
+            row![
+                tab("Futures", !event_tab, false),
+                tab("Event contracts", event_tab, true),
+            ]
+            .spacing(6)
+            .into()
+        } else {
+            column![].into()
+        };
         let confirmation: Element<'_, Message> = if let Some(action) = &self.pending_action {
             let summary = match action {
                 PendingAction::Place { request: order, .. } => format!(
@@ -2073,19 +2209,28 @@ impl Trader {
         };
 
         let base = container(scrollable(
-            column![
-                panel_header,
-                account_header,
-                order_ticket,
-                confirmation,
-                text(&self.status).size(crate::style::text_size::SMALL),
-                rule::horizontal(1),
-                positions,
-                rule::horizontal(1),
-                orders,
-                rule::horizontal(1),
-                history,
-            ]
+            if event_tab {
+                column![
+                    panel_header,
+                    tabs,
+                    self.event_contracts_view(timezone),
+                ]
+            } else {
+                column![
+                    panel_header,
+                    tabs,
+                    account_header,
+                    order_ticket,
+                    confirmation,
+                    text(&self.status).size(crate::style::text_size::SMALL),
+                    rule::horizontal(1),
+                    positions,
+                    rule::horizontal(1),
+                    orders,
+                    rule::horizontal(1),
+                    history,
+                ]
+            }
             .spacing(10)
             .padding(padding::all(12)),
         ))
@@ -2555,6 +2700,232 @@ impl Trader {
             list.into()
         })
         .into()
+    }
+
+    fn event_contracts_view(&self, timezone: data::UserTimezone) -> Element<'_, Message> {
+        let now = local_time_ms();
+        let price = self.selected_source().and_then(|source| source.latest_price);
+        let contracts = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.event_contracts.as_slice())
+            .unwrap_or_default();
+        let signed = |content: String, good: bool| {
+            text(content).style(move |theme: &iced::Theme| iced::widget::text::Style {
+                color: Some(if good {
+                    theme.extended_palette().success.base.color
+                } else {
+                    theme.extended_palette().danger.base.color
+                }),
+            })
+        };
+        let time = |ms: u64| {
+            timezone
+                .format_with_kind(
+                    ms.min(i64::MAX as u64) as i64,
+                    data::config::timezone::TimeLabelKind::Custom("%m-%d %H:%M:%S"),
+                )
+                .unwrap_or_else(|| "--".to_string())
+        };
+        let open_count = contracts.iter().filter(|c| c.is_open()).count();
+        let stats = event::stats(contracts);
+        let usdt = self
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.balances.iter().find(|b| b.asset == "USDT"));
+        let stat = |label: &'static str, value: Element<'static, Message>| {
+            row![text(label).width(Length::Fill), value].spacing(8)
+        };
+        let header = column![
+            stat(
+                "USDT / Available",
+                text(usdt.map_or_else(
+                    || "--".to_string(),
+                    |b| format!("{:.2} / {:.2}", b.wallet, b.available)
+                ))
+                .into()
+            ),
+            stat(
+                "Net PnL",
+                signed(format!("{:+.2} USDT", stats.net), stats.net >= 0.0).into()
+            ),
+            stat(
+                "Win rate",
+                text(format!(
+                    "{:.1}% ({}W / {}L)",
+                    stats.win_rate(),
+                    stats.wins,
+                    stats.settled - stats.wins
+                ))
+                .into()
+            ),
+            stat(
+                "Total profit / loss",
+                row![
+                    signed(format!("+{:.2}", stats.gross_profit), true),
+                    text("/"),
+                    signed(format!("-{:.2}", stats.gross_loss), false),
+                ]
+                .spacing(4)
+                .into()
+            ),
+            stat(
+                "Open / at stake",
+                text(format!(
+                    "{}/{} | {:.2} USDT",
+                    stats.open,
+                    event::MAX_OPEN,
+                    stats.open_stake
+                ))
+                .into()
+            ),
+        ]
+        .spacing(3);
+
+        let mut panel = column![
+            header,
+            text(&self.status).size(crate::style::text_size::SMALL),
+            rule::horizontal(1),
+            row![
+                text("Event contracts")
+                    .size(crate::style::text_size::SECTION)
+                    .width(Length::Fill),
+                text(format!("{open_count}/{} open", event::MAX_OPEN))
+                    .size(crate::style::text_size::SMALL),
+            ]
+            .align_y(Alignment::Center),
+            row![
+                pick_list(
+                    EventDuration::ALL,
+                    Some(self.event_duration),
+                    Message::EventDurationChanged
+                ),
+                text(format!(
+                    "Win +{:.0}%",
+                    self.event_duration.payout_rate() * 100.0
+                )),
+                text_input("USDT", &self.event_stake)
+                    .on_input(Message::EventStakeChanged)
+                    .width(Length::Fill),
+                text(format!(
+                    "{}-{} USDT",
+                    event::MIN_STAKE,
+                    event::MAX_STAKE
+                ))
+                .size(crate::style::text_size::SMALL),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+            row![
+                button(text("Up").align_x(Alignment::Center).width(Length::Fill))
+                    .on_press(Message::OpenEventContract(true))
+                    .style(crate::style::button::trade_buy)
+                    .width(Length::Fill),
+                button(text("Down").align_x(Alignment::Center).width(Length::Fill))
+                    .on_press(Message::OpenEventContract(false))
+                    .style(crate::style::button::trade_sell)
+                    .width(Length::Fill),
+            ]
+            .spacing(6),
+            row![
+                checkbox(self.config.event_show_open)
+                    .label("Chart: open")
+                    .on_toggle(Message::EventShowOpenChanged),
+                checkbox(self.config.event_show_history)
+                    .label("Chart: history")
+                    .on_toggle(Message::EventShowHistoryChanged),
+            ]
+            .spacing(12),
+        ]
+        .spacing(6);
+
+        if open_count > 0 {
+            panel = panel.push(
+                row![
+                    text("Side").width(Length::FillPortion(2)),
+                    text("Stake").width(Length::FillPortion(3)),
+                    text("Open").width(Length::FillPortion(3)),
+                    text("Now").width(Length::FillPortion(3)),
+                    text("Diff").width(Length::FillPortion(3)),
+                    text("Left").width(Length::FillPortion(2)),
+                    text("Result").width(Length::FillPortion(2)),
+                ]
+                .spacing(6),
+            );
+        }
+        for contract in contracts.iter().filter(|c| c.is_open()) {
+            let left = contract.expiry_ms.saturating_sub(now) / 1_000;
+            // Each contract follows its own symbol's chart, not just the selected one.
+            let price = self
+                .chart_sources
+                .iter()
+                .find(|source| source.symbol == contract.symbol)
+                .and_then(|source| source.latest_price)
+                .or(price.filter(|_| contract.symbol == self.config.symbol));
+            let winning = price.is_some_and(|p| contract.wins_at(p));
+            let diff = price.map(|p| p - contract.open_price);
+            panel = panel.push(
+                row![
+                    signed(
+                        format!("{} {}", if contract.up { "UP" } else { "DOWN" }, contract.duration),
+                        contract.up
+                    )
+                    .width(Length::FillPortion(2)),
+                    text(format!("{} {:.0}u", contract.symbol, contract.stake))
+                        .width(Length::FillPortion(3)),
+                    text(format_decimal(contract.open_price)).width(Length::FillPortion(3)),
+                    text(price.map_or_else(|| "--".to_string(), format_decimal))
+                        .width(Length::FillPortion(3)),
+                    signed(
+                        diff.map_or_else(
+                            || "--".to_string(),
+                            |d| format!("{d:+.2} ({:+.3}%)", d / contract.open_price * 100.0)
+                        ),
+                        winning
+                    )
+                    .width(Length::FillPortion(3)),
+                    text(format!("{:02}:{:02}", left / 60, left % 60)).width(Length::FillPortion(2)),
+                    signed(
+                        if winning {
+                            format!("+{:.2}", contract.stake * contract.payout_rate)
+                        } else {
+                            format!("-{:.2}", contract.stake)
+                        },
+                        winning
+                    )
+                    .width(Length::FillPortion(2)),
+                ]
+                .spacing(6),
+            );
+        }
+
+        let settled = contracts.iter().filter(|c| !c.is_open()).collect::<Vec<_>>();
+        if !settled.is_empty() {
+            panel = panel.push(rule::horizontal(1));
+            panel = panel.push(text("History").size(crate::style::text_size::SECTION));
+            for contract in settled.into_iter().rev() {
+                let pnl = contract.pnl().unwrap_or_default();
+                panel = panel.push(
+                    row![
+                        text(time(contract.open_time_ms)).width(Length::FillPortion(3)),
+                        signed(
+                            format!("{} {}", if contract.up { "UP" } else { "DOWN" }, contract.duration),
+                            contract.up
+                        )
+                        .width(Length::FillPortion(2)),
+                        text(format!(
+                            "{} -> {}",
+                            format_decimal(contract.open_price),
+                            contract.settle_price.map_or_else(|| "--".to_string(), format_decimal)
+                        ))
+                        .width(Length::FillPortion(4)),
+                        signed(format!("{pnl:+.2}"), pnl > 0.0).width(Length::FillPortion(2)),
+                    ]
+                    .spacing(6),
+                );
+            }
+        }
+        panel.into()
     }
 
     fn calculate_risk_levels(&mut self) {
@@ -3309,6 +3680,7 @@ impl BinanceClient {
                 .collect(),
             positions,
             trade_history,
+            event_contracts: Vec::new(),
             open_orders: open_orders
                 .into_iter()
                 .map(|order| OpenOrder {

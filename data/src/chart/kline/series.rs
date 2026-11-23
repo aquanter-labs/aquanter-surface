@@ -1549,6 +1549,31 @@ impl KlineSeries {
         }
     }
 
+    /// Retained trades whose kline bucket lies in `[earliest, latest]`;
+    /// `None` for tick-based series, which keep no time-ordered runs.
+    pub fn raw_trades_in_buckets(
+        &self,
+        earliest: UnixMs,
+        latest: UnixMs,
+    ) -> Option<impl Iterator<Item = &Trade>> {
+        let PlotData::TimeBased(series) = &self.data else {
+            return None;
+        };
+        let interval = series.interval;
+        let raw = &self.raw_trades;
+        Some(self.raw_trade_runs.iter().flat_map(move |run| {
+            let trades = &raw[run.clone()];
+            let start = trades.partition_point(|trade| trade.time.floor_to(interval) < earliest);
+            let end = trades.partition_point(|trade| trade.time.floor_to(interval) <= latest);
+            trades[start..end].iter()
+        }))
+    }
+
+    /// The instrument's own price step, before the chart's tick multiplier.
+    pub fn min_tick_size(&self) -> PriceStep {
+        self.ticker_info.min_ticksize.into()
+    }
+
     /// Retained trades in arrival order; appending history preserves existing indices.
     pub fn raw_trades(&self) -> &[Trade] {
         &self.raw_trades
@@ -1851,5 +1876,30 @@ impl KlineWindows<'_> {
                 self.axis.output_unit(units.values()[local_index], offset),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod raw_trade_range_tests {
+    use super::*;
+    use exchange::adapter::Exchange;
+    use exchange::unit::Qty;
+    use exchange::{Ticker, TickMultiplier, Timeframe};
+
+    #[test]
+    fn raw_trades_in_buckets_keeps_only_the_requested_klines() {
+        let info = TickerInfo::new(Ticker::new("BTCUSDT", Exchange::BinanceLinear), 0.1, 0.001, None);
+        let tick = TickMultiplier(10).multiply_with_min_tick_step(info);
+        let mut series =
+            KlineSeries::new_with_basis(info, SeriesColor::default(), Basis::Time(Timeframe::M1), tick);
+        let trade = |ms: u64| Trade { time: ms.into(), is_sell: false, price: Price::from_f64(100.0), qty: Qty::from_f64(1.0) };
+        series.insert_time_trades(&[trade(0), trade(30_000), trade(60_000), trade(119_999), trade(120_000)]);
+
+        let times = |a: u64, b: u64| {
+            series.raw_trades_in_buckets(a.into(), b.into()).unwrap().map(|t| u64::from(t.time)).collect::<Vec<_>>()
+        };
+        assert_eq!(times(60_000, 60_000), [60_000, 119_999]);
+        assert_eq!(times(0, 60_000).len(), 4);
+        assert!(series.min_tick_size().to_f64_lossy() < series.tick_size().to_f64_lossy());
     }
 }

@@ -350,6 +350,16 @@ pub struct DrawingStyle {
     pub stroke_color: DrawingColor,
     pub stroke_width: f32,
     pub fill_color: Option<DrawingColor>,
+    /// Price rows of a range volume profile; other drawings ignore it.
+    #[serde(default = "default_profile_rows")]
+    pub profile_rows: u16,
+}
+
+pub const DEFAULT_PROFILE_ROWS: u16 = 96;
+pub const PROFILE_ROW_CHOICES: [u16; 7] = [24, 48, 72, 96, 144, 200, 300];
+
+fn default_profile_rows() -> u16 {
+    DEFAULT_PROFILE_ROWS
 }
 
 impl Default for DrawingStyle {
@@ -358,6 +368,7 @@ impl Default for DrawingStyle {
             stroke_color: DrawingColor::accent(ThemeAccent::One, 1.0),
             stroke_width: 1.2,
             fill_color: None,
+            profile_rows: DEFAULT_PROFILE_ROWS,
         }
     }
 }
@@ -394,6 +405,7 @@ pub struct DrawingStyleDefaults {
     pub box_drawing: DrawingStyle,
     pub horizontal_line: DrawingStyle,
     pub vertical_line: DrawingStyle,
+    pub volume_profile: DrawingStyle,
 }
 
 impl Default for DrawingStyleDefaults {
@@ -403,6 +415,7 @@ impl Default for DrawingStyleDefaults {
             box_drawing: DrawingTool::Box.default_style(),
             horizontal_line: DrawingTool::HorizontalLine.default_style(),
             vertical_line: DrawingTool::VerticalLine.default_style(),
+            volume_profile: DrawingTool::VolumeProfile.default_style(),
         }
     }
 }
@@ -414,9 +427,8 @@ impl DrawingStyleDefaults {
             DrawingTool::Box => self.box_drawing,
             DrawingTool::HorizontalLine => self.horizontal_line,
             DrawingTool::VerticalLine => self.vertical_line,
-            DrawingTool::Cursor | DrawingTool::Measure | DrawingTool::VolumeProfile => {
-                tool.default_style()
-            }
+            DrawingTool::VolumeProfile => self.volume_profile,
+            DrawingTool::Cursor | DrawingTool::Measure => tool.default_style(),
         }
     }
 
@@ -426,9 +438,8 @@ impl DrawingStyleDefaults {
             DrawingTool::Box => &mut self.box_drawing,
             DrawingTool::HorizontalLine => &mut self.horizontal_line,
             DrawingTool::VerticalLine => &mut self.vertical_line,
-            DrawingTool::Cursor | DrawingTool::Measure | DrawingTool::VolumeProfile => {
-                return false
-            }
+            DrawingTool::VolumeProfile => &mut self.volume_profile,
+            DrawingTool::Cursor | DrawingTool::Measure => return false,
         };
 
         if *stored_style == style {
@@ -1040,5 +1051,18 @@ impl DrawingObject {
 impl DrawingEntity {
     pub fn belongs_to_panel(&self, panel_id: PanelId) -> bool {
         self.object.belongs_to_panel(panel_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn style_saved_before_profile_rows_loads_default() {
+        let mut json = serde_json::to_value(DrawingStyle::default()).unwrap();
+        json.as_object_mut().unwrap().remove("profile_rows");
+        let style: DrawingStyle = serde_json::from_value(json).unwrap();
+        assert_eq!(style.profile_rows, DEFAULT_PROFILE_ROWS);
     }
 }

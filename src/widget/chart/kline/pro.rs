@@ -462,6 +462,28 @@ impl<'a> KlineWidget<'a> {
                         paint_marker(frame,Point::new(x,y),buy,if buy { palette.success.base.color } else { palette.danger.base.color });
                     }
                 }
+                // Event contracts: open price held across the contract window, result at expiry.
+                for contract in &overlay.event_contracts {
+                    let (Some(x0), Some(x1), Some(y)) = (self.pro_time_x(scene, contract.open_time_ms), self.pro_time_x(scene, contract.expiry_ms), price_y(scene, contract.open_price)) else { continue; };
+                    let alpha = if contract.is_open() { 1.0 } else { 0.55 };
+                    let color = if contract.up { palette.success.base.color } else { palette.danger.base.color }.scale_alpha(alpha);
+                    let stroke = canvas::Stroke::default().with_color(color).with_width(1.5);
+                    frame.stroke(&canvas::Path::line(Point::new(x0, y), Point::new(x1, y)), stroke);
+                    frame.stroke(&canvas::Path::line(Point::new(x1, y - 5.0), Point::new(x1, y + 5.0)), stroke);
+                    paint_marker(frame, Point::new(x0, y), contract.up, color);
+                    let (label, label_color) = match contract.pnl() {
+                        None => (format!("{} {} {:.0}u", if contract.up { "UP" } else { "DOWN" }, contract.duration, contract.stake), color),
+                        Some(pnl) => {
+                            let result = if pnl > 0.0 { palette.success.base.color } else { palette.danger.base.color };
+                            if let Some(settle_y) = contract.settle_price.and_then(|price| price_y(scene, price)) {
+                                frame.fill(&canvas::Path::circle(Point::new(x1, settle_y), 3.0), result);
+                            }
+                            (format!("{pnl:+.0}"), result)
+                        }
+                    };
+                    frame.fill_text(canvas::Text { content: label, position: Point::new(x1 + 4.0, y), align_y: iced::alignment::Vertical::Center.into(),
+                        color: label_color, size: 11.0.into(), font: style::AZERET_MONO, ..Default::default() });
+                }
             }
         });
     }

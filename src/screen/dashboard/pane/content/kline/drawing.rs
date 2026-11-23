@@ -270,6 +270,7 @@ impl DrawingState {
                 | DrawingMessage::SetSelectedDrawingFillColor(_)
                 | DrawingMessage::SetSelectedDrawingFillShade(_)
                 | DrawingMessage::SetSelectedDrawingStrokeWidth(_)
+                | DrawingMessage::SetSelectedProfileRows(_)
                 | DrawingMessage::SetHorizontalLineRay(_)
                 | DrawingMessage::SetBoxExtendRight(_)
                 | DrawingMessage::DeleteSelectedDrawing
@@ -500,6 +501,7 @@ struct DrawingSelectionSummary<'a> {
     fill_shade: SharedValue<ThemeColorShade>,
     box_extend_right: SharedValue<bool>,
     horizontal_line_ray: SharedValue<bool>,
+    profile_rows: SharedValue<u16>,
 }
 
 impl DrawingSelectionSummary<'_> {
@@ -519,6 +521,7 @@ enum DrawingStyleChange {
     FillColor(ThemeAccent),
     FillShade(ThemeColorShade),
     StrokeWidth(f32),
+    ProfileRows(u16),
 }
 
 impl DrawingStyleChange {
@@ -527,6 +530,7 @@ impl DrawingStyleChange {
             Self::FillColor(_) | Self::FillShade(_) => {
                 matches!(object, DrawingObject::Box { .. })
             }
+            Self::ProfileRows(_) => matches!(object, DrawingObject::VolumeProfile { .. }),
             Self::StrokeColor(_) | Self::StrokeShade(_) | Self::StrokeWidth(_) => true,
         }
     }
@@ -556,6 +560,7 @@ impl DrawingStyleChange {
             Self::StrokeWidth(width) => {
                 style.set_stroke_width(width);
             }
+            Self::ProfileRows(rows) => style.profile_rows = rows,
         }
 
         *style != before
@@ -582,6 +587,7 @@ pub enum DrawingMessage {
     SetSelectedDrawingFillColor(ThemeAccent),
     SetSelectedDrawingFillShade(ThemeColorShade),
     SetSelectedDrawingStrokeWidth(f32),
+    SetSelectedProfileRows(u16),
     SelectBoxBorderStyle,
     SelectBoxFillStyle,
     SetHorizontalLineRay(bool),
@@ -879,7 +885,15 @@ impl DrawingTools {
                     }),
             );
 
+        let profile_rows = shared_value(
+            editable
+                .iter()
+                .filter(|drawing| matches!(drawing.object, DrawingObject::VolumeProfile { .. }))
+                .map(|drawing| drawing.style.profile_rows),
+        );
+
         Some(DrawingSelectionSummary {
+            profile_rows,
             selected,
             capabilities,
             stroke_color,
@@ -973,6 +987,13 @@ impl DrawingTools {
             }
             DrawingMessage::SetSelectedDrawingStrokeWidth(width) => {
                 if self.update_selected_style(DrawingStyleChange::StrokeWidth(width), settings) {
+                    DrawingUpdate::AtomicEdit
+                } else {
+                    DrawingUpdate::None
+                }
+            }
+            DrawingMessage::SetSelectedProfileRows(rows) => {
+                if self.update_selected_style(DrawingStyleChange::ProfileRows(rows), settings) {
                     DrawingUpdate::AtomicEdit
                 } else {
                     DrawingUpdate::None
@@ -1139,6 +1160,23 @@ impl DrawingTools {
                     selection.stroke_width,
                     on_sidebar_message,
                 ));
+            }
+
+            if !matches!(selection.profile_rows, SharedValue::Unavailable) {
+                let mut rows = pick_list(
+                    data::chart::kline::drawing::PROFILE_ROW_CHOICES,
+                    selection.profile_rows.uniform(),
+                    move |rows| on_sidebar_message(DrawingMessage::SetSelectedProfileRows(rows)),
+                )
+                .padding(4)
+                .width(64);
+                if selection.profile_rows.is_mixed() {
+                    rows = rows.placeholder("Mixed");
+                }
+                controls = controls
+                    .push(drawing_toolbar_divider())
+                    .push(text("Rows"))
+                    .push(rows);
             }
 
             if selection.capabilities.has_horizontal_lines() {

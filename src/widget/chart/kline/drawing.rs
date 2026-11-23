@@ -489,17 +489,9 @@ impl DrawingView<'_> {
         }
     }
 
-    fn range_profile_box(
-        &self,
-        start: DrawingAnchor,
-        end: DrawingAnchor,
-    ) -> Option<(Rectangle, Rectangle)> {
+    /// Low and high price of the klines inside the profile's time range.
+    fn range_profile_prices(&self, start: DrawingAnchor, end: DrawingAnchor) -> Option<(f64, f64)> {
         let (earliest, latest) = self.range_profile_times(start, end)?;
-        let panel_index = self.context.coordinates.panel_index_for_id(start.panel_id)?;
-        let scene = self.context.scene;
-        if scene.layout.panel(panel_index)?.kind != KlinePanelKind::PrimaryChart {
-            return None;
-        }
         let series = self.context.coordinates.series.first()?;
         let mut low = f64::MAX;
         let mut high = f64::MIN;
@@ -510,9 +502,20 @@ impl DrawingView<'_> {
             low = low.min(point.kline.low.to_f64());
             high = high.max(point.kline.high.to_f64());
         }
-        if !low.is_finite() || !high.is_finite() || high < low {
+        (low.is_finite() && high.is_finite() && high >= low).then_some((low, high))
+    }
+
+    fn range_profile_box(
+        &self,
+        start: DrawingAnchor,
+        end: DrawingAnchor,
+    ) -> Option<(Rectangle, Rectangle)> {
+        let panel_index = self.context.coordinates.panel_index_for_id(start.panel_id)?;
+        let scene = self.context.scene;
+        if scene.layout.panel(panel_index)?.kind != KlinePanelKind::PrimaryChart {
             return None;
         }
+        let (low, high) = self.range_profile_prices(start, end)?;
         let clip = self.panel_plot_bounds_in_overlay(panel_index)?;
         let x1 = self.x_overlay_for_anchor(start.x)?;
         let x2 = self.x_overlay_for_anchor(end.x)?;
@@ -534,6 +537,7 @@ impl DrawingView<'_> {
         frame: &mut PaintInputs,
         start: DrawingAnchor,
         end: DrawingAnchor,
+        rows: u16,
         stroke: canvas::Stroke<'_>,
         palette: &Extended,
     ) {
@@ -546,9 +550,25 @@ impl DrawingView<'_> {
         let Some(series) = self.context.coordinates.series.first() else {
             return;
         };
-        let scene = self.context.scene;
-        let step = series.tick_size().to_f64_lossy().max(1e-8);
-        let row_low = (scene.primary_domain_value_range().0.to_f64() / step).floor() * step;
+        let Some((row_low, high)) = self.range_profile_prices(start, end) else {
+            return;
+        };
+        // Raw trades let rows go below the chart's merged tick, down to the
+        // instrument's own tick; without them the footprint's tick is the floor.
+        // ponytail: walks every raw trade in the range on each repaint; cache
+        // the buckets per drawing if long ranges get slow.
+        let raw = series.raw_trades_in_buckets(earliest, latest);
+        let rows = rows.max(1);
+        let tick = if raw.is_some() {
+            series.min_tick_size()
+        } else {
+            series.tick_size()
+        }
+        .to_f64_lossy()
+        .max(1e-8);
+        let step = ((high - row_low) / f64::from(rows)).max(tick);
+        let last_row = ((high - row_low) / step).floor() as i64;
+        let row_of = |price: f64| (((price - row_low) / step).floor() as i64).clamp(0, last_row);
         let mut buckets = std::collections::BTreeMap::<i64, (f64, f64)>::new();
         for index in series.time_index_range(earliest, latest) {
             let Some(point) = series.point_at(index) else {
@@ -571,8 +591,8 @@ impl DrawingView<'_> {
                 if buy + sell <= 0.0 {
                     continue;
                 }
-                let first = ((point.kline.low.to_f64() - row_low) / step).floor() as i64;
-                let last = ((point.kline.high.to_f64() - row_low) / step).floor() as i64;
+                let first = row_of(point.kline.low.to_f64());
+                let last = row_of(point.kline.high.to_f64());
                 let (first, last) = (first.min(last), first.max(last));
                 let span = (last - first + 1) as f64;
                 for bucket in first..=last {
@@ -580,17 +600,30 @@ impl DrawingView<'_> {
                     entry.0 += buy / span;
                     entry.1 += sell / span;
                 }
-            } else {
+            } else if raw.is_none() {
                 for (price, group) in &point.footprint.trades {
                     let price = price.to_f64();
                     if !price.is_finite() {
                         continue;
                     }
-                    let bucket = ((price - row_low) / step).floor() as i64;
+                    let bucket = row_of(price);
                     let entry = buckets.entry(bucket).or_default();
                     entry.0 += group.buy_qty.to_f64();
                     entry.1 += group.sell_qty.to_f64();
                 }
+            }
+        }
+        // Klines with a footprint were built from these trades, so each trade counts once.
+        for trade in raw.into_iter().flatten() {
+            let price = trade.price.to_f64();
+            if !price.is_finite() {
+                continue;
+            }
+            let entry = buckets.entry(row_of(price)).or_default();
+            if trade.is_sell {
+                entry.1 += trade.qty.to_f64();
+            } else {
+                entry.0 += trade.qty.to_f64();
             }
         }
         let max = buckets
@@ -764,7 +797,14 @@ impl DrawingView<'_> {
                 });
             }
             DrawingObject::VolumeProfile { start, end } => {
-                self.draw_range_volume_profile(frame, *start, *end, stroke, palette);
+                self.draw_range_volume_profile(
+                    frame,
+                    *start,
+                    *end,
+                    style.profile_rows,
+                    stroke,
+                    palette,
+                );
             }
         }
     }

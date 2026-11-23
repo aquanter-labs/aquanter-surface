@@ -38,6 +38,11 @@ pub struct TradingConfig {
     pub confirm_orders: bool,
     pub allocation_percent: u8,
     pub simulated_balance: u64,
+    /// Chart markers for open / settled simulated event contracts.
+    pub event_show_open: bool,
+    pub event_show_history: bool,
+    /// The panel shows the event contract tab instead of futures trading.
+    pub event_tab: bool,
 }
 
 impl Default for TradingConfig {
@@ -53,6 +58,9 @@ impl Default for TradingConfig {
             confirm_orders: true,
             allocation_percent: 10,
             simulated_balance: 10_000,
+            event_show_open: true,
+            event_show_history: true,
+            event_tab: false,
         }
     }
 }
