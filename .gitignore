@@ -2,3 +2,8 @@
 /target
 /.vscode
 *.log
+# extra cargo target dirs (e.g. building while the app holds target/ locked)
+/target-*
+
+# editor backups
+*#
