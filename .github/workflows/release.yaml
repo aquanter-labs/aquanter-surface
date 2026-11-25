@@ -11,8 +11,8 @@ on:
                 required: true
 
 jobs:
-    create-signed-tag:
-        name: Create Signed Tag
+    create-tag:
+        name: Create Tag
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v7
@@ -40,42 +40,21 @@ jobs:
                   fi
                   echo "Cargo.toml version $VERSION matches tag $TAG."
 
-            - name: Import GPG key and configure Git
-              env:
-                  GPG_NAME: ${{ secrets.GPG_NAME }}
-                  GPG_EMAIL: ${{ secrets.GPG_EMAIL }}
-              run: |
-                  echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
-                  echo "allow-loopback-pinentry" > ~/.gnupg/gpg-agent.conf
-                  echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
-                  gpg-connect-agent reloadagent /bye
-                  KEY_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
-                  git config user.name "${GPG_NAME}"
-                  git config user.email "${GPG_EMAIL}"
-                  git config user.signingkey "$KEY_ID"
-                  cat > "$RUNNER_TEMP/gpg-wrapper.sh" << 'EOF'
-                  #!/usr/bin/env bash
-                  exec gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" "$@"
-                  EOF
-                  chmod +x "$RUNNER_TEMP/gpg-wrapper.sh"
-                  git config gpg.program "$RUNNER_TEMP/gpg-wrapper.sh"
-
-            - name: Create signed tag
+            - name: Create tag
               env:
                   TAG: ${{ github.event.inputs.tag }}
-                  GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
               run: |
                   if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
                     echo "Tag $TAG already exists, using it as-is."
                     echo "The build will check out $TAG ($(git rev-list -n1 "$TAG")) and update its release."
                     exit 0
                   fi
-                  git tag -s "$TAG" -m "Release $TAG" HEAD
+                  git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com tag -a "$TAG" -m "Release $TAG" HEAD
                   git push origin "refs/tags/$TAG"
 
     build:
         name: Build
-        needs: create-signed-tag
+        needs: create-tag
         strategy:
             matrix:
                 target:
@@ -151,82 +130,15 @@ jobs:
               if: matrix.target.target != 'windows-x64'
               run: ${{ matrix.target.artifact_path }}
 
-            - name: Upload unsigned Windows executable for SignPath
-              if: matrix.target.target == 'windows-x64'
-              id: upload-unsigned-windows
-              uses: actions/upload-artifact@v7
-              with:
-                  path: target/packaging/win-unsigned/aquanter-surface.exe
-                  archive: false
-                  if-no-files-found: error
-
-            - name: Submit SignPath signing request
-              if: matrix.target.target == 'windows-x64'
-              uses: signpath/github-action-submit-signing-request@v2
-              with:
-                  api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
-                  organization-id: "${{ secrets.SIGNPATH_ORG_ID }}"
-                  project-slug: "flowsurface"
-                  signing-policy-slug: "release-signing"
-                  artifact-configuration-slug: "windows-exe"
-                  github-artifact-id: "${{ steps.upload-unsigned-windows.outputs.artifact-id }}"
-                  wait-for-completion: true
-                  wait-for-completion-timeout-in-seconds: 1800
-                  output-artifact-directory: "target/packaging/win-signed"
-                  skip-decompress: true
-
-            - name: Build Windows installer from signed executable
+            - name: Zip Windows executable
               if: matrix.target.target == 'windows-x64'
               shell: pwsh
               run: |
-                  $signature = Get-AuthenticodeSignature target/packaging/win-signed/aquanter-surface.exe
-                  if ($signature.Status -ne 'Valid') { throw "Invalid executable signature: $($signature.Status)" }
-                  ./scripts/package-windows.ps1 -Output target/packaging/aquanter-surface-x86_64-windows-unsigned.msix
-
-            - name: Upload unsigned MSIX for SignPath
-              if: matrix.target.target == 'windows-x64'
-              id: upload-unsigned-msix
-              uses: actions/upload-artifact@v7
-              with:
-                  path: target/packaging/aquanter-surface-x86_64-windows-unsigned.msix
-                  archive: false
-                  if-no-files-found: error
-
-            - name: Sign Windows installer
-              if: matrix.target.target == 'windows-x64'
-              uses: signpath/github-action-submit-signing-request@v2
-              with:
-                  api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
-                  organization-id: "${{ secrets.SIGNPATH_ORG_ID }}"
-                  project-slug: "flowsurface"
-                  signing-policy-slug: "release-signing"
-                  artifact-configuration-slug: "windows-msix"
-                  github-artifact-id: "${{ steps.upload-unsigned-msix.outputs.artifact-id }}"
-                  wait-for-completion: true
-                  wait-for-completion-timeout-in-seconds: 1800
-                  output-artifact-directory: "target/packaging/msix-signed"
-                  skip-decompress: true
-
-            - name: Verify signed installer
-              if: matrix.target.target == 'windows-x64'
-              shell: pwsh
-              run: |
-                  Move-Item target/packaging/msix-signed/aquanter-surface-x86_64-windows-unsigned.msix target/packaging/msix-signed/aquanter-surface-x86_64-windows.msix
-                  $sdk = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/signtool.exe" | Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
-                  if (!$sdk) { throw "SignTool not found" }
-                  & $sdk.FullName verify /pa /v target/packaging/msix-signed/aquanter-surface-x86_64-windows.msix
-                  if ($LASTEXITCODE -ne 0) { throw "Invalid MSIX signature" }
-
-            - name: Upload signed installer
-              if: matrix.target.target == 'windows-x64'
-              uses: actions/upload-artifact@v7
-              with:
-                  path: target/packaging/msix-signed/aquanter-surface-x86_64-windows.msix
-                  archive: false
-                  if-no-files-found: error
+                  # ponytail: unsigned exe in a zip; add SignPath/MSIX back once signing secrets exist
+                  Compress-Archive -Path target/packaging/win-unsigned/aquanter-surface.exe -DestinationPath target/packaging/aquanter-surface-x86_64-windows.zip
+                  "ARTIFACT_PATH=target/packaging/aquanter-surface-x86_64-windows.zip" >> $env:GITHUB_ENV
 
             - name: Upload artifact
-              if: matrix.target.target != 'windows-x64'
               uses: actions/upload-artifact@v7
               env:
                   ARTIFACT_PATH: ${{ env.ARTIFACT_PATH }}
@@ -243,10 +155,10 @@ jobs:
             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
         steps:
-            - name: Download Windows installer
+            - name: Download Windows package
               uses: actions/download-artifact@v8
               with:
-                  name: aquanter-surface-x86_64-windows.msix
+                  name: aquanter-surface-x86_64-windows.zip
                   path: release-artifacts
                   skip-decompress: true
 
@@ -275,35 +187,18 @@ jobs:
               working-directory: release-artifacts
               run: |
                   sha256sum aquanter-surface-universal-macos.dmg | awk '{print $1 "  aquanter-surface-universal-macos.dmg"}' >> SHA256SUMS
-                  sha256sum aquanter-surface-x86_64-windows.msix | awk '{print $1 "  aquanter-surface-x86_64-windows.msix"}' >> SHA256SUMS
+                  sha256sum aquanter-surface-x86_64-windows.zip | awk '{print $1 "  aquanter-surface-x86_64-windows.zip"}' >> SHA256SUMS
                   sha256sum aquanter-surface-x86_64-linux.tar.gz | awk '{print $1 "  aquanter-surface-x86_64-linux.tar.gz"}' >> SHA256SUMS
                   sha256sum aquanter-surface-aarch64-linux.tar.gz | awk '{print $1 "  aquanter-surface-aarch64-linux.tar.gz"}' >> SHA256SUMS
 
                   cat SHA256SUMS
-
-            - name: Import GPG key
-              run: |
-                  echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
-                  echo "allow-loopback-pinentry" > ~/.gnupg/gpg-agent.conf
-                  gpg-connect-agent reloadagent /bye
-
-            - name: Sign checksums
-              working-directory: release-artifacts
-              env:
-                  GPG_TTY: /dev/null
-              run: |
-                  if [ -n "${{ secrets.GPG_PASSPHRASE }}" ]; then
-                    echo "${{ secrets.GPG_PASSPHRASE }}" | gpg --batch --yes --passphrase-fd 0 --pinentry-mode loopback --armor --detach-sign SHA256SUMS
-                  else
-                    gpg --batch --yes --pinentry-mode loopback --armor --detach-sign SHA256SUMS
-                  fi
 
             - name: Create or update release
               uses: softprops/action-gh-release@v3
               with:
                   tag_name: ${{ github.event.inputs.tag }}
                   name: ${{ github.event.inputs.tag }}
-                  draft: true
+                  draft: false
                   overwrite_files: true
                   fail_on_unmatched_files: true
                   files: release-artifacts/*
