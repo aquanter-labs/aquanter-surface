@@ -7,7 +7,9 @@ fn main() {
 }
 
 fn generate_bundled_source_manifest() -> Result<(), String> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = PathBuf::from(
+        env::var_os("CARGO_MANIFEST_DIR").expect("Cargo should provide CARGO_MANIFEST_DIR"),
+    );
     let bundled_dir = manifest_dir.join("indicators/sources");
     println!("cargo:rerun-if-changed=indicators/sources");
 
