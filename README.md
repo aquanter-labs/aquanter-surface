@@ -1,21 +1,62 @@
-# Flowsurface
+# Aquanter Surface
 
-[![Crates.io](https://img.shields.io/crates/v/flowsurface)](https://crates.io/crates/flowsurface)
-[![Lint](https://github.com/flowsurface-rs/flowsurface/actions/workflows/lint.yml/badge.svg)](https://github.com/flowsurface-rs/flowsurface/actions/workflows/lint.yml)
-[![Format](https://github.com/flowsurface-rs/flowsurface/actions/workflows/format.yml/badge.svg)](https://github.com/flowsurface-rs/flowsurface/actions/workflows/format.yml)
-[![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?&logo=discord&logoColor=white)](https://discord.gg/RN2XAF7ZuR)
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://github.com/flowsurface-rs/flowsurface/blob/main/LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Made with iced](https://iced.rs/badge.svg)](https://github.com/iced-rs/iced)
 
-An open-source native desktop charting application for crypto markets. Supports Binance, Bybit, Hyperliquid, OKX, and MEXC.
+A native desktop order-flow charting and analysis platform for crypto markets, built on top of
+[Flowsurface](https://github.com/flowsurface-rs/flowsurface). Supports Binance, Bybit, Hyperliquid, OKX, and MEXC.
+
+> **Unofficial fork.** Aquanter Surface is a modified version of
+> [flowsurface-rs/flowsurface](https://github.com/flowsurface-rs/flowsurface), maintained independently by Aquanter.
+> It is not affiliated with or endorsed by the Flowsurface project. Please report issues here, not upstream.
+
+> **Disclaimer.** For research and education only. Nothing in this software is investment advice.
+> Aquanter does not provide brokerage, custody, order matching, or trading services. Live trading
+> features act only on your own exchange account with your own API keys, at your own risk.
 
 <div align="center">
   <img
     src="assets/screenshot.png"
-    alt="Flowsurface screenshot"
+    alt="Aquanter Surface screenshot"
     style="max-width: 100%; height: auto;"
   />
 </div>
+
+## What's Different from Upstream
+
+Everything below is added in this fork. All upstream features remain available.
+
+### AI market analysis
+- Builds a market snapshot from the active Kline/Footprint pane (price, order flow, open interest) and asks an LLM for a directional read.
+- Providers: OpenAI, OpenRouter, DeepSeek, xAI, Groq, Mistral, Anthropic, Gemini, or any OpenAI-compatible endpoint. Keys are stored in the OS keychain.
+- Scores directional setups with confidence and signal validity, and keeps a history that records the outcomes and can be filtered by confidence.
+- Can run automatically when an alert fires.
+
+### Alerts
+- Rules for price touches, volume change, and bar close.
+- Each rule can notify in the app, send a system notification, and/or trigger an AI analysis.
+
+### Trading panel
+- Order entry with leverage, margin mode, and position management, drawn as lines on the chart.
+- Three modes: **Binance Testnet** (default), **Local Simulation**, and **Binance Live**. You can require confirmation before each order.
+- **Event contract simulator:** simulated binary up/down contracts that are opened and settled locally.
+
+### Order-flow tools
+- **Cross-venue aggregation:** merge the same coin's order flow from several exchanges into one chart. Pick the sources in the ticker selector, with optional basis correction between spot and perps.
+- **Footprint:** automatic tick size, larger tick multipliers, per-row delta when bid/ask text won't fit, and a docked summary.
+- **Heatmap:** markers for pulled and absorbed liquidity walls, plus a delta mode for the volume profile.
+- **Kline:** crosshair sync across panes, latest price kept away from the chart edge, AVWAP anchored by default, and drawn volume profiles with a row-size control.
+
+### Extra bundled indicators
+`pro-cvd`, `pro-open-interest`, `oi-delta-divergence`, `oi-flow-net`, `oi-weighted-delta`, `order-flow-bias`, `liquidation-pressure`.
+
+### Other
+- Any IANA time zone can be chosen, not only UTC and Local.
+- Fixes for unpublished Binance archives, starved perp depth, and an hourly trade cache.
+
+### Compatibility notes
+- Settings, credentials, and data stay in the same `flowsurface/` data directory, so an existing upstream install can be opened directly.
+- Indicators from the upstream catalog still work. The catalog is fetched from upstream's `api.flowsurface.com`.
 
 ## Key Features
 
@@ -81,22 +122,7 @@ visible. Backfill is optional and is configured in **Settings → Network**. Som
 
 ## Installation
 
-### Method 1: Prebuilt Binaries
-
-Downloads are available on the [Releases page](https://github.com/flowsurface-rs/flowsurface/releases).
-
-- **macOS**: Open the universal DMG and drag Flowsurface into Applications. Supports Apple Silicon and Intel Macs running macOS 11 or newer.
-- **Windows**: Run the x64 MSIX to install for your current user, then launch Flowsurface from the Start menu. No administrator approval is required.
-- **Linux**: Extract the archive and run `./install.sh` without sudo, then launch Flowsurface from the application menu. Run `./install.sh` from a newer archive to upgrade, or `./uninstall.sh` to remove the app. Settings and credentials are preserved. For portable use, run `./bin/flowsurface` directly.
-
-<details><summary><strong>Having trouble running the file? (Permission/Security warnings)</strong></summary>
- 
-Windows executables and MSIX installers are code-signed; macOS apps have no Apple Developer ID signature or notarization. Security warnings may still appear.
-
-- **Windows**: If App Installer cannot verify the publisher or signing certificate, [report the installation error](https://github.com/flowsurface-rs/flowsurface/issues).
-- **macOS**: If you see "Developer cannot be verified", control-click (right-click) the app and select **Open**, or go to _System Settings > Privacy & Security_ to allow it.</details>
-
-### Method 2: Build from Source
+Prebuilt binaries are not published yet. Build from source:
 
 #### Requirements
 
@@ -110,23 +136,10 @@ Windows executables and MSIX installers are code-signed; macOS apps have no Appl
     - **macOS**: Install Xcode Command Line Tools: `xcode-select --install`
     - **Windows**: No additional dependencies required
 
-#### Option A: `cargo install`
+#### Build and run
 
 ```bash
-# Install latest globally
-cargo install --git https://github.com/flowsurface-rs/flowsurface flowsurface
-
-# Run
-flowsurface
-```
-
-#### Option B: Cloning the repo
-
-```bash
-# Clone the repository
-git clone https://github.com/flowsurface-rs/flowsurface
-
-cd flowsurface
+# Clone this repository, then from its root:
 
 # Build and run
 cargo build --release
@@ -142,25 +155,22 @@ cargo run --release
 
 </details>
 
-## Community
-
-Discord: https://discord.gg/RN2XAF7ZuR
-
 ## Acknowledgments
 
-- Free code signing for Windows releases is provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/)
+- Upstream: [Flowsurface](https://github.com/flowsurface-rs/flowsurface) by akenshaw and contributors, which this project is based on
+- Upstream Windows code signing is provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/)
 - [Kraken Desktop](https://www.kraken.com/desktop) (formerly [Cryptowatch](https://blog.kraken.com/product/cryptowatch-to-sunset-kraken-pro-to-integrate-cryptowatch-features)), the main inspiration that sparked this project
 - [Halloy](https://github.com/squidowl/halloy), an excellent open-source IRC client, the main reference for the foundational code design
 - And of course, [iced](https://github.com/iced-rs/iced), the GUI library that makes this possible
 
 ## Privacy
 
-Flowsurface has no telemetry or analytics. See [PRIVACY.md](PRIVACY.md) for the services it
+Aquanter Surface has no telemetry or analytics. The AI, trading, and proxy features only contact the providers you configure. See [PRIVACY.md](PRIVACY.md) for the services it
 contacts and what stays local.
 
 ## License
 
-Flowsurface is released under [GPL-3.0-or-later](LICENSE).
+Aquanter Surface is a modified version of Flowsurface and, like upstream, is released under [GPL-3.0-or-later](LICENSE).
 Some components use separate licenses:
 
 | Component                                                                               | License                                                                      |

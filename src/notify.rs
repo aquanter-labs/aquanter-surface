@@ -123,7 +123,7 @@ impl Notifications {
     pub fn publish_system(&self, alert: Alert) {
         std::thread::spawn(move || {
             if let Err(error) = notify_rust::Notification::new()
-                .appname("Flowsurface Pro")
+                .appname("Aquanter Surface")
                 .summary(&format!("{} - {}", alert.source, alert.title))
                 .body(&alert.body)
                 .show()
