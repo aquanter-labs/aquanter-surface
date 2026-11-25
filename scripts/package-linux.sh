@@ -8,18 +8,18 @@ case "$ARCH" in
 esac
 RELEASE_DIR=target/packaging
 ARCHIVE_DIR="$RELEASE_DIR/linux-$ARCH"
-ARCHIVE_PATH="$RELEASE_DIR/flowsurface-$ARCH-linux.tar.gz"
+ARCHIVE_PATH="$RELEASE_DIR/aquanter-surface-$ARCH-linux.tar.gz"
 case "${1:-}" in
     archive_path) echo "$ARCHIVE_PATH" ;;
     package)
         rustup target add "$TRIPLE"
         cargo build --locked --profile packaging --target "$TRIPLE"
         rm -rf -- "$ARCHIVE_DIR"
-        install -Dm755 "target/$TRIPLE/packaging/flowsurface" "$ARCHIVE_DIR/bin/flowsurface"
+        install -Dm755 "target/$TRIPLE/packaging/aquanter-surface" "$ARCHIVE_DIR/bin/aquanter-surface"
         install -Dm755 scripts/packaging/linux/install.sh "$ARCHIVE_DIR/install.sh"
         install -Dm755 scripts/packaging/linux/uninstall.sh "$ARCHIVE_DIR/uninstall.sh"
-        install -Dm644 scripts/packaging/linux/com.flowsurface.flowsurface.desktop "$ARCHIVE_DIR/share/applications/com.flowsurface.flowsurface.desktop"
-        install -Dm644 assets/app-icon/linux/flowsurface.png "$ARCHIVE_DIR/share/icons/hicolor/512x512/apps/com.flowsurface.flowsurface.png"
+        install -Dm644 scripts/packaging/linux/com.aquanter.surface.desktop "$ARCHIVE_DIR/share/applications/com.aquanter.surface.desktop"
+        install -Dm644 assets/app-icon/linux/flowsurface.png "$ARCHIVE_DIR/share/icons/hicolor/512x512/apps/com.aquanter.surface.png"
         tar czf "$ARCHIVE_PATH" -C "$ARCHIVE_DIR" .
         echo "Packaged archive: $ARCHIVE_PATH"
         ;;

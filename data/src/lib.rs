@@ -189,10 +189,76 @@ pub fn data_path(path_name: Option<&str>) -> PathBuf {
     } else {
         let data_dir = dirs_next::data_dir().unwrap_or_else(|| PathBuf::from("."));
         if let Some(path_name) = path_name {
-            data_dir.join("flowsurface").join(path_name)
+            data_dir.join(DATA_DIR_NAME).join(path_name)
         } else {
-            data_dir.join("flowsurface")
+            data_dir.join(DATA_DIR_NAME)
         }
+    }
+}
+
+const DATA_DIR_NAME: &str = "aquanter-surface";
+
+/// One-time copy of settings from an upstream Flowsurface data dir, left intact so
+/// both apps can coexist. Market data cache and logs are not copied.
+pub fn migrate_legacy_data_dir() -> std::io::Result<bool> {
+    if std::env::var_os("FLOWSURFACE_DATA_PATH").is_some() {
+        return Ok(false);
+    }
+    let Some(base) = dirs_next::data_dir() else {
+        return Ok(false);
+    };
+    copy_legacy_data(&base.join("flowsurface"), &base.join(DATA_DIR_NAME))
+}
+
+fn copy_legacy_data(old: &std::path::Path, new: &std::path::Path) -> std::io::Result<bool> {
+    if new.exists() || !old.is_dir() {
+        return Ok(false);
+    }
+    fn copy_dir(from: &std::path::Path, to: &std::path::Path, top: bool) -> std::io::Result<()> {
+        std::fs::create_dir_all(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let skip = top && (name == "market_data" || name.to_string_lossy().ends_with(".log"));
+            if skip {
+                continue;
+            }
+            if entry.file_type()?.is_dir() {
+                copy_dir(&entry.path(), &to.join(&name), false)?;
+            } else {
+                std::fs::copy(entry.path(), to.join(&name))?;
+            }
+        }
+        Ok(())
+    }
+    // ponytail: copy into a temp dir then rename, so a crash mid-copy retries next launch
+    let staging = new.with_extension("migrating");
+    let _ = std::fs::remove_dir_all(&staging);
+    copy_dir(old, &staging, true)?;
+    std::fs::rename(&staging, new)?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod legacy_data_dir_tests {
+    #[test]
+    fn copies_settings_skips_cache_and_runs_once() {
+        let root = std::env::temp_dir().join(format!("aq-migrate-{}", std::process::id()));
+        let (old, new) = (root.join("flowsurface"), root.join("aquanter-surface"));
+        std::fs::create_dir_all(old.join("ai")).unwrap();
+        std::fs::create_dir_all(old.join("market_data")).unwrap();
+        std::fs::write(old.join("saved-state.json"), "{}").unwrap();
+        std::fs::write(old.join("ai/history.json"), "[]").unwrap();
+        std::fs::write(old.join("flowsurface-current.log"), "x").unwrap();
+
+        assert!(super::copy_legacy_data(&old, &new).unwrap());
+        assert!(new.join("saved-state.json").exists());
+        assert!(new.join("ai/history.json").exists());
+        assert!(!new.join("market_data").exists());
+        assert!(!new.join("flowsurface-current.log").exists());
+        assert!(old.join("saved-state.json").exists());
+        assert!(!super::copy_legacy_data(&old, &new).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 
@@ -202,9 +268,8 @@ fn cleanup_directory(data_path: &PathBuf) -> usize {
         return 0;
     }
 
-    let re =
-        regex::Regex::new(r".*(\d{4}-\d{2}-\d{2})(?:-\d{2})?\.(?:zip|bin|csv\.gz)$")
-            .expect("Cleanup regex pattern is valid");
+    let re = regex::Regex::new(r".*(\d{4}-\d{2}-\d{2})(?:-\d{2})?\.(?:zip|bin|csv\.gz)$")
+        .expect("Cleanup regex pattern is valid");
     let today = chrono::Local::now().date_naive();
     let mut deleted_files = Vec::new();
 

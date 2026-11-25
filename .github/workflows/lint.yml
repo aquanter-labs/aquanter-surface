@@ -58,7 +58,7 @@ jobs:
 
             - name: Test application
               if: github.event_name == 'workflow_dispatch'
-              run: cargo test -p flowsurface --bin flowsurface --locked
+              run: cargo test -p aquanter-surface --bin aquanter-surface --locked
 
             - name: Validate repository indicator sources
               if: github.event_name == 'workflow_dispatch'

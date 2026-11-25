@@ -4,10 +4,10 @@
 <dict>
     <key>CFBundleDevelopmentRegion</key><string>en</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-    <key>CFBundleName</key><string>Flowsurface</string>
-    <key>CFBundleDisplayName</key><string>Flowsurface</string>
-    <key>CFBundleIdentifier</key><string>com.flowsurface.flowsurface</string>
-    <key>CFBundleExecutable</key><string>flowsurface</string>
+    <key>CFBundleName</key><string>Aquanter Surface</string>
+    <key>CFBundleDisplayName</key><string>Aquanter Surface</string>
+    <key>CFBundleIdentifier</key><string>com.aquanter.surface</string>
+    <key>CFBundleExecutable</key><string>aquanter-surface</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleSupportedPlatforms</key><array><string>MacOSX</string></array>
     <key>CFBundleIconFile</key><string>flowsurface.icns</string>

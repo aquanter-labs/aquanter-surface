@@ -48,10 +48,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 fn main() {
+    let migration = data::migrate_legacy_data_dir();
+
     logger::install_panic_hook();
 
     if let Err(err) = logger::setup(cfg!(debug_assertions)) {
         logger::report_stderr(&format!("Failed to initialize logger: {err}"));
+    }
+
+    match migration {
+        Ok(true) => log::info!("Copied settings from the Flowsurface data directory"),
+        Ok(false) => {}
+        Err(err) => log::error!("Failed to copy settings from Flowsurface: {err}"),
     }
 
     if let Err(error) = data::initialize_indicator_catalog() {

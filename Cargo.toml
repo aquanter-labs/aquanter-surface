@@ -1,5 +1,5 @@
 [package]
-name = "flowsurface"
+name = "aquanter-surface"
 version.workspace = true
 readme = "README.md"
 license = "GPL-3.0-or-later"

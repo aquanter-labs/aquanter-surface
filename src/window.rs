@@ -186,7 +186,7 @@ where
 pub fn settings() -> Settings {
     Settings {
         platform_specific: iced::window::settings::PlatformSpecific {
-            application_id: "com.flowsurface.flowsurface".into(),
+            application_id: "com.aquanter.surface".into(),
             ..Default::default()
         },
         min_size: Some(Size::new(800.0, 600.0)),

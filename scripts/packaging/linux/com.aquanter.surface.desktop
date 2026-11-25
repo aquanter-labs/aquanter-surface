@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=Flowsurface
+Name=Aquanter Surface
 Comment=Real-time charts for crypto markets
-Exec=flowsurface
-Icon=com.flowsurface.flowsurface
+Exec=aquanter-surface
+Icon=com.aquanter.surface
 Terminal=false
 Categories=Office;Finance;
-StartupWMClass=com.flowsurface.flowsurface
+StartupWMClass=com.aquanter.surface

@@ -55,7 +55,7 @@ Everything below is added in this fork. All upstream features remain available.
 - Fixes for unpublished Binance archives, starved perp depth, and an hourly trade cache.
 
 ### Compatibility notes
-- Settings, credentials, and data stay in the same `flowsurface/` data directory, so an existing upstream install can be opened directly.
+- Data lives in its own `aquanter-surface/` data directory. On first launch, settings, layouts, indicators, and AI/alert/trading history are copied once from an existing upstream `flowsurface/` directory (the market data cache is not copied). The upstream install is left untouched.
 - Indicators from the upstream catalog still work. The catalog is fetched from upstream's `api.flowsurface.com`.
 
 ## Key Features
@@ -103,7 +103,7 @@ against the manifest checksum, and compiles it locally before installation.
 
 **Manual install**: Open **Settings → Open data folder** and copy `.ind` files into `indicators/`, then
 restart the app. The data directory is `$FLOWSURFACE_DATA_PATH` when set, otherwise your platform's data
-directory under `flowsurface/`. The installed-indicator directory can also be overridden with
+directory under `aquanter-surface/`. The installed-indicator directory can also be overridden with
 `FLOWSURFACE_INDICATORS_PATH`.
 
 To write your own indicators, see the [language reference and examples](indicator-engine/LANGUAGE.md) and the

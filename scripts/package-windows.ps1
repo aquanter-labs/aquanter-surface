@@ -1,8 +1,8 @@
 param(
-    [string]$Executable = "target/packaging/win-signed/flowsurface.exe",
+    [string]$Executable = "target/packaging/win-signed/aquanter-surface.exe",
     [string]$Publisher,
     [string]$Version,
-    [string]$Output = "target/packaging/flowsurface-x86_64-windows.msix"
+    [string]$Output = "target/packaging/aquanter-surface-x86_64-windows.msix"
 )
 $ErrorActionPreference = "Stop"
 Set-Location "$PSScriptRoot/.."
@@ -15,7 +15,7 @@ if (!$Publisher) {
 if (!$Version) {
     $metadata = cargo metadata --no-deps --locked --format-version 1 | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0) { throw "Cargo metadata failed" }
-    $Version = ($metadata.packages | Where-Object name -eq flowsurface).version
+    $Version = ($metadata.packages | Where-Object name -eq aquanter-surface).version
 }
 if ($Version -notmatch '^(\d+)\.(\d+)\.(\d+)$') { throw "MSIX requires a numeric major.minor.patch version: $Version" }
 if (@($Matches[1], $Matches[2], $Matches[3]) | Where-Object { [long]$_ -gt 65535 }) { throw "MSIX version components must be at most 65535" }
@@ -27,7 +27,7 @@ if (!(Test-Path $makepri)) { throw "MakePri.exe not found; install the Windows 1
 $stage = "target/packaging/msix-layout"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Force "$stage/Assets" | Out-Null
-Copy-Item $Executable "$stage/flowsurface.exe"
+Copy-Item $Executable "$stage/aquanter-surface.exe"
 $iconSizes = @{
     "Square44x44Logo.png" = 44
     "Square44x44Logo.scale-200.png" = 88

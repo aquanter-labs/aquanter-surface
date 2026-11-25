@@ -58,7 +58,7 @@ pub fn setup(is_debug: bool) -> Result<(), data::log::Error> {
         .level_for("iced_wgpu", log::LevelFilter::Info)
         .level_for("flowsurface_exchange", level_filter)
         .level_for("flowsurface_data", level_filter)
-        .level_for("flowsurface", level_filter)
+        .level_for("aquanter_surface", level_filter)
         .chain(io_sink)
         .apply()?;
 

@@ -83,12 +83,12 @@ jobs:
                       os: macos-latest
                       make: bash scripts/build-macos.sh aarch64
                       artifact_path: |
-                          echo "ARTIFACT_PATH=target/packaging/flowsurface-aarch64-macos.tar.gz" >> "$GITHUB_ENV"
+                          echo "ARTIFACT_PATH=target/packaging/aquanter-surface-aarch64-macos.tar.gz" >> "$GITHUB_ENV"
                     - target: macos-x64
                       os: macos-15-intel
                       make: bash scripts/build-macos.sh x86_64
                       artifact_path: |
-                          echo "ARTIFACT_PATH=target/packaging/flowsurface-x86_64-macos.tar.gz" >> "$GITHUB_ENV"
+                          echo "ARTIFACT_PATH=target/packaging/aquanter-surface-x86_64-macos.tar.gz" >> "$GITHUB_ENV"
                     - target: windows-x64
                       os: windows-latest
                       make: bash scripts/build-windows.sh x86_64
@@ -156,7 +156,7 @@ jobs:
               id: upload-unsigned-windows
               uses: actions/upload-artifact@v7
               with:
-                  path: target/packaging/win-unsigned/flowsurface.exe
+                  path: target/packaging/win-unsigned/aquanter-surface.exe
                   archive: false
                   if-no-files-found: error
 
@@ -179,16 +179,16 @@ jobs:
               if: matrix.target.target == 'windows-x64'
               shell: pwsh
               run: |
-                  $signature = Get-AuthenticodeSignature target/packaging/win-signed/flowsurface.exe
+                  $signature = Get-AuthenticodeSignature target/packaging/win-signed/aquanter-surface.exe
                   if ($signature.Status -ne 'Valid') { throw "Invalid executable signature: $($signature.Status)" }
-                  ./scripts/package-windows.ps1 -Output target/packaging/flowsurface-x86_64-windows-unsigned.msix
+                  ./scripts/package-windows.ps1 -Output target/packaging/aquanter-surface-x86_64-windows-unsigned.msix
 
             - name: Upload unsigned MSIX for SignPath
               if: matrix.target.target == 'windows-x64'
               id: upload-unsigned-msix
               uses: actions/upload-artifact@v7
               with:
-                  path: target/packaging/flowsurface-x86_64-windows-unsigned.msix
+                  path: target/packaging/aquanter-surface-x86_64-windows-unsigned.msix
                   archive: false
                   if-no-files-found: error
 
@@ -211,17 +211,17 @@ jobs:
               if: matrix.target.target == 'windows-x64'
               shell: pwsh
               run: |
-                  Move-Item target/packaging/msix-signed/flowsurface-x86_64-windows-unsigned.msix target/packaging/msix-signed/flowsurface-x86_64-windows.msix
+                  Move-Item target/packaging/msix-signed/aquanter-surface-x86_64-windows-unsigned.msix target/packaging/msix-signed/aquanter-surface-x86_64-windows.msix
                   $sdk = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/signtool.exe" | Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
                   if (!$sdk) { throw "SignTool not found" }
-                  & $sdk.FullName verify /pa /v target/packaging/msix-signed/flowsurface-x86_64-windows.msix
+                  & $sdk.FullName verify /pa /v target/packaging/msix-signed/aquanter-surface-x86_64-windows.msix
                   if ($LASTEXITCODE -ne 0) { throw "Invalid MSIX signature" }
 
             - name: Upload signed installer
               if: matrix.target.target == 'windows-x64'
               uses: actions/upload-artifact@v7
               with:
-                  path: target/packaging/msix-signed/flowsurface-x86_64-windows.msix
+                  path: target/packaging/msix-signed/aquanter-surface-x86_64-windows.msix
                   archive: false
                   if-no-files-found: error
 
@@ -246,38 +246,38 @@ jobs:
             - name: Download Windows installer
               uses: actions/download-artifact@v8
               with:
-                  name: flowsurface-x86_64-windows.msix
+                  name: aquanter-surface-x86_64-windows.msix
                   path: release-artifacts
                   skip-decompress: true
 
             - name: Download macOS installer
               uses: actions/download-artifact@v8
               with:
-                  name: flowsurface-universal-macos.dmg
+                  name: aquanter-surface-universal-macos.dmg
                   path: release-artifacts
                   skip-decompress: true
 
             - name: Download Linux x64 package
               uses: actions/download-artifact@v8
               with:
-                  name: flowsurface-x86_64-linux.tar.gz
+                  name: aquanter-surface-x86_64-linux.tar.gz
                   path: release-artifacts
                   skip-decompress: true
 
             - name: Download Linux arm package
               uses: actions/download-artifact@v8
               with:
-                  name: flowsurface-aarch64-linux.tar.gz
+                  name: aquanter-surface-aarch64-linux.tar.gz
                   path: release-artifacts
                   skip-decompress: true
 
             - name: Generate checksums
               working-directory: release-artifacts
               run: |
-                  sha256sum flowsurface-universal-macos.dmg | awk '{print $1 "  flowsurface-universal-macos.dmg"}' >> SHA256SUMS
-                  sha256sum flowsurface-x86_64-windows.msix | awk '{print $1 "  flowsurface-x86_64-windows.msix"}' >> SHA256SUMS
-                  sha256sum flowsurface-x86_64-linux.tar.gz | awk '{print $1 "  flowsurface-x86_64-linux.tar.gz"}' >> SHA256SUMS
-                  sha256sum flowsurface-aarch64-linux.tar.gz | awk '{print $1 "  flowsurface-aarch64-linux.tar.gz"}' >> SHA256SUMS
+                  sha256sum aquanter-surface-universal-macos.dmg | awk '{print $1 "  aquanter-surface-universal-macos.dmg"}' >> SHA256SUMS
+                  sha256sum aquanter-surface-x86_64-windows.msix | awk '{print $1 "  aquanter-surface-x86_64-windows.msix"}' >> SHA256SUMS
+                  sha256sum aquanter-surface-x86_64-linux.tar.gz | awk '{print $1 "  aquanter-surface-x86_64-linux.tar.gz"}' >> SHA256SUMS
+                  sha256sum aquanter-surface-aarch64-linux.tar.gz | awk '{print $1 "  aquanter-surface-aarch64-linux.tar.gz"}' >> SHA256SUMS
 
                   cat SHA256SUMS
 
@@ -320,37 +320,37 @@ jobs:
             - name: Download arm artifact
               uses: actions/download-artifact@v8
               with:
-                  name: flowsurface-aarch64-macos.tar.gz
+                  name: aquanter-surface-aarch64-macos.tar.gz
                   path: macos-arm
                   skip-decompress: true
 
             - name: Download x64 artifact
               uses: actions/download-artifact@v8
               with:
-                  name: flowsurface-x86_64-macos.tar.gz
+                  name: aquanter-surface-x86_64-macos.tar.gz
                   path: macos-x64
                   skip-decompress: true
 
             - name: Extract macOS arm artifact
               run: |
                   mkdir -p macos-arm/extracted
-                  tar -xzf macos-arm/flowsurface-aarch64-macos.tar.gz -C macos-arm/extracted
+                  tar -xzf macos-arm/aquanter-surface-aarch64-macos.tar.gz -C macos-arm/extracted
 
             - name: Extract macOS x64 artifact
               run: |
                   mkdir -p macos-x64/extracted
-                  tar -xzf macos-x64/flowsurface-x86_64-macos.tar.gz -C macos-x64/extracted
+                  tar -xzf macos-x64/aquanter-surface-x86_64-macos.tar.gz -C macos-x64/extracted
 
             - name: Create universal binary
               run: |
                   mkdir -p target/packaging
-                  lipo macos-arm/extracted/flowsurface macos-x64/extracted/flowsurface -create -output target/packaging/flowsurface
-                  lipo target/packaging/flowsurface -verify_arch arm64 x86_64
+                  lipo macos-arm/extracted/aquanter-surface macos-x64/extracted/aquanter-surface -create -output target/packaging/aquanter-surface
+                  lipo target/packaging/aquanter-surface -verify_arch arm64 x86_64
                   bash scripts/package-macos.sh
 
             - name: Upload universal artifact
               uses: actions/upload-artifact@v7
               with:
-                  path: target/packaging/flowsurface-universal-macos.dmg
+                  path: target/packaging/aquanter-surface-universal-macos.dmg
                   archive: false
                   if-no-files-found: error

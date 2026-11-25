@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-EXE_NAME="flowsurface.exe"
+EXE_NAME="aquanter-surface.exe"
 ARCH=${1:-x86_64} # x86_64 | aarch64
 case "$ARCH" in
   x86_64|aarch64) ;;

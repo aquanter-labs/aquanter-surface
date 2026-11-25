@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-TARGET="flowsurface"
+TARGET="aquanter-surface"
 ARCH=${1:-universal} # x86_64 | aarch64 | universal
 case "$ARCH" in
   x86_64|aarch64|universal) ;;
