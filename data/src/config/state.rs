@@ -7,6 +7,23 @@ use crate::{AudioStream, Layout, Theme};
 
 use serde::{Deserialize, Serialize};
 
+/// Settings that must exist before the running application state does.
+///
+/// iced consumes these while the daemon is being constructed, so they are read
+/// once before `Flowsurface` exists and never mutated in place. Everything the
+/// running app reads and writes belongs in `State` instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct BootSettings {
+    pub antialiasing: bool,
+}
+
+impl Default for BootSettings {
+    fn default() -> Self {
+        Self { antialiasing: true }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct Layouts {
     pub layouts: Vec<Layout>,
@@ -37,8 +54,8 @@ pub struct State {
     pub trade_fetch_enabled: Option<bool>,
     pub size_in_quote_ccy: exchange::SizeUnit,
     pub cache_market_metadata: bool,
-    #[serde(default = "default_antialiasing")]
-    pub antialiasing: bool,
+    #[serde(flatten)]
+    pub boot: BootSettings,
 }
 
 impl State {
@@ -54,7 +71,7 @@ impl State {
         network: Network,
         volume_size_unit: exchange::SizeUnit,
         cache_market_metadata: bool,
-        antialiasing: bool,
+        boot: BootSettings,
         ai_cfg: super::ai::AiConfig,
         alert_cfg: super::alerts::AlertConfig,
     ) -> Self {
@@ -72,7 +89,7 @@ impl State {
             trade_fetch_enabled: None,
             size_in_quote_ccy: volume_size_unit,
             cache_market_metadata,
-            antialiasing,
+            boot,
             ai_cfg,
             alert_cfg,
             trading_cfg: Default::default(),
@@ -80,22 +97,28 @@ impl State {
     }
 }
 
-const fn default_antialiasing() -> bool {
-    true
-}
-
-fn deserialize_layouts<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Layouts, D::Error> {
+fn deserialize_layouts<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Layouts, D::Error> {
     let mut value = serde_json::Value::deserialize(deserializer)?;
-    if let Some(layouts) = value.get_mut("layouts").and_then(serde_json::Value::as_array_mut) {
+    if let Some(layouts) = value
+        .get_mut("layouts")
+        .and_then(serde_json::Value::as_array_mut)
+    {
         for layout in layouts {
             if let Some(dashboard) = layout.get_mut("dashboard") {
                 if let Some(pane) = dashboard.get_mut("pane") {
-                    crate::layout::pane::migrate_legacy_pane(pane).map_err(serde::de::Error::custom)?;
+                    crate::layout::pane::migrate_legacy_pane(pane)
+                        .map_err(serde::de::Error::custom)?;
                 }
-                if let Some(popouts) = dashboard.get_mut("popout").and_then(serde_json::Value::as_array_mut) {
+                if let Some(popouts) = dashboard
+                    .get_mut("popout")
+                    .and_then(serde_json::Value::as_array_mut)
+                {
                     for popout in popouts {
                         if let Some(pane) = popout.get_mut(0) {
-                            crate::layout::pane::migrate_legacy_pane(pane).map_err(serde::de::Error::custom)?;
+                            crate::layout::pane::migrate_legacy_pane(pane)
+                                .map_err(serde::de::Error::custom)?;
                         }
                     }
                 }
@@ -114,7 +137,7 @@ mod tests {
         let state: State = serde_json::from_str("{}").unwrap();
         assert!(state.alert_cfg.rules.is_empty());
         assert!(state.layout_manager.layouts.is_empty());
-        assert!(state.antialiasing);
+        assert!(state.boot.antialiasing);
     }
 
     #[test]
@@ -131,7 +154,15 @@ mod tests {
         })).unwrap();
         assert_eq!(state.trade_fetch_enabled, Some(true));
         let dashboard = &state.layout_manager.layouts[0].dashboard;
-        assert!(matches!(dashboard.pane, crate::layout::pane::Pane::Split { .. }));
-        assert!(matches!(dashboard.popout[0].0, crate::layout::pane::Pane::AiAnalysisPanel { link_group: Some(crate::layout::pane::LinkGroup::B) }));
+        assert!(matches!(
+            dashboard.pane,
+            crate::layout::pane::Pane::Split { .. }
+        ));
+        assert!(matches!(
+            dashboard.popout[0].0,
+            crate::layout::pane::Pane::AiAnalysisPanel {
+                link_group: Some(crate::layout::pane::LinkGroup::B)
+            }
+        ));
     }
 }

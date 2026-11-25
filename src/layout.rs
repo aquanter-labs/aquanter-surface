@@ -129,7 +129,6 @@ pub struct SavedState {
     pub volume_size_unit: exchange::SizeUnit,
     pub network: data::Network,
     pub cache_market_metadata: bool,
-    pub antialiasing: bool,
     pub ai_cfg: data::config::ai::AiConfig,
     pub alert_cfg: data::config::alerts::AlertConfig,
 }
@@ -162,7 +161,6 @@ impl Default for SavedState {
             volume_size_unit: exchange::SizeUnit::default(),
             network: data::Network::default(),
             cache_market_metadata: false,
-            antialiasing: true,
             ai_cfg: Default::default(),
             alert_cfg: Default::default(),
         }
@@ -393,14 +391,18 @@ pub fn load_saved_state() -> SavedState {
                 let mut popout_windows = Vec::new();
 
                 for (pane, window_spec) in &layout.dashboard.popout {
-                    let configuration = configuration_with_trading(pane.clone(), Some(&state.trading_cfg));
+                    let configuration =
+                        configuration_with_trading(pane.clone(), Some(&state.trading_cfg));
                     popout_windows.push((configuration, *window_spec));
                 }
 
                 let layout_id = Uuid::new_v4();
 
                 let dashboard = Dashboard::from_config(
-                    configuration_with_trading(layout.dashboard.pane.clone(), Some(&state.trading_cfg)),
+                    configuration_with_trading(
+                        layout.dashboard.pane.clone(),
+                        Some(&state.trading_cfg),
+                    ),
                     popout_windows,
                     layout.dashboard.chart_settings,
                 );
@@ -449,7 +451,10 @@ pub fn load_saved_state() -> SavedState {
                 network.proxy = state.proxy_cfg.clone();
             }
             if state.trade_fetch_enabled == Some(true)
-                && matches!(network.trade_fetch_mode, data::config::network::TradeFetchMode::Off)
+                && matches!(
+                    network.trade_fetch_mode,
+                    data::config::network::TradeFetchMode::Off
+                )
             {
                 network.trade_fetch_mode = data::config::network::TradeFetchMode::Exchange;
             }
@@ -480,7 +485,6 @@ pub fn load_saved_state() -> SavedState {
                 volume_size_unit: state.size_in_quote_ccy,
                 network,
                 cache_market_metadata: state.cache_market_metadata,
-                antialiasing: state.antialiasing,
                 ai_cfg: state.ai_cfg,
                 alert_cfg: state.alert_cfg,
             }
