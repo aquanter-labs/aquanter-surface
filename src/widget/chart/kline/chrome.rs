@@ -146,9 +146,10 @@ impl PreparedPanelControls {
                 .interaction
                 .target
                 .corner_control_is_hovered(control.kind);
-            let active = control
-                .kind
-                .is_active(scene.primary.mode, primary_autoscale, footprint_row_fit);
+            let active =
+                control
+                    .kind
+                    .is_active(scene.primary.mode, primary_autoscale, footprint_row_fit);
             buttons.push(ControlPaint::new(
                 control.rect,
                 control.kind.label(scene.primary.mode).to_owned(),

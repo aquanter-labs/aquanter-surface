@@ -1884,19 +1884,43 @@ mod raw_trade_range_tests {
     use super::*;
     use exchange::adapter::Exchange;
     use exchange::unit::Qty;
-    use exchange::{Ticker, TickMultiplier, Timeframe};
+    use exchange::{TickMultiplier, Ticker, Timeframe};
 
     #[test]
     fn raw_trades_in_buckets_keeps_only_the_requested_klines() {
-        let info = TickerInfo::new(Ticker::new("BTCUSDT", Exchange::BinanceLinear), 0.1, 0.001, None);
+        let info = TickerInfo::new(
+            Ticker::new("BTCUSDT", Exchange::BinanceLinear),
+            0.1,
+            0.001,
+            None,
+        );
         let tick = TickMultiplier(10).multiply_with_min_tick_step(info);
-        let mut series =
-            KlineSeries::new_with_basis(info, SeriesColor::default(), Basis::Time(Timeframe::M1), tick);
-        let trade = |ms: u64| Trade { time: ms.into(), is_sell: false, price: Price::from_f64(100.0), qty: Qty::from_f64(1.0) };
-        series.insert_time_trades(&[trade(0), trade(30_000), trade(60_000), trade(119_999), trade(120_000)]);
+        let mut series = KlineSeries::new_with_basis(
+            info,
+            SeriesColor::default(),
+            Basis::Time(Timeframe::M1),
+            tick,
+        );
+        let trade = |ms: u64| Trade {
+            time: ms.into(),
+            is_sell: false,
+            price: Price::from_f64(100.0),
+            qty: Qty::from_f64(1.0),
+        };
+        series.insert_time_trades(&[
+            trade(0),
+            trade(30_000),
+            trade(60_000),
+            trade(119_999),
+            trade(120_000),
+        ]);
 
         let times = |a: u64, b: u64| {
-            series.raw_trades_in_buckets(a.into(), b.into()).unwrap().map(|t| u64::from(t.time)).collect::<Vec<_>>()
+            series
+                .raw_trades_in_buckets(a.into(), b.into())
+                .unwrap()
+                .map(|t| u64::from(t.time))
+                .collect::<Vec<_>>()
         };
         assert_eq!(times(60_000, 60_000), [60_000, 119_999]);
         assert_eq!(times(0, 60_000).len(), 4);

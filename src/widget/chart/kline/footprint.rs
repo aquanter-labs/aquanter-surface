@@ -6,9 +6,9 @@ use super::{CHAR_W, TEXT_SIZE};
 use crate::style;
 use data::chart::kline::footprint::{ClusterKind, KlineTrades};
 use data::chart::kline::poc::{NPoc, PocFillAt};
+use data::chart::kline::pro::QuantityFormat;
 use data::chart::kline::series::KlineSeries;
 use data::chart::kline::viewport::{TickIndex, XAxis};
-use data::chart::kline::pro::QuantityFormat;
 use data::chart::kline::{
     CandlestickColorSlot, CandlestickConfig, FootprintConfig, FootprintPocColorSlot,
 };
@@ -447,8 +447,7 @@ fn draw_footprint_bid_ask_row(
     let text_size = text_mode.size();
     let sell_text =
         (sell_qty > 0.0 && text_size.is_some()).then(|| quantity_format.format(sell_qty));
-    let buy_text =
-        (buy_qty > 0.0 && text_size.is_some()).then(|| quantity_format.format(buy_qty));
+    let buy_text = (buy_qty > 0.0 && text_size.is_some()).then(|| quantity_format.format(buy_qty));
     let text_y = y + text_size.unwrap_or_default() * 0.08;
     let sell_ratio = (sell_qty / max_side_qty).clamp(0.0, 1.0) as f32;
     let buy_ratio = (buy_qty / max_side_qty).clamp(0.0, 1.0) as f32;
@@ -1111,7 +1110,8 @@ impl FootprintRenderer<'_> {
                 }
             });
         }
-        let single_lane = |kind| matches!(kind, ClusterKind::VolumeProfile | ClusterKind::DeltaProfile);
+        let single_lane =
+            |kind| matches!(kind, ClusterKind::VolumeProfile | ClusterKind::DeltaProfile);
         let mut cluster_kind = self.footprint.cluster_kind;
         let mut text_mode = resolve_footprint_text_mode(
             footprint_width,
@@ -1428,6 +1428,10 @@ mod pro_text_tests {
         let two_sided = resolve_footprint_text_mode(40.0, false, false, Some(16.0), 4);
         let delta = resolve_footprint_text_mode(40.0, false, true, Some(16.0), 4);
         assert!(two_sided.size().is_none());
-        assert!(delta.size().is_some_and(|size| size >= FOOTPRINT_TEXT_MIN_SIZE_PX));
+        assert!(
+            delta
+                .size()
+                .is_some_and(|size| size >= FOOTPRINT_TEXT_MIN_SIZE_PX)
+        );
     }
 }

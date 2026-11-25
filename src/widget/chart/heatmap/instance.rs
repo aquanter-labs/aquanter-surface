@@ -246,12 +246,21 @@ impl InstanceBuilder {
                 } else {
                     self.volume_profile_bid_acc[i] += t.qty;
                 }
-
             }
         }
         // Scale by the widest bar: total volume, or |buy - sell| in delta mode.
-        let bar = |buy: Qty, sell: Qty| if delta { buy.abs_diff(sell) } else { buy + sell };
-        for (buy, sell) in self.volume_profile_bid_acc.iter().zip(&self.volume_profile_ask_acc) {
+        let bar = |buy: Qty, sell: Qty| {
+            if delta {
+                buy.abs_diff(sell)
+            } else {
+                buy + sell
+            }
+        };
+        for (buy, sell) in self
+            .volume_profile_bid_acc
+            .iter()
+            .zip(&self.volume_profile_ask_acc)
+        {
             max_total = max_total.max(bar(*buy, *sell));
         }
 
@@ -278,7 +287,11 @@ impl InstanceBuilder {
                 let delta_w = (bar(buy_qty, sell_qty).to_f32_lossy() / max_total_f32)
                     * w.volume_profile_max_width;
                 if delta_w > 0.0 {
-                    let rgb = if buy_qty > sell_qty { palette.buy_rgb } else { palette.sell_rgb };
+                    let rgb = if buy_qty > sell_qty {
+                        palette.buy_rgb
+                    } else {
+                        palette.sell_rgb
+                    };
                     rects.push(RectInstance::volume_profile_split_bar(
                         y_world,
                         delta_w,

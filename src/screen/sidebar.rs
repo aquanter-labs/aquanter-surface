@@ -187,7 +187,8 @@ impl Sidebar {
 
             button_with_tooltip(
                 crate::style::lucide_icon_text(crate::style::LucideIcon::Bell, 14)
-                    .width(24).align_x(Alignment::Center),
+                    .width(24)
+                    .align_x(Alignment::Center),
                 Message::ToggleSidebarMenu(Some(sidebar::Menu::Audio)),
                 Some("Alerts and audio"),
                 tooltip_position,

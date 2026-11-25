@@ -156,8 +156,9 @@ impl State {
         self.streams.find_ready_map(|stream| match stream {
             StreamKind::Kline { ticker_info, .. } => Some(*ticker_info),
             StreamKind::Depth { ticker_info, .. } => Some(*ticker_info),
-            StreamKind::Trades { ticker_info, .. }
-            | StreamKind::Liquidations { ticker_info } => Some(*ticker_info),
+            StreamKind::Trades { ticker_info, .. } | StreamKind::Liquidations { ticker_info } => {
+                Some(*ticker_info)
+            }
         })
     }
 
@@ -210,7 +211,10 @@ impl State {
             self.settings.tick_multiply = None;
         }
 
-        if matches!(kind, ContentKind::Starter | ContentKind::AiAnalysis | ContentKind::Trading) {
+        if matches!(
+            kind,
+            ContentKind::Starter | ContentKind::AiAnalysis | ContentKind::Trading
+        ) {
             if self.content.kind() != kind {
                 self.content = Content::placeholder(kind);
             }
@@ -325,7 +329,9 @@ impl State {
 
                     (content, streams)
                 }
-                ContentKind::Starter | ContentKind::AiAnalysis | ContentKind::Trading => unreachable!(),
+                ContentKind::Starter | ContentKind::AiAnalysis | ContentKind::Trading => {
+                    unreachable!()
+                }
             }
         };
 
@@ -441,7 +447,11 @@ impl State {
                 .height(widget::PANE_CONTROL_BTN_HEIGHT);
 
             top_left_buttons = top_left_buttons.push(tickers_list_btn);
-        } else if !matches!(self.content, Content::Starter | Content::AiAnalysis | Content::Trading(_)) && !self.has_stream() {
+        } else if !matches!(
+            self.content,
+            Content::Starter | Content::AiAnalysis | Content::Trading(_)
+        ) && !self.has_stream()
+        {
             let content = row![
                 text("Choose a ticker")
                     .size(crate::style::text_size::EMPHASIS)
@@ -549,16 +559,24 @@ impl State {
         let base = match &self.content {
             Content::AiAnalysis => {
                 if self.pro_settings {
-                    ai_agent.settings_view().map(move |message| Message::PaneEvent(id, Event::Ai(message)))
+                    ai_agent
+                        .settings_view()
+                        .map(move |message| Message::PaneEvent(id, Event::Ai(message)))
                 } else {
-                    ai_agent.view(timezone).map(move |message| Message::PaneEvent(id, Event::Ai(message)))
+                    ai_agent
+                        .view(timezone)
+                        .map(move |message| Message::PaneEvent(id, Event::Ai(message)))
                 }
             }
             Content::Trading(trader) => {
                 if self.pro_settings {
-                    trader.settings_view().map(move |message| Message::PaneEvent(id, Event::Trading(message)))
+                    trader
+                        .settings_view()
+                        .map(move |message| Message::PaneEvent(id, Event::Trading(message)))
                 } else {
-                    trader.view(timezone).map(move |message| Message::PaneEvent(id, Event::Trading(message)))
+                    trader
+                        .view(timezone)
+                        .map(move |message| Message::PaneEvent(id, Event::Trading(message)))
                 }
             }
             Content::Starter => {
@@ -651,9 +669,8 @@ impl State {
 
                     top_left_buttons = top_left_buttons.push(modifiers);
                     for line in chart.fetch_status_lines() {
-                        top_left_buttons = top_left_buttons.push(
-                            text(line).size(crate::style::text_size::SMALL),
-                        );
+                        top_left_buttons =
+                            top_left_buttons.push(text(line).size(crate::style::text_size::SMALL));
                     }
 
                     chart
@@ -784,7 +801,9 @@ impl State {
         match msg {
             Event::Ai(message) => return Some(Effect::Ai(message)),
             Event::Trading(message) => return Some(Effect::Trading(self.id, message)),
-            Event::ProSettings => { self.pro_settings = !self.pro_settings; }
+            Event::ProSettings => {
+                self.pro_settings = !self.pro_settings;
+            }
             Event::PresetEditor(message) => {
                 let Content::Kline {
                     chart: Some(chart), ..
@@ -810,7 +829,10 @@ impl State {
 
                 self.streams = ResolvedStream::Ready(vec![]);
                 self.pro_settings = false;
-                if !matches!(kind, ContentKind::Starter | ContentKind::AiAnalysis | ContentKind::Trading) {
+                if !matches!(
+                    kind,
+                    ContentKind::Starter | ContentKind::AiAnalysis | ContentKind::Trading
+                ) {
                     self.streams = ResolvedStream::waiting(vec![]);
                     let modal = Modal::MiniTickersList(MiniPanel::new());
 
@@ -995,8 +1017,10 @@ impl State {
                     self.modal = Some(Modal::MiniTickersList(mini_panel.clone()));
 
                     let crate::modal::pane::mini_tickers_list::Action::RowSelected(sel) = action;
-                    if let (RowSelection::Add(ti) | RowSelection::Remove(ti), Content::Kline { chart: Some(c), .. }) =
-                        (&sel, &mut self.content)
+                    if let (
+                        RowSelection::Add(ti) | RowSelection::Remove(ti),
+                        Content::Kline { chart: Some(c), .. },
+                    ) = (&sel, &mut self.content)
                         && c.aggregate_selection().is_some()
                     {
                         c.set_aggregate_source(*ti, matches!(sel, RowSelection::Add(_)));

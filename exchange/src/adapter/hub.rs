@@ -65,7 +65,7 @@ fn encode_trades(trades: &[RawTrade]) -> Vec<u8> {
 }
 
 fn decode_trades(bytes: &[u8]) -> Option<Vec<RawTrade>> {
-    if bytes.len() % CACHED_TRADE_LEN != 0 {
+    if !bytes.len().is_multiple_of(CACHED_TRADE_LEN) {
         return None;
     }
     let word = |c: &[u8], i: usize| <[u8; 8]>::try_from(&c[i..i + 8]).ok();
@@ -89,8 +89,18 @@ mod hour_cache_tests {
     #[test]
     fn hour_cache_round_trips_trades() {
         let trades = vec![
-            RawTrade { time: 42, price: 10.0, qty: 1.0, is_sell: false },
-            RawTrade { time: 43, price: 1.5, qty: 0.25, is_sell: true },
+            RawTrade {
+                time: 42,
+                price: 10.0,
+                qty: 1.0,
+                is_sell: false,
+            },
+            RawTrade {
+                time: 43,
+                price: 1.5,
+                qty: 0.25,
+                is_sell: true,
+            },
         ];
         assert_eq!(decode_trades(&encode_trades(&trades)), Some(trades));
         assert!(decode_trades(&[0; 5]).is_none());
@@ -152,32 +162,67 @@ mod trade_history_tests {
     fn assert_sane(trades: &[Trade], from: UnixMs, until: UnixMs) {
         assert!(!trades.is_empty(), "no trades in range");
         assert!(trades.windows(2).all(|w| w[0].time <= w[1].time));
-        assert!(trades.iter().all(|t| t.time >= from && t.time < until && t.qty.to_f64() > 0.0));
+        assert!(
+            trades
+                .iter()
+                .all(|t| t.time >= from && t.time < until && t.qty.to_f64() > 0.0)
+        );
     }
 
     #[tokio::test]
     #[ignore]
     async fn okx_rest_and_archive_trades() {
         let handle = super::okex::OkexHandle::new(reqwest::Client::new(), None).unwrap();
-        let info = TickerInfo::new(Ticker::new("BTC-USDT-SWAP", Exchange::OkexLinear), 0.1, 0.01, Some(0.01));
+        let info = TickerInfo::new(
+            Ticker::new("BTC-USDT-SWAP", Exchange::OkexLinear),
+            0.1,
+            0.01,
+            Some(0.01),
+        );
         let until = UnixMs::new(UnixMs::now().as_u64() - 60_000);
         let from = UnixMs::new(until.as_u64() - 5_000);
-        assert_sane(&handle.fetch_trades(info, from, until, None).await.unwrap(), from, until);
+        assert_sane(
+            &handle.fetch_trades(info, from, until, None).await.unwrap(),
+            from,
+            until,
+        );
 
         let day = UnixMs::now().floor_to(Timeframe::D1).as_u64() - 2 * 86_400_000;
-        let (from, until) = (UnixMs::new(day + 15 * 3_600_000), UnixMs::new(day + 17 * 3_600_000));
+        let (from, until) = (
+            UnixMs::new(day + 15 * 3_600_000),
+            UnixMs::new(day + 17 * 3_600_000),
+        );
         let dir = std::env::temp_dir().join("flowsurface-okx-test");
-        assert_sane(&handle.fetch_trades(info, from, until, Some(dir)).await.unwrap(), from, until);
+        assert_sane(
+            &handle
+                .fetch_trades(info, from, until, Some(dir))
+                .await
+                .unwrap(),
+            from,
+            until,
+        );
     }
 
     #[tokio::test]
     #[ignore]
     async fn bybit_archive_trades() {
         let handle = super::bybit::BybitHandle::new(reqwest::Client::new(), None).unwrap();
-        let info = TickerInfo::new(Ticker::new("ETCUSDT", Exchange::BybitLinear), 0.001, 0.1, None);
+        let info = TickerInfo::new(
+            Ticker::new("ETCUSDT", Exchange::BybitLinear),
+            0.001,
+            0.1,
+            None,
+        );
         let day = UnixMs::now().floor_to(Timeframe::D1).as_u64() - 86_400_000;
         let (from, until) = (UnixMs::new(day), UnixMs::new(day + 86_400_000));
         let dir = std::env::temp_dir().join("flowsurface-bybit-test");
-        assert_sane(&handle.fetch_trades(info, from, until, Some(dir)).await.unwrap(), from, until);
+        assert_sane(
+            &handle
+                .fetch_trades(info, from, until, Some(dir))
+                .await
+                .unwrap(),
+            from,
+            until,
+        );
     }
 }

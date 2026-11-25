@@ -806,10 +806,9 @@ fn eval_footprint_imbalance(
     }
     context.charge(context.footprint_levels.len())?;
     let ratio = ratio.clamp(1.1, 10.0);
-    let (buy, sell) = context
-        .footprint_levels
-        .iter()
-        .fold((0_u32, 0_u32), |(buy, sell), &(buy_qty, sell_qty)| {
+    let (buy, sell) = context.footprint_levels.iter().fold(
+        (0_u32, 0_u32),
+        |(buy, sell), &(buy_qty, sell_qty)| {
             if buy_qty > 0.0 && buy_qty >= sell_qty * ratio {
                 (buy + 1, sell)
             } else if sell_qty > 0.0 && sell_qty >= buy_qty * ratio {
@@ -817,7 +816,8 @@ fn eval_footprint_imbalance(
             } else {
                 (buy, sell)
             }
-        });
+        },
+    );
     let total = buy + sell;
     Ok(Value::Float(if total == 0 {
         0.0

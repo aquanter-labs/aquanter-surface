@@ -259,7 +259,10 @@ fn available_column(
 }
 
 /// Pro built-ins are config toggles, not catalog indicators, so they sit in their own group.
-fn pro_group_view(chart: &KlineChart, state: &ViewState) -> Option<Element<'static, BrowserMessage>> {
+fn pro_group_view(
+    chart: &KlineChart,
+    state: &ViewState,
+) -> Option<Element<'static, BrowserMessage>> {
     let rows = crate::screen::dashboard::pane::content::kline::settings::pro_indicators::ITEMS
         .iter()
         .filter(|(_, label)| state.matches_query(label))
@@ -282,12 +285,19 @@ fn pro_group_view(chart: &KlineChart, state: &ViewState) -> Option<Element<'stat
     )
 }
 
-fn pro_row(chart: &KlineChart, id: &'static str, label: &'static str) -> Element<'static, BrowserMessage> {
+fn pro_row(
+    chart: &KlineChart,
+    id: &'static str,
+    label: &'static str,
+) -> Element<'static, BrowserMessage> {
     let active = chart.pro_config().is_enabled(id);
     let toggle = picker_button(
-        row![iced::widget::text(label).size(crate::style::text_size::BODY), space::horizontal()]
-            .align_y(Alignment::Center)
-            .width(Length::Fill),
+        row![
+            iced::widget::text(label).size(crate::style::text_size::BODY),
+            space::horizontal()
+        ]
+        .align_y(Alignment::Center)
+        .width(Length::Fill),
         Some(BrowserMessage::TogglePro(id)),
         active,
     );

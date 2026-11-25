@@ -510,7 +510,10 @@ impl DrawingView<'_> {
         start: DrawingAnchor,
         end: DrawingAnchor,
     ) -> Option<(Rectangle, Rectangle)> {
-        let panel_index = self.context.coordinates.panel_index_for_id(start.panel_id)?;
+        let panel_index = self
+            .context
+            .coordinates
+            .panel_index_for_id(start.panel_id)?;
         let scene = self.context.scene;
         if scene.layout.panel(panel_index)?.kind != KlinePanelKind::PrimaryChart {
             return None;
@@ -667,7 +670,7 @@ impl DrawingView<'_> {
                             content: format.format(*buy + *sell),
                             position: Point::new(price_box.x + 3.0, top + height / 2.0),
                             align_x: iced::alignment::Horizontal::Left.into(),
-                            align_y: iced::alignment::Vertical::Center.into(),
+                            align_y: iced::alignment::Vertical::Center,
                             size: (height.min(16.0) - 3.0).max(8.0).into(),
                             color: palette.background.base.text,
                             font: style::AZERET_MONO,
@@ -676,7 +679,11 @@ impl DrawingView<'_> {
                     }
                 }
             }
-            frame.stroke_rectangle(Point::new(price_box.x, price_box.y), price_box.size(), stroke);
+            frame.stroke_rectangle(
+                Point::new(price_box.x, price_box.y),
+                price_box.size(),
+                stroke,
+            );
         });
     }
 

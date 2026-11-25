@@ -974,6 +974,12 @@ impl AdapterHandles {
     }
 }
 
+impl std::hash::Hash for AdapterHandles {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::any::TypeId::of::<Self>().hash(state);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1242,11 +1248,5 @@ mod tests {
                 cap
             );
         }
-    }
-}
-
-impl std::hash::Hash for AdapterHandles {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::any::TypeId::of::<Self>().hash(state);
     }
 }

@@ -890,12 +890,20 @@ pub fn fetch_trades_paged(
                     let mut parsed = client
                         .fetch_trades_arrow(ticker_info, cursor, end, ARROW_LIMIT)
                         .await?;
-                    let next = server_trade_page(&mut parsed.trades, cursor, end, parsed.raw_row_count, parsed.last_ts)?;
+                    let next = server_trade_page(
+                        &mut parsed.trades,
+                        cursor,
+                        end,
+                        parsed.raw_row_count,
+                        parsed.last_ts,
+                    )?;
                     if !parsed.trades.is_empty() {
                         had_data = true;
                         progress.send(parsed.trades).await;
                     }
-                    let Some(next) = next else { break; };
+                    let Some(next) = next else {
+                        break;
+                    };
                     cursor = next;
                 }
             } else {
@@ -992,17 +1000,43 @@ mod trade_window_tests {
     #[test]
     fn full_server_page_refetches_its_last_millisecond() {
         let mut page = trades(&[10, 11, 12, 12]);
-        let next = server_trade_page(&mut page, UnixMs::new(10), UnixMs::new(100), ARROW_LIMIT, Some(UnixMs::new(12))).unwrap();
+        let next = server_trade_page(
+            &mut page,
+            UnixMs::new(10),
+            UnixMs::new(100),
+            ARROW_LIMIT,
+            Some(UnixMs::new(12)),
+        )
+        .unwrap();
         assert_eq!(next, Some(UnixMs::new(12)));
         assert!(page.iter().all(|trade| trade.time < UnixMs::new(12)));
         assert_eq!(page.len(), 2);
 
         let mut last = trades(&[12, 12, 13, 100]);
-        assert_eq!(server_trade_page(&mut last, UnixMs::new(12), UnixMs::new(100), 4, Some(UnixMs::new(100))).unwrap(), None);
+        assert_eq!(
+            server_trade_page(
+                &mut last,
+                UnixMs::new(12),
+                UnixMs::new(100),
+                4,
+                Some(UnixMs::new(100))
+            )
+            .unwrap(),
+            None
+        );
         assert_eq!(last.len(), 3);
 
         let mut stuck = trades(&[12, 12]);
-        assert!(server_trade_page(&mut stuck, UnixMs::new(12), UnixMs::new(100), ARROW_LIMIT, Some(UnixMs::new(12))).is_err());
+        assert!(
+            server_trade_page(
+                &mut stuck,
+                UnixMs::new(12),
+                UnixMs::new(100),
+                ARROW_LIMIT,
+                Some(UnixMs::new(12))
+            )
+            .is_err()
+        );
     }
 
     const DAY: u64 = 86_400_000;
@@ -1021,7 +1055,13 @@ mod trade_window_tests {
         }
         assert_eq!(
             starts,
-            vec![10 * DAY + 90_000, 10 * DAY + 30_000, 10 * DAY, 9 * DAY, 8 * DAY + 5]
+            vec![
+                10 * DAY + 90_000,
+                10 * DAY + 30_000,
+                10 * DAY,
+                9 * DAY,
+                8 * DAY + 5
+            ]
         );
     }
 }

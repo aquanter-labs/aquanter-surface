@@ -107,7 +107,10 @@ impl Content {
         match kind {
             ContentKind::Starter => Content::Starter,
             ContentKind::AiAnalysis => Content::AiAnalysis,
-            ContentKind::Trading => Content::Trading(Box::new(crate::trading::Trader::new(Default::default(), None))),
+            ContentKind::Trading => Content::Trading(Box::new(crate::trading::Trader::new(
+                Default::default(),
+                None,
+            ))),
             ContentKind::CandlestickChart => Content::Kline {
                 chart: None,
                 layout: None,
@@ -199,7 +202,10 @@ impl Content {
         match self {
             Content::Kline { .. } => Some(250),
             Content::Ladder(_) | Content::TimeAndSales(_) => Some(100),
-            Content::ShaderHeatmap(_) | Content::Starter | Content::AiAnalysis | Content::Trading(_) => None,
+            Content::ShaderHeatmap(_)
+            | Content::Starter
+            | Content::AiAnalysis
+            | Content::Trading(_) => None,
         }
     }
 
@@ -325,7 +331,9 @@ impl Content {
 
     pub fn ingest_live_depth(&mut self, stream: &StreamKind, depth: &Depth, update_t: UnixMs) {
         match self {
-            Self::Kline { chart: Some(chart), .. } => {
+            Self::Kline {
+                chart: Some(chart), ..
+            } => {
                 if chart.base_ticker_info() == stream.ticker_info() {
                     let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
                     chart.insert_depth(depth, Some(now.saturating_sub(update_t.as_u64())));

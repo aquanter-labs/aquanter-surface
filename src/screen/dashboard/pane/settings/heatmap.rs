@@ -179,9 +179,9 @@ pub fn heatmap_shader_cfg_view<'a>(
         if enabled {
             let settings: Option<iced::Element<'_, Message>> = match kind {
                 HeatmapIndicator::Volume => None,
-                HeatmapIndicator::VolumeProfile => indicators
-                    .volume_profile
-                    .map(|kind| volume_profile_controls(kind, indicators.volume_profile_delta, basis)),
+                HeatmapIndicator::VolumeProfile => indicators.volume_profile.map(|kind| {
+                    volume_profile_controls(kind, indicators.volume_profile_delta, basis)
+                }),
 
                 HeatmapIndicator::Spread => Some(
                     column![
@@ -300,9 +300,11 @@ fn volume_profile_controls<'a>(
             on_change
         ),
         radio(fixed_window_label, fixed_window, Some(kind), on_change),
-        checkbox(delta).label("Delta (buy - sell)").on_toggle(|delta| {
-            Message::HeatmapIndicator(HeatmapIndicatorMessage::VolumeProfileDelta(delta))
-        }),
+        checkbox(delta)
+            .label("Delta (buy - sell)")
+            .on_toggle(|delta| {
+                Message::HeatmapIndicator(HeatmapIndicatorMessage::VolumeProfileDelta(delta))
+            }),
     ]
     .spacing(4);
 

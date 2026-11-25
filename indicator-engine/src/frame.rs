@@ -374,7 +374,9 @@ fn trade_int(trade: Option<TradeAggregate>, value: impl FnOnce(TradeAggregate) -
 }
 
 fn trade_poc(trade: Option<TradeAggregate>) -> Value {
-    trade.and_then(|trade| trade.poc).map_or(Value::Na, Value::Float)
+    trade
+        .and_then(|trade| trade.poc)
+        .map_or(Value::Na, Value::Float)
 }
 
 fn trade_value(trade: Option<TradeAggregate>) -> Value {

@@ -674,7 +674,9 @@ impl HeatmapShader {
         match message {
             HeatmapIndicatorMessage::SpreadUnit(unit) => config.spread_unit = unit,
             HeatmapIndicatorMessage::VolumeProfile(kind) => config.volume_profile = Some(kind),
-            HeatmapIndicatorMessage::VolumeProfileDelta(delta) => config.volume_profile_delta = delta,
+            HeatmapIndicatorMessage::VolumeProfileDelta(delta) => {
+                config.volume_profile_delta = delta
+            }
             HeatmapIndicatorMessage::Enabled(kind, enabled) => config.set_enabled(kind, enabled),
             HeatmapIndicatorMessage::DistanceEdited(value) => {
                 self.depth_distance_input = value;
@@ -869,9 +871,10 @@ impl HeatmapShader {
 
         let since = effective_window.latest_vis.saturating_sub(5 * 60_000);
         let mut counts = [0usize; 4];
-        for mark in strong_marks.iter().filter(|mark| {
-            (since..=effective_window.latest_vis).contains(&mark.time.as_u64())
-        }) {
+        for mark in strong_marks
+            .iter()
+            .filter(|mark| (since..=effective_window.latest_vis).contains(&mark.time.as_u64()))
+        {
             let absorbed = mark.event == data::chart::walls::WallEvent::Absorbed;
             counts[usize::from(absorbed) * 2 + usize::from(!mark.is_bid)] += 1;
         }
@@ -887,7 +890,8 @@ impl HeatmapShader {
                 .filter(|mark| {
                     (effective_window.earliest..=effective_window.latest_vis)
                         .contains(&mark.time.as_u64())
-                        && (effective_window.lowest..=effective_window.highest).contains(&mark.price)
+                        && (effective_window.lowest..=effective_window.highest)
+                            .contains(&mark.price)
                 })
                 .map(|mark| {
                     CircleInstance::wall_marker(

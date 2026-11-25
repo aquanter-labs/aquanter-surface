@@ -90,7 +90,9 @@ impl KlineData {
         let end = series.time_index_range(UnixMs(0), time).end;
         let point = series.point_at(end.checked_sub(1)?)?;
         let k = point.kline;
-        let latest = series.latest_point().is_some_and(|l| l.index == point.index);
+        let latest = series
+            .latest_point()
+            .is_some_and(|l| l.index == point.index);
         Some(if latest {
             k.close.to_f64()
         } else {
@@ -791,40 +793,91 @@ mod aggregate_tests {
     use crate::chart::Basis;
     use exchange::adapter::Exchange;
     use exchange::unit::{Price, Qty};
-    use exchange::{Kline, Ticker, TickMultiplier, TickerInfo, Timeframe, Trade, Volume};
+    use exchange::{Kline, TickMultiplier, Ticker, TickerInfo, Timeframe, Trade, Volume};
 
     #[test]
     fn source_trades_retarget_to_base_and_drop_mismatched_prices() {
-        let base = TickerInfo::new(Ticker::new("BTCUSDT", Exchange::BinanceLinear), 0.1, 0.001, None);
-        let source =
-            TickerInfo::new(Ticker::new("BTC-USDT-SWAP", Exchange::OkexLinear), 0.1, 0.01, Some(0.01));
+        let base = TickerInfo::new(
+            Ticker::new("BTCUSDT", Exchange::BinanceLinear),
+            0.1,
+            0.001,
+            None,
+        );
+        let source = TickerInfo::new(
+            Ticker::new("BTC-USDT-SWAP", Exchange::OkexLinear),
+            0.1,
+            0.01,
+            Some(0.01),
+        );
         let basis = Basis::Time(Timeframe::M1);
         let mut data = KlineData::new(base, TickMultiplier(1));
         data.add_ticker(base, basis);
-        let kline = Kline::new(0u64, 100.0, 100.0, 100.0, 100.0, Volume::TotalOnly(Qty::from_f64(1.0)), base.min_ticksize);
+        let kline = Kline::new(
+            0u64,
+            100.0,
+            100.0,
+            100.0,
+            100.0,
+            Volume::TotalOnly(Qty::from_f64(1.0)),
+            base.min_ticksize,
+        );
         data.insert_historical_klines(base, &[kline], basis);
-        let trade = |price| Trade { time: 1u64.into(), is_sell: false, price: Price::from_f64(price), qty: Qty::from_f64(1.0) };
+        let trade = |price| Trade {
+            time: 1u64.into(),
+            is_sell: false,
+            price: Price::from_f64(price),
+            qty: Qty::from_f64(1.0),
+        };
 
-        assert!(data.aggregate_source_trades(&source, &[trade(100.0)]).is_none());
+        assert!(
+            data.aggregate_source_trades(&source, &[trade(100.0)])
+                .is_none()
+        );
         data.set_aggregate_sources(vec![source], false);
         let (target, trades) = data
             .aggregate_source_trades(&source, &[trade(101.0), trade(100_000.0)])
             .expect("source trades are re-targeted");
         assert_eq!(target, base);
         assert_eq!(trades.len(), 1);
-        assert!(data.aggregate_source_trades(&base, &[trade(100.0)]).is_none());
+        assert!(
+            data.aggregate_source_trades(&base, &[trade(100.0)])
+                .is_none()
+        );
     }
 
     #[test]
     fn basis_adjust_shifts_source_prices_onto_base() {
-        let base = TickerInfo::new(Ticker::new("BTCUSDT", Exchange::BinanceLinear), 0.1, 0.001, None);
-        let source = TickerInfo::new(Ticker::new("BTCUSDT", Exchange::BinanceSpot), 0.1, 0.001, None);
+        let base = TickerInfo::new(
+            Ticker::new("BTCUSDT", Exchange::BinanceLinear),
+            0.1,
+            0.001,
+            None,
+        );
+        let source = TickerInfo::new(
+            Ticker::new("BTCUSDT", Exchange::BinanceSpot),
+            0.1,
+            0.001,
+            None,
+        );
         let basis = Basis::Time(Timeframe::M1);
         let mut data = KlineData::new(base, TickMultiplier(1));
         data.add_ticker(base, basis);
-        let kline = Kline::new(0u64, 100.0, 100.0, 100.0, 100.0, Volume::TotalOnly(Qty::from_f64(1.0)), base.min_ticksize);
+        let kline = Kline::new(
+            0u64,
+            100.0,
+            100.0,
+            100.0,
+            100.0,
+            Volume::TotalOnly(Qty::from_f64(1.0)),
+            base.min_ticksize,
+        );
         data.insert_historical_klines(base, &[kline], basis);
-        let trade = |price| Trade { time: 1u64.into(), is_sell: false, price: Price::from_f64(price), qty: Qty::from_f64(1.0) };
+        let trade = |price| Trade {
+            time: 1u64.into(),
+            is_sell: false,
+            price: Price::from_f64(price),
+            qty: Qty::from_f64(1.0),
+        };
 
         // Source trades 5 above the base close; adjusted, they land on the base price.
         data.set_aggregate_sources(vec![source], true);
@@ -835,7 +888,9 @@ mod aggregate_tests {
 
         // Off: raw prices pass through.
         data.set_aggregate_sources(vec![source], false);
-        let (_, trades) = data.aggregate_source_trades(&source, &[trade(105.0)]).unwrap();
+        let (_, trades) = data
+            .aggregate_source_trades(&source, &[trade(105.0)])
+            .unwrap();
         assert_eq!(trades[0].price, Price::from_f64(105.0));
     }
 }

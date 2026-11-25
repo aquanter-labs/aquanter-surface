@@ -320,7 +320,10 @@ impl KlineChart {
                 return action;
             }
             Message::Drawing(message) => {
-                if matches!(message, drawing::Event::Tools(DrawingMessage::DeleteAllDrawings)) {
+                if matches!(
+                    message,
+                    drawing::Event::Tools(DrawingMessage::DeleteAllDrawings)
+                ) {
                     self.clear_ai_annotation();
                 }
                 let update = self.drawings.update(message, &mut chart_settings.drawing);
@@ -1447,10 +1450,8 @@ impl KlineChart {
         let Some(price) = price.filter(|price| price.is_finite() && *price > 0.0) else {
             return;
         };
-        let next = TickMultiplier::matching_price(
-            self.data.base_ticker().min_ticksize.as_f64(),
-            price,
-        );
+        let next =
+            TickMultiplier::matching_price(self.data.base_ticker().min_ticksize.as_f64(), price);
         // One-shot default: re-aligning on live klines flipped the step near 1-2-5 boundaries.
         self.tick_step_automatic = false;
         self.apply_tick_multiplier(next);
@@ -1926,7 +1927,9 @@ impl KlineChart {
             .instances
             .instances()
             .iter()
-            .filter(|instance| data::chart::kline::pro::ProConfig::is_retired_indicator(instance.kind.id()))
+            .filter(|instance| {
+                data::chart::kline::pro::ProConfig::is_retired_indicator(instance.kind.id())
+            })
             .map(|instance| instance.id)
             .collect::<Vec<_>>();
         for id in retired {
@@ -2040,8 +2043,12 @@ impl KlineChart {
     fn data_requirements(&self) -> DataRequirements {
         let mut requirements = self.consumer_data_requirements();
         if let Basis::Time(timeframe) = self.basis {
-            requirements.open_interest |= self.data.base_ticker().exchange()
-                .open_interest_source_timeframe(timeframe).is_some();
+            requirements.open_interest |= self
+                .data
+                .base_ticker()
+                .exchange()
+                .open_interest_source_timeframe(timeframe)
+                .is_some();
         }
         requirements.trades |= self.options.trade_data_requested || self.options.footprint.visible;
         requirements
@@ -2173,7 +2180,9 @@ impl KlineChart {
     /// Pro: adds or removes one aggregation source.
     pub fn set_aggregate_source(&mut self, source: TickerInfo, add: bool) {
         let mut config = self.options.pro.clone();
-        config.aggregate_sources.retain(|picked| picked.ticker != source.ticker);
+        config
+            .aggregate_sources
+            .retain(|picked| picked.ticker != source.ticker);
         if add && source.ticker != self.data.base_ticker().ticker {
             config.aggregate_sources.push(source);
         }
@@ -2184,10 +2193,10 @@ impl KlineChart {
     /// A changed source set invalidates merged order flow: reload like a basis change.
     // ponytail: full reload even when sources are only added; refetch just the new sources' history if reloads get annoying.
     fn sync_aggregate_sources(&mut self) {
-        if !self
-            .data
-            .set_aggregate_sources(self.aggregate_peers(), self.options.pro.aggregate_basis_adjust)
-        {
+        if !self.data.set_aggregate_sources(
+            self.aggregate_peers(),
+            self.options.pro.aggregate_basis_adjust,
+        ) {
             return;
         }
         self.data.reset_for_basis(self.basis, false);

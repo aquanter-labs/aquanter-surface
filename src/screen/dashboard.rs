@@ -112,8 +112,7 @@ impl Dashboard {
         self.iter_all_panes(main_window)
             .filter_map(|(_, _, state)| match &state.content {
                 pane::Content::Kline {
-                    chart: Some(chart),
-                    ..
+                    chart: Some(chart), ..
                 } if ai_group.is_none() || state.link_group == ai_group => {
                     let ticker_info = chart.base_ticker_info();
                     let chart_kind = "Kline";
@@ -140,10 +139,10 @@ impl Dashboard {
         self.iter_all_panes(main_window)
             .filter_map(|(_, _, state)| match &state.content {
                 pane::Content::Kline {
-                    chart: Some(chart),
-                    ..
+                    chart: Some(chart), ..
                 } => {
-                    let (symbol, market) = chart.base_ticker_info().ticker.display_symbol_and_type();
+                    let (symbol, market) =
+                        chart.base_ticker_info().ticker.display_symbol_and_type();
                     let (market_latency_ms, best_bid, best_ask) = chart.trading_market_info();
                     let chart_kind = "Kline";
                     Some(crate::trading::ChartSource {
@@ -276,8 +275,7 @@ impl Dashboard {
             .iter_all_panes(main_window)
             .filter_map(|(_, _, state)| match &state.content {
                 pane::Content::Kline {
-                    chart: Some(chart),
-                    ..
+                    chart: Some(chart), ..
                 } => {
                     let ticker = chart.base_ticker_info().ticker.to_string();
                     let kind = "Kline";
@@ -374,7 +372,7 @@ impl Dashboard {
         let selected = source_pane.and_then(|source_pane| {
             self.iter_all_panes(main_window).find_map(|(_, _, state)| {
                 (state.unique_id() == source_pane)
-                    .then(|| match &state.content {
+                    .then_some(match &state.content {
                         pane::Content::Kline {
                             chart: Some(chart), ..
                         } => Some(chart),
@@ -632,8 +630,10 @@ impl Dashboard {
                                 state.link_group = group;
                                 state.modal = None;
 
-                                if !matches!(state.content, pane::Content::AiAnalysis | pane::Content::Trading(_))
-                                    && let Some(ticker_info) = maybe_ticker_info
+                                if !matches!(
+                                    state.content,
+                                    pane::Content::AiAnalysis | pane::Content::Trading(_)
+                                ) && let Some(ticker_info) = maybe_ticker_info
                                     && state.stream_pair() != Some(ticker_info)
                                 {
                                     Some((ticker_info, state.content.kind()))
@@ -1371,14 +1371,21 @@ impl Dashboard {
     }
 
     pub fn ingest_liquidations(
-        &mut self, stream: &StreamKind, liquidations: &[exchange::Liquidation], main_window: window::Id,
+        &mut self,
+        stream: &StreamKind,
+        liquidations: &[exchange::Liquidation],
+        main_window: window::Id,
     ) -> Task<Message> {
-        self.iter_all_panes_mut(main_window).for_each(|(_, _, state)| {
-            if state.matches_stream(stream)
-                && let pane::Content::Kline { chart: Some(chart), .. } = &mut state.content {
-                chart.insert_liquidations(liquidations);
-            }
-        });
+        self.iter_all_panes_mut(main_window)
+            .for_each(|(_, _, state)| {
+                if state.matches_stream(stream)
+                    && let pane::Content::Kline {
+                        chart: Some(chart), ..
+                    } = &mut state.content
+                {
+                    chart.insert_liquidations(liquidations);
+                }
+            });
         Task::none()
     }
 
@@ -1521,7 +1528,10 @@ impl Dashboard {
         }
     }
 
-    pub fn market_subscriptions(streams: &UniqueStreams, handles: &AdapterHandles) -> Subscription<exchange::Event> {
+    pub fn market_subscriptions(
+        streams: &UniqueStreams,
+        handles: &AdapterHandles,
+    ) -> Subscription<exchange::Event> {
         let unique_streams = streams
             .combined_used()
             .flat_map(|(exchange, specs)| {
@@ -1577,9 +1587,16 @@ impl Dashboard {
                 }
 
                 for ticker in &specs.liquidation {
-                    let config = StreamConfig::new(vec![*ticker], exchange, None, PushFrequency::ServerDefault);
+                    let config = StreamConfig::new(
+                        vec![*ticker],
+                        exchange,
+                        None,
+                        PushFrequency::ServerDefault,
+                    );
                     let data = (handles.clone(), config);
-                    subs.push(Subscription::run_with(data, |data| data.0.liquidation_stream(&data.1)));
+                    subs.push(Subscription::run_with(data, |data| {
+                        data.0.liquidation_stream(&data.1)
+                    }));
                 }
                 if !specs.kline.is_empty() {
                     let kline_subs = specs

@@ -183,7 +183,9 @@ pub fn settle_due(
         .filter(|c| c.is_open() && c.symbol == symbol && c.expiry_ms <= now_ms)
     {
         contract.settle_price = Some(price);
-        let back = contract.pnl().map_or(0.0, |pnl| (contract.stake + pnl).max(0.0));
+        let back = contract
+            .pnl()
+            .map_or(0.0, |pnl| (contract.stake + pnl).max(0.0));
         *credit.get_or_insert(0.0) += back;
     }
     credit
@@ -194,7 +196,10 @@ mod tests {
     use super::*;
 
     fn opened(contracts: &[EventContract], up: bool, duration: EventDuration) -> EventContract {
-        open(contracts, "BTCUSDT", up, duration, 100.0, 50_000.0, 1_000, 10_000.0).unwrap()
+        open(
+            contracts, "BTCUSDT", up, duration, 100.0, 50_000.0, 1_000, 10_000.0,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -208,11 +213,23 @@ mod tests {
         assert_eq!(settle_due(&mut contracts, "BTCUSDT", 50_100.0, 1_000), None);
         // At 10m only the 10m contract settles: up and price rose -> 100 + 80.
         let ten = 1_000 + EventDuration::M10.ms();
-        assert_eq!(settle_due(&mut contracts, "BTCUSDT", 50_100.0, ten), Some(180.0));
+        assert_eq!(
+            settle_due(&mut contracts, "BTCUSDT", 50_100.0, ten),
+            Some(180.0)
+        );
         // At 1h: down loses on a rise (0 back), up ties at the open price and loses too.
         let hour = 1_000 + EventDuration::H1.ms();
-        assert_eq!(settle_due(&mut contracts, "BTCUSDT", 50_000.0, hour), Some(0.0));
-        assert_eq!(contracts.iter().map(|c| c.pnl().unwrap()).collect::<Vec<_>>(), [80.0, -100.0, -100.0]);
+        assert_eq!(
+            settle_due(&mut contracts, "BTCUSDT", 50_000.0, hour),
+            Some(0.0)
+        );
+        assert_eq!(
+            contracts
+                .iter()
+                .map(|c| c.pnl().unwrap())
+                .collect::<Vec<_>>(),
+            [80.0, -100.0, -100.0]
+        );
 
         contracts.push(opened(&[], true, EventDuration::M10));
         let s = stats(&contracts);
@@ -222,12 +239,37 @@ mod tests {
 
     #[test]
     fn open_enforces_limits() {
-        let ok = |stake, available| open(&[], "BTCUSDT", true, EventDuration::M10, stake, 1.0, 0, available);
+        let ok = |stake, available| {
+            open(
+                &[],
+                "BTCUSDT",
+                true,
+                EventDuration::M10,
+                stake,
+                1.0,
+                0,
+                available,
+            )
+        };
         assert!(ok(250.0, 1_000.0).is_ok());
         assert!(ok(251.0, 1_000.0).is_err());
         assert!(ok(4.0, 1_000.0).is_err());
         assert!(ok(100.0, 50.0).is_err());
-        let five = (0..MAX_OPEN).map(|_| opened(&[], true, EventDuration::M10)).collect::<Vec<_>>();
-        assert!(open(&five, "BTCUSDT", true, EventDuration::M10, 10.0, 1.0, 0, 1_000.0).is_err());
+        let five = (0..MAX_OPEN)
+            .map(|_| opened(&[], true, EventDuration::M10))
+            .collect::<Vec<_>>();
+        assert!(
+            open(
+                &five,
+                "BTCUSDT",
+                true,
+                EventDuration::M10,
+                10.0,
+                1.0,
+                0,
+                1_000.0
+            )
+            .is_err()
+        );
     }
 }

@@ -421,19 +421,28 @@ pub(super) async fn fetch_trades(
         ticker_info,
         raw_qty_unit_from_market_type(market),
     );
-    let mut reader = csv::Reader::from_reader(std::io::BufReader::new(
-        flate2::read::GzDecoder::new(file),
-    ));
+    let mut reader =
+        csv::Reader::from_reader(std::io::BufReader::new(flate2::read::GzDecoder::new(file)));
     let mut trades = reader
         .records()
         .filter_map(|record| {
             let record = record.ok()?;
             // spot: id,timestamp(ms),price,volume,side; perps: timestamp(s),symbol,side,size,price
             let (time, side, price, qty) = if is_spot {
-                (record.get(1)?.parse::<u64>().ok()?, record.get(4)?, record.get(2)?, record.get(3)?)
+                (
+                    record.get(1)?.parse::<u64>().ok()?,
+                    record.get(4)?,
+                    record.get(2)?,
+                    record.get(3)?,
+                )
             } else {
                 let seconds = record.get(0)?.parse::<f64>().ok()?;
-                ((seconds * 1000.0).round() as u64, record.get(2)?, record.get(4)?, record.get(3)?)
+                (
+                    (seconds * 1000.0).round() as u64,
+                    record.get(2)?,
+                    record.get(4)?,
+                    record.get(3)?,
+                )
             };
             let price = price.parse::<f64>().ok()?;
             Some(crate::Trade {

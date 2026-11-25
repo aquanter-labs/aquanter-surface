@@ -34,8 +34,15 @@ impl UserTimezone {
     /// Every selectable timezone: UTC, the system zone, then the IANA regional zones.
     pub fn all() -> Vec<Self> {
         const REGIONS: [&str; 9] = [
-            "Africa/", "America/", "Antarctica/", "Asia/", "Atlantic/", "Australia/", "Europe/",
-            "Indian/", "Pacific/",
+            "Africa/",
+            "America/",
+            "Antarctica/",
+            "Asia/",
+            "Atlantic/",
+            "Australia/",
+            "Europe/",
+            "Indian/",
+            "Pacific/",
         ];
         let mut named = chrono_tz::TZ_VARIANTS
             .iter()
@@ -260,7 +267,11 @@ impl fmt::Display for UserTimezone {
                 write!(f, "Local (UTC {hours:+03}:{minutes:02})")
             }
             UserTimezone::Named(tz) => {
-                let offset = chrono::Utc::now().with_timezone(tz).offset().fix().local_minus_utc();
+                let offset = chrono::Utc::now()
+                    .with_timezone(tz)
+                    .offset()
+                    .fix()
+                    .local_minus_utc();
                 let (hours, minutes) = (offset / 3600, (offset.abs() % 3600) / 60);
                 write!(f, "{} (UTC {hours:+03}:{minutes:02})", tz.name())
             }
@@ -309,7 +320,10 @@ mod named_zone_tests {
         // 2026-01-15 12:00 UTC is EST (-5); 2026-07-15 12:00 UTC is EDT (-4).
         let winter = tz.format_with_kind(1_768_478_400_000, super::TimeLabelKind::Custom("%H"));
         let summer = tz.format_with_kind(1_784_116_800_000, super::TimeLabelKind::Custom("%H"));
-        assert_eq!((winter.as_deref(), summer.as_deref()), (Some("07"), Some("08")));
+        assert_eq!(
+            (winter.as_deref(), summer.as_deref()),
+            (Some("07"), Some("08"))
+        );
         assert!(UserTimezone::all().contains(&tz));
     }
 }

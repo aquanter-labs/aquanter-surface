@@ -2547,10 +2547,16 @@ fn normalize_analysis_for_mode(content: &str, mode: AnalysisMode) -> Result<Stri
             .and_then(Value::as_str)
             .unwrap_or_default();
         let consistent = match action {
-            "LONG" => bullish >= 55.0 && bullish - bearish >= 10.0
-                && matches!(state, "READY" | "TRIGGER_PENDING"),
-            "SHORT" => bearish >= 55.0 && bearish - bullish >= 10.0
-                && matches!(state, "READY" | "TRIGGER_PENDING"),
+            "LONG" => {
+                bullish >= 55.0
+                    && bullish - bearish >= 10.0
+                    && matches!(state, "READY" | "TRIGGER_PENDING")
+            }
+            "SHORT" => {
+                bearish >= 55.0
+                    && bearish - bullish >= 10.0
+                    && matches!(state, "READY" | "TRIGGER_PENDING")
+            }
             "WAIT" => {
                 ((bullish < 55.0 && bearish < 55.0) || (bullish - bearish).abs() < 10.0)
                     && state == "NO_EDGE"
@@ -2559,8 +2565,10 @@ fn normalize_analysis_for_mode(content: &str, mode: AnalysisMode) -> Result<Stri
             _ => false,
         };
         if !consistent {
-            return Err("Action, scores, and execution_state conflict with the decision policy."
-                .to_string());
+            return Err(
+                "Action, scores, and execution_state conflict with the decision policy."
+                    .to_string(),
+            );
         }
     }
     match action {
@@ -2869,8 +2877,10 @@ mod tests {
         );
         assert!(system_prompt(AnalysisMode::NextCandle).contains("Do not return WAIT"));
 
-        let mut agent = Agent::default();
-        agent.mode = AnalysisMode::NextCandle;
+        let mut agent = Agent {
+            mode: AnalysisMode::NextCandle,
+            ..Agent::default()
+        };
         drop(agent.update(
             Message::AnalysisCompleted(Ok(r#"{"action":"WAIT"}"#.to_string())),
             None,

@@ -457,10 +457,23 @@ pub(super) async fn fetch_trades(
         let (inst_id, market) = ticker_info.ticker.to_full_symbol_and_type();
         let cache_dir = data_path.map(|path| path.join(&inst_id));
         let qty_norm = okx_trade_qty_norm(ticker_info, market);
-        let raw = okx_rest_cached(hub, &inst_id, rest_from.as_u64(), until.as_u64(), cache_dir.as_deref())
-            .await?;
+        let raw = okx_rest_cached(
+            hub,
+            &inst_id,
+            rest_from.as_u64(),
+            until.as_u64(),
+            cache_dir.as_deref(),
+        )
+        .await?;
         trades.extend(raw.into_iter().map(|t| {
-            okx_trade(ticker_info, qty_norm, t.time, if t.is_sell { "sell" } else { "buy" }, t.price, t.qty)
+            okx_trade(
+                ticker_info,
+                qty_norm,
+                t.time,
+                if t.is_sell { "sell" } else { "buy" },
+                t.price,
+                t.qty,
+            )
         }));
     }
     trades.sort_by_key(|trade| trade.time);
@@ -541,7 +554,11 @@ async fn okx_rest_cached(
             }
         };
         let end = (hour + HOUR_MS).min(until);
-        trades.extend(hour_trades.into_iter().filter(|x| x.time >= t && x.time < end));
+        trades.extend(
+            hour_trades
+                .into_iter()
+                .filter(|x| x.time >= t && x.time < end),
+        );
         t = hour + HOUR_MS;
     }
     Ok(trades)
@@ -558,9 +575,8 @@ async fn okx_rest_raw(
     // Newest first: start below `until` by time, then walk back by trade id.
     let mut cursor = format!("type=2&after={until}");
     loop {
-        let url = format!(
-            "{REST_API_BASE}/market/history-trades?instId={inst_id}&limit={PAGE}&{cursor}"
-        );
+        let url =
+            format!("{REST_API_BASE}/market/history-trades?instId={inst_id}&limit={PAGE}&{cursor}");
         let doc: Value = hub.http_json_with_limiter(&url, 1, None, None).await?;
         if doc["code"].as_str() != Some("0") {
             return Err(AdapterError::ParseError(format!(
@@ -568,7 +584,10 @@ async fn okx_rest_raw(
                 doc["msg"], doc["code"]
             )));
         }
-        let rows = doc["data"].as_array().map(Vec::as_slice).unwrap_or_default();
+        let rows = doc["data"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
         let mut reached_start = false;
         for row in rows {
             let Some(time) = row["ts"].as_str().and_then(|ts| ts.parse::<u64>().ok()) else {
@@ -583,12 +602,19 @@ async fn okx_rest_raw(
             if let (Some(price), Some(size), Some(side)) = (price, size, row["side"].as_str())
                 && time < until
             {
-                trades.push(RawTrade { time, price, qty: size, is_sell: side.eq_ignore_ascii_case("sell") });
+                trades.push(RawTrade {
+                    time,
+                    price,
+                    qty: size,
+                    is_sell: side.eq_ignore_ascii_case("sell"),
+                });
             }
         }
         let last_id = rows.last().and_then(|row| row["tradeId"].as_str());
         match last_id {
-            Some(id) if !reached_start && rows.len() >= PAGE => cursor = format!("type=1&after={id}"),
+            Some(id) if !reached_start && rows.len() >= PAGE => {
+                cursor = format!("type=1&after={id}")
+            }
             _ => break,
         }
     }

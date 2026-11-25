@@ -802,9 +802,7 @@ impl DrawingObject {
         match self {
             Self::Trendline { start, end }
             | Self::Box { start, end, .. }
-            | Self::VolumeProfile { start, end } => {
-                start.x.compatible(x) && end.x.compatible(x)
-            }
+            | Self::VolumeProfile { start, end } => start.x.compatible(x) && end.x.compatible(x),
             Self::HorizontalLine { x: origin, .. } | Self::VerticalLine { x: origin } => {
                 origin.compatible(x)
             }

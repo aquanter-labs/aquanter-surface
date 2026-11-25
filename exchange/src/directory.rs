@@ -58,7 +58,10 @@ mod tests {
         assert_eq!(key("BTC-USDT-SWAP", Exchange::OkexLinear), btc_perps);
         assert_eq!(key("BTC_USDT", Exchange::MexcLinear), btc_perps);
         assert_eq!(key("BTC", Exchange::HyperliquidLinear), btc_perps);
-        assert_eq!(key("BTCUSDT", Exchange::BybitSpot), Some(("BTC".to_owned(), true)));
+        assert_eq!(
+            key("BTCUSDT", Exchange::BybitSpot),
+            Some(("BTC".to_owned(), true))
+        );
         assert_eq!(key("BTCUSD_270326", Exchange::BinanceInverse), None);
         assert_eq!(key("BTC-USD-261225", Exchange::OkexInverse), None);
     }

@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![allow(clippy::large_enum_variant)] // ponytail: iced Message/state enums, boxing every variant buys nothing
 
 mod ai;
 mod alerts;

@@ -397,7 +397,9 @@ where
             data_path,
             reply,
         } => {
-            let result = handler.fetch_trades(ticker, from_time, until, data_path).await;
+            let result = handler
+                .fetch_trades(ticker, from_time, until, data_path)
+                .await;
             let _ = reply.send(result);
         }
     }

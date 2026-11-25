@@ -264,7 +264,10 @@ pub(crate) fn order_book_strip_width(plot_width: f32) -> f32 {
 pub struct KlineWidget<'a> {
     pro_annotations: &'a [crate::ai::ChartAnnotation],
     pro_trading: Option<&'a crate::trading::PositionOverlay>,
-    pro_market: Option<(&'a data::chart::kline::pro::ProConfig, &'a exchange::depth::Depth)>,
+    pro_market: Option<(
+        &'a data::chart::kline::pro::ProConfig,
+        &'a exchange::depth::Depth,
+    )>,
     pro_liquidations: &'a [exchange::Liquidation],
     series: &'a [KlineSeries],
     indicator_host: &'a IndicatorHost,
@@ -689,15 +692,17 @@ impl<'a> KlineWidget<'a> {
                 | CanvasLayer::SeriesPlots
                 | CanvasLayer::PriceBars => {
                     for clip in self.pro_panel_clips(scene, true) {
-                        inputs.with_clip(clip, |inputs| self.plot_renderer().paint(
-                            inputs,
-                            scene,
-                            &state.study_objects,
-                            palette,
-                            accents,
-                            pixels,
-                            layer,
-                        ));
+                        inputs.with_clip(clip, |inputs| {
+                            self.plot_renderer().paint(
+                                inputs,
+                                scene,
+                                &state.study_objects,
+                                palette,
+                                accents,
+                                pixels,
+                                layer,
+                            )
+                        });
                     }
                     if layer == CanvasLayer::SeriesPlots {
                         self.fill_panel_titles(&mut inputs, scene, palette);
@@ -707,9 +712,10 @@ impl<'a> KlineWidget<'a> {
                 }
                 CanvasLayer::SavedDrawings => {
                     for clip in self.pro_panel_clips(scene, false) {
-                        inputs.with_clip(clip, |inputs| self
-                            .drawing_view_at(scene, None, state.interaction.modifiers())
-                            .fill_drawing_objects(inputs, palette, accents, pixels));
+                        inputs.with_clip(clip, |inputs| {
+                            self.drawing_view_at(scene, None, state.interaction.modifiers())
+                                .fill_drawing_objects(inputs, palette, accents, pixels)
+                        });
                     }
                 }
                 CanvasLayer::YAxisLabels => self.fill_y_axis_labels(

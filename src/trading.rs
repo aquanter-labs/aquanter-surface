@@ -1361,7 +1361,9 @@ impl Trader {
             self.status = "Event contracts are simulation only.".to_string();
             return;
         }
-        let price = self.selected_source().and_then(|source| source.latest_price);
+        let price = self
+            .selected_source()
+            .and_then(|source| source.latest_price);
         let symbol = self.config.symbol.clone();
         let duration = self.event_duration;
         let stake = self.event_stake.parse::<f64>().unwrap_or(0.0);
@@ -2210,11 +2212,7 @@ impl Trader {
 
         let base = container(scrollable(
             if event_tab {
-                column![
-                    panel_header,
-                    tabs,
-                    self.event_contracts_view(timezone),
-                ]
+                column![panel_header, tabs, self.event_contracts_view(timezone),]
             } else {
                 column![
                     panel_header,
@@ -2704,7 +2702,9 @@ impl Trader {
 
     fn event_contracts_view(&self, timezone: data::UserTimezone) -> Element<'_, Message> {
         let now = local_time_ms();
-        let price = self.selected_source().and_then(|source| source.latest_price);
+        let price = self
+            .selected_source()
+            .and_then(|source| source.latest_price);
         let contracts = self
             .snapshot
             .as_ref()
@@ -2807,12 +2807,8 @@ impl Trader {
                 text_input("USDT", &self.event_stake)
                     .on_input(Message::EventStakeChanged)
                     .width(Length::Fill),
-                text(format!(
-                    "{}-{} USDT",
-                    event::MIN_STAKE,
-                    event::MAX_STAKE
-                ))
-                .size(crate::style::text_size::SMALL),
+                text(format!("{}-{} USDT", event::MIN_STAKE, event::MAX_STAKE))
+                    .size(crate::style::text_size::SMALL),
             ]
             .spacing(6)
             .align_y(Alignment::Center),
@@ -2867,7 +2863,11 @@ impl Trader {
             panel = panel.push(
                 row![
                     signed(
-                        format!("{} {}", if contract.up { "UP" } else { "DOWN" }, contract.duration),
+                        format!(
+                            "{} {}",
+                            if contract.up { "UP" } else { "DOWN" },
+                            contract.duration
+                        ),
                         contract.up
                     )
                     .width(Length::FillPortion(2)),
@@ -2884,7 +2884,8 @@ impl Trader {
                         winning
                     )
                     .width(Length::FillPortion(3)),
-                    text(format!("{:02}:{:02}", left / 60, left % 60)).width(Length::FillPortion(2)),
+                    text(format!("{:02}:{:02}", left / 60, left % 60))
+                        .width(Length::FillPortion(2)),
                     signed(
                         if winning {
                             format!("+{:.2}", contract.stake * contract.payout_rate)
@@ -2899,7 +2900,10 @@ impl Trader {
             );
         }
 
-        let settled = contracts.iter().filter(|c| !c.is_open()).collect::<Vec<_>>();
+        let settled = contracts
+            .iter()
+            .filter(|c| !c.is_open())
+            .collect::<Vec<_>>();
         if !settled.is_empty() {
             panel = panel.push(rule::horizontal(1));
             panel = panel.push(text("History").size(crate::style::text_size::SECTION));
@@ -2909,14 +2913,20 @@ impl Trader {
                     row![
                         text(time(contract.open_time_ms)).width(Length::FillPortion(3)),
                         signed(
-                            format!("{} {}", if contract.up { "UP" } else { "DOWN" }, contract.duration),
+                            format!(
+                                "{} {}",
+                                if contract.up { "UP" } else { "DOWN" },
+                                contract.duration
+                            ),
                             contract.up
                         )
                         .width(Length::FillPortion(2)),
                         text(format!(
                             "{} -> {}",
                             format_decimal(contract.open_price),
-                            contract.settle_price.map_or_else(|| "--".to_string(), format_decimal)
+                            contract
+                                .settle_price
+                                .map_or_else(|| "--".to_string(), format_decimal)
                         ))
                         .width(Length::FillPortion(4)),
                         signed(format!("{pnl:+.2}"), pnl > 0.0).width(Length::FillPortion(2)),

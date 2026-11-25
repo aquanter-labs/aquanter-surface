@@ -37,6 +37,7 @@ use crate::layout::pane::VisualConfig;
 
 pub const SAVED_STATE_PATH: &str = "saved-state.json";
 
+#[allow(clippy::large_enum_variant)] // ponytail: cold settings-copy path, box Kline if it ever matters
 #[derive(Debug, Clone)]
 pub enum PaneSettingsSnapshot {
     Heatmap(chart::heatmap::SettingsSnapshot),
@@ -239,29 +240,6 @@ fn copy_legacy_data(old: &std::path::Path, new: &std::path::Path) -> std::io::Re
     Ok(true)
 }
 
-#[cfg(test)]
-mod legacy_data_dir_tests {
-    #[test]
-    fn copies_settings_skips_cache_and_runs_once() {
-        let root = std::env::temp_dir().join(format!("aq-migrate-{}", std::process::id()));
-        let (old, new) = (root.join("flowsurface"), root.join("aquanter-surface"));
-        std::fs::create_dir_all(old.join("ai")).unwrap();
-        std::fs::create_dir_all(old.join("market_data")).unwrap();
-        std::fs::write(old.join("saved-state.json"), "{}").unwrap();
-        std::fs::write(old.join("ai/history.json"), "[]").unwrap();
-        std::fs::write(old.join("flowsurface-current.log"), "x").unwrap();
-
-        assert!(super::copy_legacy_data(&old, &new).unwrap());
-        assert!(new.join("saved-state.json").exists());
-        assert!(new.join("ai/history.json").exists());
-        assert!(!new.join("market_data").exists());
-        assert!(!new.join("flowsurface-current.log").exists());
-        assert!(old.join("saved-state.json").exists());
-        assert!(!super::copy_legacy_data(&old, &new).unwrap());
-        std::fs::remove_dir_all(root).unwrap();
-    }
-}
-
 fn cleanup_directory(data_path: &PathBuf) -> usize {
     if !data_path.exists() {
         warn!("Data path {:?} does not exist, skipping cleanup", data_path);
@@ -336,4 +314,27 @@ pub fn cleanup_old_market_data() -> usize {
 
     info!("File cleanup completed. Deleted {} files", total_deleted);
     total_deleted
+}
+
+#[cfg(test)]
+mod legacy_data_dir_tests {
+    #[test]
+    fn copies_settings_skips_cache_and_runs_once() {
+        let root = std::env::temp_dir().join(format!("aq-migrate-{}", std::process::id()));
+        let (old, new) = (root.join("flowsurface"), root.join("aquanter-surface"));
+        std::fs::create_dir_all(old.join("ai")).unwrap();
+        std::fs::create_dir_all(old.join("market_data")).unwrap();
+        std::fs::write(old.join("saved-state.json"), "{}").unwrap();
+        std::fs::write(old.join("ai/history.json"), "[]").unwrap();
+        std::fs::write(old.join("flowsurface-current.log"), "x").unwrap();
+
+        assert!(super::copy_legacy_data(&old, &new).unwrap());
+        assert!(new.join("saved-state.json").exists());
+        assert!(new.join("ai/history.json").exists());
+        assert!(!new.join("market_data").exists());
+        assert!(!new.join("flowsurface-current.log").exists());
+        assert!(old.join("saved-state.json").exists());
+        assert!(!super::copy_legacy_data(&old, &new).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

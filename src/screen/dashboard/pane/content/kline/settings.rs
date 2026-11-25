@@ -1762,11 +1762,16 @@ impl SettingsTarget {
             SettingsTarget::Series(ticker) => {
                 series_cfg_view(*ticker, context.series_style_entry(*ticker), theme_accents)
             }
-            SettingsTarget::Footprint => column![footprint_cfg_view(
-                context.options.footprint,
-                context.trade_data_enabled,
-                theme_accents,
-            ), pro_indicators::footprint_view(&context.options.pro)].spacing(inspector::MODAL_SECTION_SPACING).into(),
+            SettingsTarget::Footprint => column![
+                footprint_cfg_view(
+                    context.options.footprint,
+                    context.trade_data_enabled,
+                    theme_accents,
+                ),
+                pro_indicators::footprint_view(&context.options.pro)
+            ]
+            .spacing(inspector::MODAL_SECTION_SPACING)
+            .into(),
             SettingsTarget::Study(modal) => {
                 let study = context.studies.study(modal.study_id())?;
                 let (tab, content) = study_cfg_view(*modal, study, context.basis, theme_accents);
@@ -1774,8 +1779,8 @@ impl SettingsTarget {
             }
             SettingsTarget::Pro { name, tab } => {
                 let config = &context.options.pro;
-                let inputs = (*name != "LiquidationHeatmap")
-                    .then(|| pro_indicators::inputs(name, config));
+                let inputs =
+                    (*name != "LiquidationHeatmap").then(|| pro_indicators::inputs(name, config));
                 let (tab, content) = inspector::tabbed_content(
                     *tab,
                     Message::ProTabSelected,
@@ -1862,7 +1867,10 @@ impl InspectorState {
                 .is_none(),
             SettingsTarget::Study(modal) => context.studies.study(modal.study_id()).is_none(),
             SettingsTarget::Series(ticker) => context.series_style_entry(*ticker).is_none(),
-            SettingsTarget::Main | SettingsTarget::Candlestick | SettingsTarget::Footprint | SettingsTarget::Pro { .. } => false,
+            SettingsTarget::Main
+            | SettingsTarget::Candlestick
+            | SettingsTarget::Footprint
+            | SettingsTarget::Pro { .. } => false,
         };
         if missing {
             self.target = SettingsTarget::Main;

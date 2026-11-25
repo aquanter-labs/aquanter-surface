@@ -355,9 +355,9 @@ impl IndicatorConfig {
         id: &str,
         value: IndicatorSettingValue,
     ) -> Option<Self> {
-        indicator
-            .with_setting(self, id, value)
-            .map(|config| crate::chart::kline::pro::sync_order_flow_bias_preset(indicator, id, config))
+        indicator.with_setting(self, id, value).map(|config| {
+            crate::chart::kline::pro::sync_order_flow_bias_preset(indicator, id, config)
+        })
     }
 
     pub fn history_requirement_for(

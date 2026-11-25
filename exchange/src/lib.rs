@@ -197,7 +197,10 @@ impl TryFrom<u64> for Timeframe {
             14_400_000 => Ok(Timeframe::H4),
             43_200_000 => Ok(Timeframe::H12),
             86_400_000 => Ok(Timeframe::D1),
-            _ if value > 0 && value % 60_000 == 0 && value / 60_000 <= u64::from(u16::MAX) => {
+            _ if value > 0
+                && value.is_multiple_of(60_000)
+                && value / 60_000 <= u64::from(u16::MAX) =>
+            {
                 Ok(Timeframe::from_minutes((value / 60_000) as u16))
             }
             _ => Err(InvalidTimeframe(value)),

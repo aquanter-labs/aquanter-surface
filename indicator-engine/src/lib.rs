@@ -3271,9 +3271,8 @@ plot(ta.pivothigh(chart.high, length, 2), id = "pivot")"#;
         ] {
             let path = format!("{root}/{file}");
             let source = std::fs::read_to_string(&path).unwrap();
-            let compiled = compile(&source, &path).unwrap_or_else(|errors| {
-                panic!("{file} failed to compile: {errors:?}")
-            });
+            let compiled = compile(&source, &path)
+                .unwrap_or_else(|errors| panic!("{file} failed to compile: {errors:?}"));
             assert!(
                 !compiled.descriptor.presentation.layers.is_empty(),
                 "{file} view {:?} layers {:?}",

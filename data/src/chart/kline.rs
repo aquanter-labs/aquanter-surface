@@ -480,7 +480,10 @@ impl IndicatorStyleOverrides {
     }
 
     pub fn precise_line_width(&self, id: &str) -> Option<f32> {
-        self.precise_line_widths.get(id).copied().or_else(|| self.line_width(id).map(f32::from))
+        self.precise_line_widths
+            .get(id)
+            .copied()
+            .or_else(|| self.line_width(id).map(f32::from))
     }
 
     pub fn set_precise_line_width(&mut self, id: impl Into<String>, width: f32) {
@@ -525,7 +528,9 @@ impl IndicatorStyleOverrides {
             *width = (*width).clamp(MIN_LINE_WIDTH, MAX_LINE_WIDTH);
         }
         self.line_widths.retain(|id, _| !id.trim().is_empty());
-        self.precise_line_widths.retain(|id, width| !id.trim().is_empty() && width.is_finite() && *width > 0.0 && *width <= 64.0);
+        self.precise_line_widths.retain(|id, width| {
+            !id.trim().is_empty() && width.is_finite() && *width > 0.0 && *width <= 64.0
+        });
         self.stroke_styles.retain(|id, _| !id.trim().is_empty());
         self.colors.retain(|id, _| !id.trim().is_empty());
         self
@@ -539,7 +544,9 @@ impl IndicatorStyleOverrides {
         normalized
             .line_widths
             .retain(|id, _| slots.iter().any(|slot| slot.id == *id));
-        normalized.precise_line_widths.retain(|id, _| slots.iter().any(|slot| slot.id == *id));
+        normalized
+            .precise_line_widths
+            .retain(|id, _| slots.iter().any(|slot| slot.id == *id));
         normalized
             .stroke_styles
             .retain(|id, _| slots.iter().any(|slot| slot.id == *id));

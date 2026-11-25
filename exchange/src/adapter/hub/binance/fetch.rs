@@ -587,8 +587,13 @@ async fn fetch_intraday_trades(
             break;
         };
         let end = (hour + HOUR_MS).min(until_ms);
-        let hour_trades = cached_hour_trades(hub, &base_url, weight, dir, &symbol_str, hour).await?;
-        de_trades.extend(hour_trades.into_iter().filter(|x| x.time >= t && x.time < end));
+        let hour_trades =
+            cached_hour_trades(hub, &base_url, weight, dir, &symbol_str, hour).await?;
+        de_trades.extend(
+            hour_trades
+                .into_iter()
+                .filter(|x| x.time >= t && x.time < end),
+        );
         t = hour + HOUR_MS;
     }
 
@@ -647,13 +652,24 @@ async fn cached_hour_trades(
     if let Some(trades) = read_hour_cache(&path) {
         return Ok(trades
             .into_iter()
-            .map(|t| DeTrade { id: 0, time: t.time, price: t.price, qty: t.qty, is_sell: t.is_sell })
+            .map(|t| DeTrade {
+                id: 0,
+                time: t.time,
+                price: t.price,
+                qty: t.qty,
+                is_sell: t.is_sell,
+            })
             .collect());
     }
     let trades = fetch_trade_pages(hub, base_url, weight, hour, hour + HOUR_MS).await?;
     let raw = trades
         .iter()
-        .map(|t| RawTrade { time: t.time, price: t.price, qty: t.qty, is_sell: t.is_sell })
+        .map(|t| RawTrade {
+            time: t.time,
+            price: t.price,
+            qty: t.qty,
+            is_sell: t.is_sell,
+        })
         .collect::<Vec<_>>();
     write_hour_cache(&path, &raw);
     Ok(trades)
@@ -877,9 +893,15 @@ mod tests {
     fn full_trade_pages_do_not_skip_the_last_millisecond() {
         let mut trades = Vec::new();
         let page = (0..1000).map(|id| trade(id, 42)).collect();
-        assert_eq!(append_trade_page(&mut trades, page, 50).unwrap(), Some(1000));
+        assert_eq!(
+            append_trade_page(&mut trades, page, 50).unwrap(),
+            Some(1000)
+        );
         let page = (1000..2000).map(|id| trade(id, 42)).collect();
-        assert_eq!(append_trade_page(&mut trades, page, 50).unwrap(), Some(2000));
+        assert_eq!(
+            append_trade_page(&mut trades, page, 50).unwrap(),
+            Some(2000)
+        );
         let page = vec![trade(2000, 42), trade(2001, 49), trade(2002, 50)];
         assert_eq!(append_trade_page(&mut trades, page, 50).unwrap(), None);
         assert_eq!(trades.len(), 2002);

@@ -520,7 +520,7 @@ impl Exchange {
             return None;
         }
         Timeframe::KLINE.iter().rev().copied().find(|source| {
-            target_minutes % source.to_minutes() == 0
+            target_minutes.is_multiple_of(source.to_minutes())
                 && self.supports_native_kline_timeframe(*source)
         })
     }

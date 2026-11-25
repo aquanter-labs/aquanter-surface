@@ -87,14 +87,27 @@ pub(crate) fn migrate_legacy_pane(value: &mut serde_json::Value) -> Result<(), s
         }
         return Ok(());
     }
-    let Some(chart) = value.get_mut("KlineChart") else { return Ok(()); };
+    let Some(chart) = value.get_mut("KlineChart") else {
+        return Ok(());
+    };
     if chart.get("kind").is_none() && chart.get("indicators").is_none() {
         return Ok(());
     }
-    let indicators = chart.get("indicators").and_then(serde_json::Value::as_array)
-        .map(|values| values.iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect::<Vec<_>>())
+    let indicators = chart
+        .get("indicators")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
-    let visual = chart.pointer("/settings/visual_config/Kline").cloned().unwrap_or_else(|| serde_json::json!({}));
+    let visual = chart
+        .pointer("/settings/visual_config/Kline")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
     let mut config = crate::chart::kline::pro::migrate_legacy_chart(visual, &indicators)?;
     if let Some(splits) = chart.pointer("/layout/splits") {
         config.settings.splits = serde_json::from_value(splits.clone())?;
@@ -103,29 +116,42 @@ pub(crate) fn migrate_legacy_pane(value: &mut serde_json::Value) -> Result<(), s
         config.settings.options.trade_data_requested = true;
         config.settings.options.footprint.visible = true;
         if let Some(clusters) = footprint.get("clusters") {
-            config.settings.options.footprint.cluster_kind = serde_json::from_value(clusters.clone())?;
+            config.settings.options.footprint.cluster_kind =
+                serde_json::from_value(clusters.clone())?;
         }
         if let Some(scaling) = footprint.get("scaling") {
-            config.settings.options.footprint.cluster_scaling = serde_json::from_value(scaling.clone())?;
+            config.settings.options.footprint.cluster_scaling =
+                serde_json::from_value(scaling.clone())?;
         }
-        let studies = footprint.get("studies").and_then(serde_json::Value::as_array);
+        let studies = footprint
+            .get("studies")
+            .and_then(serde_json::Value::as_array);
         for study in studies.into_iter().flatten() {
             let options = &mut config.settings.options.footprint;
             if study.get("NPoC").is_some() {
                 options.poc.show_npoc = true;
             } else if let Some(imbalance) = study.get("Imbalance") {
                 options.imbalance.show = true;
-                if let Some(threshold) = imbalance.get("threshold").and_then(serde_json::Value::as_u64) {
+                if let Some(threshold) = imbalance
+                    .get("threshold")
+                    .and_then(serde_json::Value::as_u64)
+                {
                     options.imbalance.threshold_percent = threshold as usize;
                 }
-                if let Some(ignore_zeros) = imbalance.get("ignore_zeros").and_then(serde_json::Value::as_bool) {
+                if let Some(ignore_zeros) = imbalance
+                    .get("ignore_zeros")
+                    .and_then(serde_json::Value::as_bool)
+                {
                     options.imbalance.ignore_zeros = ignore_zeros;
                 }
             }
         }
     }
     chart["layout"] = serde_json::to_value(config)?;
-    if let Some(settings) = chart.get_mut("settings").and_then(serde_json::Value::as_object_mut) {
+    if let Some(settings) = chart
+        .get_mut("settings")
+        .and_then(serde_json::Value::as_object_mut)
+    {
         settings.remove("visual_config");
     }
     if let Some(chart) = chart.as_object_mut() {
@@ -142,8 +168,13 @@ mod pro_tests {
     #[test]
     fn panel_configs_and_link_groups_round_trip() {
         for pane in [
-            Pane::AiAnalysisPanel { link_group: Some(LinkGroup::C) },
-            Pane::TradingPanel { config: Default::default(), link_group: Some(LinkGroup::H) },
+            Pane::AiAnalysisPanel {
+                link_group: Some(LinkGroup::C),
+            },
+            Pane::TradingPanel {
+                config: Default::default(),
+                link_group: Some(LinkGroup::H),
+            },
             Pane::AiAnalysis,
             Pane::Trading,
         ] {
@@ -164,7 +195,14 @@ mod pro_tests {
         }});
         migrate_legacy_pane(&mut pane).unwrap();
         let decoded: Pane = serde_json::from_value(pane.clone()).unwrap();
-        let Pane::KlineChart { layout: Some(config), link_group, .. } = decoded else { panic!("missing migrated chart") };
+        let Pane::KlineChart {
+            layout: Some(config),
+            link_group,
+            ..
+        } = decoded
+        else {
+            panic!("missing migrated chart")
+        };
         assert_eq!(link_group, Some(LinkGroup::C));
         assert!(config.settings.options.footprint.visible);
         assert_eq!(config.settings.splits, vec![0.8]);
@@ -186,7 +224,13 @@ mod pro_tests {
         }});
         migrate_legacy_pane(&mut pane).unwrap();
         let decoded: Pane = serde_json::from_value(pane).unwrap();
-        let Pane::KlineChart { layout: Some(config), .. } = decoded else { panic!("missing migrated chart") };
+        let Pane::KlineChart {
+            layout: Some(config),
+            ..
+        } = decoded
+        else {
+            panic!("missing migrated chart")
+        };
         let footprint = config.settings.options.footprint;
         assert!(footprint.poc.show_npoc);
         assert!(footprint.imbalance.show);
@@ -360,7 +404,10 @@ impl PaneSetup {
                         Basis::default_kline_time(Some(base_ticker), Timeframe::M5)
                     }))
                 }
-                ContentKind::Starter | ContentKind::AiAnalysis | ContentKind::Trading | ContentKind::TimeAndSales => None,
+                ContentKind::Starter
+                | ContentKind::AiAnalysis
+                | ContentKind::Trading
+                | ContentKind::TimeAndSales => None,
             };
 
         let tick_multiplier = match content_kind {
@@ -376,9 +423,11 @@ impl PaneSetup {
                 };
                 Some(tm)
             }
-            ContentKind::CandlestickChart | ContentKind::TimeAndSales | ContentKind::AiAnalysis | ContentKind::Trading | ContentKind::Starter => {
-                current_tick_multiplier
-            }
+            ContentKind::CandlestickChart
+            | ContentKind::TimeAndSales
+            | ContentKind::AiAnalysis
+            | ContentKind::Trading
+            | ContentKind::Starter => current_tick_multiplier,
         };
 
         let price_step = match tick_multiplier {

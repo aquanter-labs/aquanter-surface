@@ -371,9 +371,9 @@ impl super::FetchCommandHandler<BinanceMarketScope> for Worker {
         ticker: Ticker,
     ) -> futures::future::BoxFuture<'_, Result<DepthPayload, AdapterError>> {
         let market = ticker.market_type();
-        Box::pin(
-            async move { fetch::fetch_depth_snapshot(self.hub_for_market(market).client(), ticker).await },
-        )
+        Box::pin(async move {
+            fetch::fetch_depth_snapshot(self.hub_for_market(market).client(), ticker).await
+        })
     }
 
     fn fetch_trades(

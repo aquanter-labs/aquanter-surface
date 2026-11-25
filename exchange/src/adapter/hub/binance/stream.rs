@@ -1069,7 +1069,7 @@ mod tests {
         assert_eq!(liquidation.order.average_price, 9910.0);
         assert_eq!(liquidation.order.filled_qty, 0.014);
 
-        let eth = payload.iter().copied().collect::<Vec<_>>();
+        let eth = payload.to_vec();
         let eth = String::from_utf8(eth)
             .unwrap()
             .replace("btcusdt", "ethusdt")

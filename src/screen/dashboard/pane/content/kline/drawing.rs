@@ -1796,7 +1796,9 @@ impl DrawingTools {
                 self.interaction = DrawingInteraction::Drafting(DrawingDraft::VolumeProfile {
                     start: anchor,
                     current: anchor,
-                    style: settings.style_defaults.style_for(DrawingTool::VolumeProfile),
+                    style: settings
+                        .style_defaults
+                        .style_for(DrawingTool::VolumeProfile),
                 });
                 self.selected_drawings.clear();
                 true
