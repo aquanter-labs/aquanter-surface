@@ -4,7 +4,7 @@ use std::process::Command;
 fn main() {
     #[cfg(windows)]
     {
-        println!("cargo:rerun-if-changed=assets/app-icon/flowsurface.ico");
+        println!("cargo:rerun-if-changed=assets/app-icon/aquanter-surface.ico");
         println!("cargo:rerun-if-changed=scripts/packaging/windows/flowsurface.manifest");
         println!("cargo:rerun-if-changed=scripts/packaging/windows/flowsurface.rc");
         let macros = [

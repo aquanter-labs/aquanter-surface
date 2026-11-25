@@ -19,7 +19,7 @@ case "${1:-}" in
         install -Dm755 scripts/packaging/linux/install.sh "$ARCHIVE_DIR/install.sh"
         install -Dm755 scripts/packaging/linux/uninstall.sh "$ARCHIVE_DIR/uninstall.sh"
         install -Dm644 scripts/packaging/linux/com.aquanter.surface.desktop "$ARCHIVE_DIR/share/applications/com.aquanter.surface.desktop"
-        install -Dm644 assets/app-icon/linux/flowsurface.png "$ARCHIVE_DIR/share/icons/hicolor/512x512/apps/com.aquanter.surface.png"
+        install -Dm644 assets/app-icon/linux/aquanter-surface.png "$ARCHIVE_DIR/share/icons/hicolor/512x512/apps/com.aquanter.surface.png"
         tar czf "$ARCHIVE_PATH" -C "$ARCHIVE_DIR" .
         echo "Packaged archive: $ARCHIVE_PATH"
         ;;

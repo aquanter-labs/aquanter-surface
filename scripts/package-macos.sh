@@ -13,7 +13,7 @@ APP="$APP_DIR/Aquanter Surface.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY" "$APP/Contents/MacOS/aquanter-surface"
 chmod +x "$APP/Contents/MacOS/aquanter-surface"
-cp assets/app-icon/flowsurface.icns "$APP/Contents/Resources/flowsurface.icns"
+cp assets/app-icon/aquanter-surface.icns "$APP/Contents/Resources/aquanter-surface.icns"
 sed "s/@VERSION@/$VERSION/g" scripts/packaging/macos/Info.plist > "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist"
 
