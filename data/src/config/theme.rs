@@ -318,21 +318,65 @@ pub fn default_theme() -> Custom {
     )
 }
 
+/// Monochrome themes in the shadcn "neutral" style: grayscale surfaces, black/white
+/// primary, colour reserved for signals (up/down/warning).
+pub fn aquanter_themes() -> [Custom; 2] {
+    [
+        Custom::new(
+            "Aquanter Dark".to_string(),
+            Palette {
+                background: Color::from_rgb8(10, 10, 10),
+                text: Color::from_rgb8(250, 250, 250),
+                primary: Color::from_rgb8(232, 232, 232),
+                success: Color::from_rgb8(76, 195, 138),
+                danger: Color::from_rgb8(255, 100, 103),
+                warning: Color::from_rgb8(245, 181, 68),
+            },
+        ),
+        Custom::new(
+            "Aquanter Light".to_string(),
+            Palette {
+                background: Color::from_rgb8(253, 253, 253),
+                text: Color::from_rgb8(23, 23, 23),
+                primary: Color::from_rgb8(34, 34, 34),
+                success: Color::from_rgb8(22, 163, 74),
+                danger: Color::from_rgb8(231, 0, 11),
+                warning: Color::from_rgb8(217, 119, 6),
+            },
+        ),
+    ]
+}
+
+fn builtin_custom_theme(key: &str) -> Option<iced_core::Theme> {
+    let [dark, light] = aquanter_themes();
+    let custom = match key {
+        "flowsurface" => default_theme(),
+        "aquanter_dark" => dark,
+        "aquanter_light" => light,
+        _ => return None,
+    };
+    Some(iced_core::Theme::Custom(custom.into()))
+}
+
+fn builtin_custom_key(name: &str) -> Option<&'static str> {
+    match name {
+        "Flowsurface" => Some("flowsurface"),
+        "Aquanter Dark" => Some("aquanter_dark"),
+        "Aquanter Light" => Some("aquanter_light"),
+        _ => None,
+    }
+}
+
 impl Serialize for Theme {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         if let iced_core::Theme::Custom(custom) = &self.0 {
-            let is_default_theme = custom.to_string() == "Flowsurface";
+            let builtin = builtin_custom_key(&custom.to_string());
             let ser_theme = SerTheme {
-                name: if is_default_theme {
-                    "flowsurface"
-                } else {
-                    "custom"
-                }
-                .to_string(),
-                palette: if is_default_theme {
+                name: builtin.unwrap_or("custom").to_string(),
+                palette: if builtin.is_some() {
                     None
                 } else {
                     Some(self.0.palette())
@@ -402,10 +446,12 @@ impl<'de> Deserialize<'de> for Theme {
                 "moonfly" => iced_core::Theme::Moonfly,
                 "nightfly" => iced_core::Theme::Nightfly,
                 "oxocarbon" => iced_core::Theme::Oxocarbon,
-                "flowsurface" => Theme::default().0,
-                _ => {
-                    return Err(serde::de::Error::custom(format!("Invalid theme: {}", s)));
-                }
+                _ => match builtin_custom_theme(s) {
+                    Some(theme) => theme,
+                    None => {
+                        return Err(serde::de::Error::custom(format!("Invalid theme: {}", s)));
+                    }
+                },
             };
             return Ok(Theme(theme));
         }
@@ -413,7 +459,6 @@ impl<'de> Deserialize<'de> for Theme {
         let serialized = SerTheme::deserialize(value).map_err(serde::de::Error::custom)?;
 
         let theme = match serialized.name.as_str() {
-            "flowsurface" => Theme::default().0,
             "custom" => {
                 if let Some(palette) = serialized.palette {
                     iced_core::Theme::Custom(Custom::new("Custom".to_string(), palette).into())
@@ -423,7 +468,8 @@ impl<'de> Deserialize<'de> for Theme {
                     ));
                 }
             }
-            _ => return Err(serde::de::Error::custom("Invalid theme")),
+            name => builtin_custom_theme(name)
+                .ok_or_else(|| serde::de::Error::custom("Invalid theme"))?,
         };
 
         Ok(Theme(theme))
@@ -808,5 +854,21 @@ pub fn mix_color(foreground: Color, background: Color, foreground_weight: f32) -
         a: foreground
             .a
             .mul_add(foreground_weight, background.a * background_weight),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_themes_round_trip() {
+        for custom in std::iter::once(default_theme()).chain(aquanter_themes()) {
+            let name = custom.to_string();
+            let theme = Theme(iced_core::Theme::Custom(custom.into()));
+            let json = serde_json::to_string(&theme).unwrap();
+            let back: Theme = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.0.to_string(), name, "{json}");
+        }
     }
 }

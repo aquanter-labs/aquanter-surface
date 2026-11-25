@@ -249,10 +249,8 @@ impl Dashboard {
     fn sync_trading_overlays(&mut self, main_window: window::Id) {
         let overlays = self
             .iter_all_panes(main_window)
-            .filter_map(|(_, _, state)| {
-                let trader = state.trader()?;
-                Some((trader.selected_chart()?, trader.overlay()))
-            })
+            .filter_map(|(_, _, state)| state.trader())
+            .flat_map(|trader| trader.overlay_targets())
             .collect::<HashMap<_, _>>();
         self.iter_all_panes_mut(main_window)
             .for_each(|(_, _, state)| {

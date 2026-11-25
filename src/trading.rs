@@ -97,7 +97,7 @@ impl std::fmt::Display for Side {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub enum OrderType {
     #[default]
     Market,
@@ -530,6 +530,46 @@ pub enum Message {
     EventShowOpenChanged(bool),
     EventShowHistoryChanged(bool),
     EventTabChanged(bool),
+    OverlayAllChartsChanged(bool),
+}
+
+/// Order-ticket inputs restored across restarts.
+#[derive(Deserialize, Serialize)]
+#[serde(default)]
+struct Ticket {
+    position_side: PositionSide,
+    order_type: OrderType,
+    margin_mode: MarginMode,
+    quantity: String,
+    price: String,
+    stop_loss: String,
+    take_profit: String,
+    leverage: String,
+    risk_percent: String,
+    reward_ratio: String,
+    reduce_only: bool,
+    event_duration: EventDuration,
+    event_stake: String,
+}
+
+impl Default for Ticket {
+    fn default() -> Self {
+        Self {
+            position_side: PositionSide::Long,
+            order_type: OrderType::Market,
+            margin_mode: MarginMode::Cross,
+            quantity: String::new(),
+            price: String::new(),
+            stop_loss: String::new(),
+            take_profit: String::new(),
+            leverage: "10".to_string(),
+            risk_percent: "1".to_string(),
+            reward_ratio: "2".to_string(),
+            reduce_only: false,
+            event_duration: EventDuration::default(),
+            event_stake: "50".to_string(),
+        }
+    }
 }
 
 pub struct Trader {
@@ -580,6 +620,7 @@ impl Trader {
         let credentials =
             data::config::trading::load_credentials(&config.account_id, config.testnet);
         let simulation_balance = config.simulated_balance.to_string();
+        let ticket: Ticket = serde_json::from_value(config.ticket.clone()).unwrap_or_default();
         let mut trader = Self {
             api_key: credentials
                 .as_ref()
@@ -594,22 +635,26 @@ impl Trader {
             snapshot: None,
             chart_sources: Vec::new(),
             selected_chart: None,
-            side: Side::Buy,
-            position_side: PositionSide::Long,
-            order_type: OrderType::Market,
-            margin_mode: MarginMode::Cross,
-            quantity: String::new(),
-            price: String::new(),
-            stop_loss: String::new(),
-            take_profit: String::new(),
+            side: if ticket.position_side == PositionSide::Long {
+                Side::Buy
+            } else {
+                Side::Sell
+            },
+            position_side: ticket.position_side,
+            order_type: ticket.order_type,
+            margin_mode: ticket.margin_mode,
+            quantity: ticket.quantity,
+            price: ticket.price,
+            stop_loss: ticket.stop_loss,
+            take_profit: ticket.take_profit,
             protection_editor: None,
             dragged_protection: None,
             show_account_analytics: false,
-            leverage: "10".to_string(),
+            leverage: ticket.leverage,
             simulation_balance,
-            risk_percent: "1".to_string(),
-            reward_ratio: "2".to_string(),
-            reduce_only: false,
+            risk_percent: ticket.risk_percent,
+            reward_ratio: ticket.reward_ratio,
+            reduce_only: ticket.reduce_only,
             pending_action: None,
             status: "Enter Binance USD-M API credentials and connect.".to_string(),
             busy: false,
@@ -619,8 +664,8 @@ impl Trader {
             request_started: None,
             last_poll: None,
             proxy,
-            event_duration: EventDuration::default(),
-            event_stake: "50".to_string(),
+            event_duration: ticket.event_duration,
+            event_stake: ticket.event_stake,
         };
         if trader.is_simulation() {
             trader.snapshot = Some(load_simulated_snapshot(
@@ -633,8 +678,27 @@ impl Trader {
         trader
     }
 
-    pub fn config(&self) -> &TradingConfig {
-        &self.config
+    /// Config to persist, including the current order-ticket inputs.
+    pub fn config(&self) -> TradingConfig {
+        let ticket = Ticket {
+            position_side: self.position_side,
+            order_type: self.order_type,
+            margin_mode: self.margin_mode,
+            quantity: self.quantity.clone(),
+            price: self.price.clone(),
+            stop_loss: self.stop_loss.clone(),
+            take_profit: self.take_profit.clone(),
+            leverage: self.leverage.clone(),
+            risk_percent: self.risk_percent.clone(),
+            reward_ratio: self.reward_ratio.clone(),
+            reduce_only: self.reduce_only,
+            event_duration: self.event_duration,
+            event_stake: self.event_stake.clone(),
+        };
+        TradingConfig {
+            ticket: serde_json::to_value(ticket).unwrap_or_default(),
+            ..self.config.clone()
+        }
     }
 
     pub fn set_proxy(&mut self, proxy: Option<exchange::proxy::Proxy>) {
@@ -671,6 +735,50 @@ impl Trader {
         self.selected_chart
     }
 
+    /// Panes that should carry this trader's overlay: every compatible chart when
+    /// "All charts" is on, otherwise only the selected one.
+    pub fn overlay_targets(&self) -> Vec<(uuid::Uuid, Option<PositionOverlay>)> {
+        if self.config.overlay_all_charts {
+            self.chart_sources
+                .iter()
+                .map(|source| (source.pane_id, self.overlay_for(&source.symbol)))
+                .collect()
+        } else {
+            self.selected_chart
+                .map(|id| (id, self.overlay_for(&self.config.symbol)))
+                .into_iter()
+                .collect()
+        }
+    }
+
+    fn chart_row(&self) -> Element<'_, Message> {
+        row![
+            text("Chart"),
+            pick_list(
+                self.chart_sources.clone(),
+                self.selected_source().cloned(),
+                Message::ChartSourceChanged
+            )
+            .placeholder("No compatible chart")
+            .width(Length::Fill),
+            tooltip(
+                checkbox(self.config.overlay_all_charts)
+                    .label("All")
+                    .on_toggle(Message::OverlayAllChartsChanged),
+                Some("Show trades on every active chart"),
+                tooltip::Position::Bottom,
+            ),
+            icon_button(
+                crate::style::LucideIcon::RefreshCw,
+                "Refresh account and chart source",
+                Message::Refresh,
+            ),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .into()
+    }
+
     fn protection_levels(&self, symbol: &str) -> (Option<f64>, Option<f64>) {
         let Some(snapshot) = &self.snapshot else {
             return (None, None);
@@ -694,21 +802,25 @@ impl Trader {
         (stop_loss, take_profit)
     }
 
-    pub fn overlay(&self) -> Option<PositionOverlay> {
+    /// Chart overlay (position, orders, fills, event contracts) for `symbol`.
+    pub fn overlay_for(&self, symbol: &str) -> Option<PositionOverlay> {
         let snapshot = self.snapshot.as_ref()?;
         let position = snapshot
             .positions
             .iter()
-            .find(|position| position.symbol == self.config.symbol);
-        let (mut stop_loss, mut take_profit) = self.protection_levels(&self.config.symbol);
-        if let Some((preview_stop, preview_take)) = self.dragged_protection {
+            .find(|position| position.symbol == symbol);
+        let (mut stop_loss, mut take_profit) = self.protection_levels(symbol);
+        if let Some((preview_stop, preview_take)) = self
+            .dragged_protection
+            .filter(|_| symbol == self.config.symbol)
+        {
             stop_loss = preview_stop;
             take_profit = preview_take;
         }
         let orders = snapshot
             .open_orders
             .iter()
-            .filter(|order| order.symbol == self.config.symbol && order.order_type == "LIMIT")
+            .filter(|order| order.symbol == symbol && order.order_type == "LIMIT")
             .map(|order| TradingOrderOverlay {
                 id: TradingLineId::LimitOrder {
                     order_id: order.order_id,
@@ -721,7 +833,7 @@ impl Trader {
         let trade_history = snapshot
             .trade_history
             .iter()
-            .filter(|trade| trade.symbol == self.config.symbol && trade.price > 0.0)
+            .filter(|trade| trade.symbol == symbol && trade.price > 0.0)
             .map(|trade| TradeMarker {
                 time_ms: trade.time_ms,
                 price: trade.price,
@@ -732,7 +844,7 @@ impl Trader {
             .event_contracts
             .iter()
             .filter(|contract| {
-                contract.symbol == self.config.symbol
+                contract.symbol == symbol
                     && if contract.is_open() {
                         self.config.event_show_open
                     } else {
@@ -749,7 +861,7 @@ impl Trader {
             return None;
         }
         Some(PositionOverlay {
-            symbol: self.config.symbol.clone(),
+            symbol: symbol.to_string(),
             is_long: position.is_none_or(Position::is_long),
             entry_price: position.map(|position| position.entry_price),
             break_even_price: position.map(|position| position.economic_break_even_price),
@@ -1230,6 +1342,7 @@ impl Trader {
             Message::EventShowOpenChanged(show) => self.config.event_show_open = show,
             Message::EventShowHistoryChanged(show) => self.config.event_show_history = show,
             Message::EventTabChanged(event_tab) => self.config.event_tab = event_tab,
+            Message::OverlayAllChartsChanged(all) => self.config.overlay_all_charts = all,
             Message::ChartLevelDragged(id, price, finished) => {
                 let price = self
                     .selected_source()
@@ -1846,7 +1959,7 @@ impl Trader {
             .spacing(6)
             .into()
         };
-        container(
+        container(scrollable(
             column![
                 row![
                     text("Exchange").width(Length::Fill),
@@ -1874,11 +1987,11 @@ impl Trader {
                 connection,
                 text(&self.status).size(crate::style::text_size::SMALL),
             ]
-            .spacing(8),
-        )
-        .max_width(460)
-        .padding(12)
-        .style(crate::style::chart_modal)
+            .spacing(8)
+            .padding(padding::all(12)),
+        ))
+        .width(Length::Fill)
+        .height(Length::Fill)
         .into()
     }
 
@@ -1960,23 +2073,7 @@ impl Trader {
         let [open_action, close_action] = trade_actions(self.position_side);
 
         let order_ticket = column![
-            row![
-                text("Chart"),
-                pick_list(
-                    self.chart_sources.clone(),
-                    selected_chart,
-                    Message::ChartSourceChanged
-                )
-                .placeholder("No compatible chart")
-                .width(Length::Fill),
-                icon_button(
-                    crate::style::LucideIcon::RefreshCw,
-                    "Refresh account and chart source",
-                    Message::Refresh,
-                ),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center),
+            self.chart_row(),
             row![
                 pick_list(
                     PositionSide::TRADE,
@@ -2784,6 +2881,7 @@ impl Trader {
 
         let mut panel = column![
             header,
+            self.chart_row(),
             text(&self.status).size(crate::style::text_size::SMALL),
             rule::horizontal(1),
             row![
@@ -4490,6 +4588,23 @@ struct RawPlacedOrder {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn order_ticket_survives_restart() {
+        let mut trader = super::Trader::new(TradingConfig::default(), None);
+        trader.price = "61234.5".to_string();
+        trader.stop_loss = "60000".to_string();
+        trader.event_stake = "75".to_string();
+        trader.event_duration = EventDuration::H1;
+        trader.order_type = OrderType::Limit;
+        let json = serde_json::to_string(&trader.config()).unwrap();
+        let restored = super::Trader::new(serde_json::from_str(&json).unwrap(), None);
+        assert_eq!(restored.price, "61234.5");
+        assert_eq!(restored.stop_loss, "60000");
+        assert_eq!(restored.event_stake, "75");
+        assert_eq!(restored.event_duration, EventDuration::H1);
+        assert_eq!(restored.order_type, OrderType::Limit);
+    }
+
     use super::*;
 
     fn trade(time: u64, side: &str, qty: &str) -> RawUserTrade {

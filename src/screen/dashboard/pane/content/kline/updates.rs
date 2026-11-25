@@ -219,7 +219,13 @@ impl DataUpdate<'_> {
                 let change =
                     data.insert_historical_trades(*ticker_info, trades, *is_batches_done, basis);
                 if let Some(req_id) = req_id {
-                    fetch.record_trade_batch(*req_id, trades.len());
+                    let span = trades.iter().map(|trade| trade.time.0).fold(
+                        None,
+                        |acc: Option<(u64, u64)>, t| {
+                            Some(acc.map_or((t, t), |(lo, hi)| (lo.min(t), hi.max(t))))
+                        },
+                    );
+                    fetch.record_trade_batch(*req_id, trades.len(), span);
                 }
                 fetch.complete_trade_fetch(fetched_from, *req_id, *is_batches_done);
                 if !change {

@@ -150,6 +150,7 @@ impl RequestHandler {
                         if let Some(existing) = self.requests.get_mut(&existing_id) {
                             existing.status = RequestStatus::Pending;
                             existing.received_trades = 0;
+                            existing.covered = None;
                         }
                         return Ok(Some(existing_id));
                     }
@@ -227,15 +228,24 @@ impl RequestHandler {
             .map(|request| request.fetch_type)
     }
 
-    pub fn pending_trade_count(&self) -> Option<usize> {
+    /// Trades received so far and the fraction of the requested time range they cover.
+    pub fn pending_trade_progress(&self) -> Option<(usize, Option<f32>)> {
         self.requests.values().find_map(|request| {
-            (request.status == RequestStatus::Pending
-                && matches!(request.fetch_type, FetchRange::Trades(..)))
-            .then_some(request.received_trades)
+            let FetchRange::Trades(from, to) = request.fetch_type else {
+                return None;
+            };
+            (request.status == RequestStatus::Pending).then(|| {
+                let span = to.0.saturating_sub(from.0);
+                let progress = request.covered.filter(|_| span > 0).map(|(lo, hi)| {
+                    (hi.min(to.0).saturating_sub(lo.max(from.0)) as f32 / span as f32)
+                        .clamp(0.0, 1.0)
+                });
+                (request.received_trades, progress)
+            })
         })
     }
 
-    pub fn record_trade_batch(&mut self, id: Uuid, count: usize) -> bool {
+    pub fn record_trade_batch(&mut self, id: Uuid, count: usize, span: Option<(u64, u64)>) -> bool {
         let Some(request) = self.requests.get_mut(&id) else {
             return false;
         };
@@ -247,6 +257,13 @@ impl RequestHandler {
         }
 
         request.received_trades = request.received_trades.saturating_add(count);
+        if let Some((lo, hi)) = span {
+            // ponytail: assumes batches arrive contiguously from one end of the range
+            request.covered = Some(match request.covered {
+                Some((a, b)) => (a.min(lo), b.max(hi)),
+                None => (lo, hi),
+            });
+        }
         true
     }
 
@@ -363,6 +380,8 @@ struct FetchRequest {
     fetch_type: FetchRange,
     status: RequestStatus,
     received_trades: usize,
+    /// Earliest/latest trade time received, for progress display.
+    covered: Option<(u64, u64)>,
 }
 
 impl FetchRequest {
@@ -371,6 +390,7 @@ impl FetchRequest {
             fetch_type,
             status: RequestStatus::Pending,
             received_trades: 0,
+            covered: None,
         }
     }
 

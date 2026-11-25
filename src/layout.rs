@@ -221,7 +221,7 @@ impl From<&pane::State> for data::Pane {
                 link_group: pane.link_group,
             },
             pane::Content::Trading(trader) => data::Pane::TradingPanel {
-                config: trader.config().clone(),
+                config: trader.config(),
                 link_group: pane.link_group,
             },
             pane::Content::ShaderHeatmap(heatmap) => data::Pane::ShaderHeatmap {

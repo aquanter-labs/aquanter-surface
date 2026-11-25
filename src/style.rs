@@ -859,7 +859,7 @@ pub fn chart_toolbar(theme: &Theme) -> Style {
     }
 }
 
-#[allow(dead_code)] // ponytail: upstream helper; Pro renders fetch status via fetch_status_lines
+#[allow(dead_code)] // ponytail: upstream helper; Pro renders fetch status via fetch_indicator
 pub fn chart_info_tooltip(theme: &Theme) -> Style {
     let palette = theme.extended_palette();
 

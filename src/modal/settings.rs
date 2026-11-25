@@ -106,6 +106,10 @@ impl Settings {
 
             let default_theme = iced_core::Theme::Custom(default_theme().into());
             themes.push(default_theme);
+            themes.extend(
+                data::config::theme::aquanter_themes()
+                    .map(|custom| iced_core::Theme::Custom(custom.into())),
+            );
 
             if let Some(custom_theme) = custom_theme {
                 themes.push(custom_theme.clone());

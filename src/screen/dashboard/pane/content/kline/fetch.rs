@@ -17,10 +17,13 @@ pub enum FetchUpdate {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum FetchActivity {
     Kline,
-    Trades { fetched: usize },
+    Trades {
+        fetched: usize,
+        progress: Option<f32>,
+    },
     OpenInterest,
 }
 
@@ -229,7 +232,7 @@ impl FetchCoordinator {
 
     pub(super) fn pending_activity(&self) -> Vec<FetchActivity> {
         let mut has_klines = false;
-        let mut trade_count: Option<usize> = None;
+        let mut trades: Option<(usize, Option<f32>)> = None;
         let mut has_open_interest = false;
 
         for handler in self.request_handlers.values() {
@@ -241,8 +244,18 @@ impl FetchCoordinator {
                 }
             }
 
-            if let Some(count) = handler.pending_trade_count() {
-                trade_count = Some(trade_count.unwrap_or_default().saturating_add(count));
+            if let Some((count, progress)) = handler.pending_trade_progress() {
+                trades = Some(match trades {
+                    // Several tickers: report the slowest one.
+                    Some((total, prev)) => (
+                        total.saturating_add(count),
+                        prev.zip(progress)
+                            .map(|(a, b)| a.min(b))
+                            .or(prev)
+                            .or(progress),
+                    ),
+                    None => (count, progress),
+                });
             }
         }
 
@@ -250,8 +263,8 @@ impl FetchCoordinator {
         if has_klines {
             activity.push(FetchActivity::Kline);
         }
-        if let Some(fetched) = trade_count {
-            activity.push(FetchActivity::Trades { fetched });
+        if let Some((fetched, progress)) = trades {
+            activity.push(FetchActivity::Trades { fetched, progress });
         }
         if has_open_interest {
             activity.push(FetchActivity::OpenInterest);
@@ -259,9 +272,14 @@ impl FetchCoordinator {
         activity
     }
 
-    pub(super) fn record_trade_batch(&mut self, req_id: uuid::Uuid, count: usize) {
+    pub(super) fn record_trade_batch(
+        &mut self,
+        req_id: uuid::Uuid,
+        count: usize,
+        span: Option<(u64, u64)>,
+    ) {
         for handler in self.request_handlers.values_mut() {
-            if handler.record_trade_batch(req_id, count) {
+            if handler.record_trade_batch(req_id, count, span) {
                 return;
             }
         }

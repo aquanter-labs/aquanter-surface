@@ -600,16 +600,17 @@ impl KlineChart {
         None
     }
 
-    pub fn fetch_status_lines(&self) -> Vec<String> {
+    /// Pending fetches as (label, progress fraction when known).
+    pub fn fetch_status(&self) -> Vec<(String, Option<f32>)> {
         self.fetch
             .pending_activity()
             .into_iter()
             .map(|activity| match activity {
-                fetch::FetchActivity::Kline => "Fetching Klines...".to_string(),
-                fetch::FetchActivity::Trades { fetched } => {
-                    format!("Fetching Trades... {fetched} fetched")
+                fetch::FetchActivity::Kline => ("Klines".to_string(), None),
+                fetch::FetchActivity::Trades { fetched, progress } => {
+                    (format!("Trades ({fetched} fetched)"), progress)
                 }
-                fetch::FetchActivity::OpenInterest => "Fetching Open Interest...".to_string(),
+                fetch::FetchActivity::OpenInterest => ("Open Interest".to_string(), None),
             })
             .collect()
     }

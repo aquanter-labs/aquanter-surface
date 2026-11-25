@@ -43,6 +43,10 @@ pub struct TradingConfig {
     pub event_show_history: bool,
     /// The panel shows the event contract tab instead of futures trading.
     pub event_tab: bool,
+    /// Draw trades / event contracts on every active chart, not just the selected one.
+    pub overlay_all_charts: bool,
+    /// Last order-ticket inputs (price, qty, SL/TP, event stake...), owned by the app crate.
+    pub ticket: serde_json::Value,
 }
 
 impl Default for TradingConfig {
@@ -61,6 +65,8 @@ impl Default for TradingConfig {
             event_show_open: true,
             event_show_history: true,
             event_tab: false,
+            overlay_all_charts: false,
+            ticket: serde_json::Value::Null,
         }
     }
 }

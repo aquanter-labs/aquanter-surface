@@ -668,9 +668,9 @@ impl State {
                     .spacing(4);
 
                     top_left_buttons = top_left_buttons.push(modifiers);
-                    for line in chart.fetch_status_lines() {
-                        top_left_buttons =
-                            top_left_buttons.push(text(line).size(crate::style::text_size::SMALL));
+                    let fetch_status = chart.fetch_status();
+                    if !fetch_status.is_empty() {
+                        top_left_buttons = top_left_buttons.push(fetch_indicator(fetch_status));
                     }
 
                     chart
@@ -1859,4 +1859,37 @@ fn basis_modifier<'a>(
         .on_press(Message::PaneEvent(id, Event::ShowModal(modifier_modal)))
         .height(widget::PANE_CONTROL_BTN_HEIGHT)
         .into()
+}
+
+/// A small icon in the pane header; hovering shows each pending fetch with a progress bar.
+fn fetch_indicator<'a>(status: Vec<(String, Option<f32>)>) -> Element<'a, Message> {
+    let rows = status.into_iter().map(|(label, progress)| {
+        let pct = progress.map_or_else(|| "…".to_string(), |p| format!("{:.0}%", p * 100.0));
+        column![
+            row![
+                text(label).size(style::text_size::SMALL),
+                iced::widget::space::horizontal(),
+                text(pct).size(style::text_size::SMALL),
+            ]
+            .spacing(8),
+            // ponytail: unknown progress (single-request fetches) shows an empty bar
+            iced::widget::progress_bar(0.0..=1.0, progress.unwrap_or(0.0))
+                .length(180)
+                .girth(4),
+        ]
+        .spacing(4)
+        .into()
+    });
+
+    tooltip(
+        container(icon_text(Icon::Refresh, 12))
+            .height(widget::PANE_CONTROL_BTN_HEIGHT)
+            .padding(padding::left(4).right(4))
+            .align_y(Alignment::Center),
+        container(column(rows).spacing(8).width(180))
+            .style(style::tooltip)
+            .padding(8),
+        tooltip::Position::Bottom,
+    )
+    .into()
 }

@@ -1432,12 +1432,11 @@ impl Agent {
                 ]
                 .spacing(8),
             ]
-            .spacing(8),
+            .spacing(8)
+            .padding(12),
         ))
-        .width(Length::Shrink)
-        .max_width(360)
-        .padding(20)
-        .style(crate::style::chart_modal)
+        .width(Length::Fill)
+        .height(Length::Fill)
         .into()
     }
 
