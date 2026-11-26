@@ -383,6 +383,8 @@ pub struct PositionOverlay {
     pub price_with_fees: bool,
     /// Fills drawn as B/S badges on their candle rather than arrows at the price.
     pub fill_badges: bool,
+    /// Settled event contracts drawn as W/L badges on their expiry candle.
+    pub event_badges: bool,
     /// TP / SL and limit lines accept drags.
     pub draggable: bool,
     /// A chart edit waiting for confirmation, shown as a popup on the chart.
@@ -503,6 +505,7 @@ pub enum Message {
     ChartShowPositionChanged(bool),
     ChartShowFillsChanged(bool),
     ChartFillBadgesChanged(bool),
+    EventChartBadgesChanged(bool),
     ChartOpeningFillsOnlyChanged(bool),
     ChartDragOrdersChanged(bool),
     ChartDragConfirmChanged(bool),
@@ -924,6 +927,7 @@ impl Trader {
             break_even_price: position.map(|position| position.economic_break_even_price),
             price_with_fees: self.config.chart_price_with_fees,
             fill_badges: self.config.chart_fill_badges,
+            event_badges: self.config.event_chart_badges,
             draggable: self.config.chart_drag_orders && symbol == self.config.symbol,
             confirm: self
                 .pending_action
@@ -1089,6 +1093,7 @@ impl Trader {
             Message::ChartShowPositionChanged(value) => self.config.chart_show_position = value,
             Message::ChartShowFillsChanged(value) => self.config.chart_show_fills = value,
             Message::ChartFillBadgesChanged(value) => self.config.chart_fill_badges = value,
+            Message::EventChartBadgesChanged(value) => self.config.event_chart_badges = value,
             Message::ChartOpeningFillsOnlyChanged(value) => {
                 self.config.chart_opening_fills_only = value;
             }
@@ -2209,7 +2214,7 @@ impl Trader {
                 .spacing(10)
                 .align_y(Alignment::Center),
                 row![
-                    text(tr("Fill markers")).width(Length::Fill),
+                    text(tr("Futures fill markers")).width(Length::Fill),
                     pick_list(
                         [tr("B/S badge on candle"), tr("Arrow at fill price")],
                         Some(if self.config.chart_fill_badges {
@@ -2226,6 +2231,21 @@ impl Trader {
                 checkbox(self.config.chart_opening_fills_only)
                     .label(tr("Opening fills only"))
                     .on_toggle(Message::ChartOpeningFillsOnlyChanged),
+                row![
+                    text(tr("Event contract markers")).width(Length::Fill),
+                    pick_list(
+                        [tr("W/L badge on candle"), tr("Line with result")],
+                        Some(if self.config.event_chart_badges {
+                            tr("W/L badge on candle")
+                        } else {
+                            tr("Line with result")
+                        }),
+                        |choice| Message::EventChartBadgesChanged(
+                            choice == tr("W/L badge on candle")
+                        ),
+                    ),
+                ]
+                .align_y(Alignment::Center),
                 row![
                     checkbox(self.config.chart_drag_orders)
                         .label(tr("Drag TP/SL and orders on chart"))
@@ -3776,11 +3796,13 @@ fn estimated_liquidation_price(
     if !entry_price.is_finite() || entry_price <= 0.0 || leverage == 0 {
         return None;
     }
-    let margin_rate = maintenance_margin_rate.max(0.0) + liquidation_fee_rate.max(0.0);
-    if margin_rate >= 1.0 {
-        return None;
-    }
     let leverage = f64::from(leverage);
+    // The reserve kept at liquidation must stay below the initial margin
+    // (1 / leverage), or the price lands on the wrong side of entry. Binance
+    // gets there with lower maintenance rates on high-leverage brackets
+    // (125x: 0.8% initial, 0.4% maintenance), so cap it at half the margin.
+    let margin_rate =
+        (maintenance_margin_rate.max(0.0) + liquidation_fee_rate.max(0.0)).min(0.5 / leverage);
     let price = if is_long {
         entry_price * (1.0 - 1.0 / leverage) / (1.0 - margin_rate)
     } else {
@@ -5112,6 +5134,21 @@ mod tests {
 
         assert!(long > long_without_fee && long < 100.0);
         assert!(short > 100.0 && short < 110.0);
+
+        // High leverage: always on the losing side of entry, inside the margin.
+        for leverage in [50, 58, 75, 100, 125] {
+            let long = estimated_liquidation_price(100.0, leverage, true, 0.005, 0.0125).unwrap();
+            let short = estimated_liquidation_price(100.0, leverage, false, 0.005, 0.0125).unwrap();
+            let margin = 100.0 / f64::from(leverage);
+            assert!(
+                long < 100.0 && long > 100.0 - margin,
+                "{leverage}x long {long}"
+            );
+            assert!(
+                short > 100.0 && short < 100.0 + margin,
+                "{leverage}x short {short}"
+            );
+        }
     }
 
     #[test]

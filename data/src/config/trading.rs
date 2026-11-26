@@ -59,6 +59,9 @@ pub struct TradingConfig {
     pub chart_fill_badges: bool,
     /// Only mark fills that open or add to a position (no realized PnL).
     pub chart_opening_fills_only: bool,
+    /// Settled event contracts as a W/L badge on their expiry candle instead
+    /// of the open-price line with the result beside it.
+    pub event_chart_badges: bool,
     /// TP / SL and limit-order lines can be dragged on the chart.
     pub chart_drag_orders: bool,
     /// A chart drag waits for confirmation before it is sent.
@@ -91,6 +94,7 @@ impl Default for TradingConfig {
             chart_show_fills: true,
             chart_fill_badges: true,
             chart_opening_fills_only: false,
+            event_chart_badges: true,
             chart_drag_orders: true,
             chart_drag_confirm: true,
             ticket: serde_json::Value::Null,
