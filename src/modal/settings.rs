@@ -1,13 +1,11 @@
 use std::borrow::Cow;
 
 use crate::{
-    Deferred, screen::sidebar, split_column, style, theme::ThemeState, version, widget::tooltip,
+    Deferred, i18n::tr, screen::sidebar, split_column, style, theme::ThemeState, version,
+    widget::tooltip,
 };
 
-use data::{
-    config::theme::default_theme,
-    sidebar::{Menu, Position as SidebarPosition},
-};
+use data::sidebar::{Menu, Position as SidebarPosition};
 use iced::{
     Alignment, Element,
     widget::tooltip::Position,
@@ -17,6 +15,7 @@ use iced::{
 #[derive(Debug, Clone)]
 pub enum Message {
     ThemeSelected(iced::Theme),
+    LanguageChanged(data::Language),
     TimezoneChanged(data::UserTimezone),
     SetMetadataCaching(bool),
     RefreshMetadata,
@@ -44,6 +43,7 @@ pub enum Action {
 /// The settings the app owns and edits from the settings modal.
 pub struct Settings {
     pub timezone: data::UserTimezone,
+    pub language: data::Language,
     pub scale_factor: data::ScaleFactor,
     pub volume_size_unit: Deferred<exchange::SizeUnit>,
     pub boot: Deferred<data::BootSettings>,
@@ -52,12 +52,14 @@ pub struct Settings {
 impl Settings {
     pub fn new(
         timezone: data::UserTimezone,
+        language: data::Language,
         scale_factor: data::ScaleFactor,
         volume_size_unit: exchange::SizeUnit,
         boot: data::BootSettings,
     ) -> Self {
         Self {
             timezone,
+            language,
             scale_factor,
             volume_size_unit: Deferred::new(volume_size_unit),
             boot: Deferred::new(boot),
@@ -66,6 +68,10 @@ impl Settings {
 
     pub fn update(&mut self, message: Message) -> Option<Action> {
         match message {
+            Message::LanguageChanged(language) => {
+                self.language = language;
+                crate::i18n::set_language(language);
+            }
             Message::TimezoneChanged(timezone) => {
                 self.timezone = timezone;
             }
@@ -102,14 +108,9 @@ impl Settings {
         sidebar_position: SidebarPosition,
     ) -> Element<'a, Message> {
         let theme_picklist = {
-            let mut themes: Vec<iced::Theme> = iced_core::Theme::ALL.to_vec();
-
-            let default_theme = iced_core::Theme::Custom(default_theme().into());
-            themes.push(default_theme);
-            themes.extend(
-                data::config::theme::aquanter_themes()
-                    .map(|custom| iced_core::Theme::Custom(custom.into())),
-            );
+            let mut themes: Vec<iced::Theme> = data::config::theme::aquanter_themes()
+                .map(|custom| iced_core::Theme::Custom(custom.into()))
+                .to_vec();
 
             if let Some(custom_theme) = custom_theme {
                 themes.push(custom_theme.clone());
@@ -122,13 +123,19 @@ impl Settings {
             )
         };
 
-        let toggle_theme_editor = button(text("Theme editor")).on_press(Message::Sidebar(
+        let toggle_theme_editor = button(text(tr("Theme editor"))).on_press(Message::Sidebar(
             sidebar::Message::ToggleSidebarMenu(Some(Menu::ThemeEditor)),
         ));
 
-        let toggle_network_editor = button(text("Network")).on_press(Message::Sidebar(
+        let toggle_network_editor = button(text(tr("Network"))).on_press(Message::Sidebar(
             sidebar::Message::ToggleSidebarMenu(Some(Menu::Network)),
         ));
+
+        let language_picklist = pick_list(
+            data::Language::all(),
+            Some(self.language),
+            Message::LanguageChanged,
+        );
 
         let timezone_picklist = pick_list(
             data::UserTimezone::all(),
@@ -143,7 +150,7 @@ impl Settings {
                 }),
             )
             .style(move |theme, status| style::button::modifier(theme, status, true));
-            tooltip(btn, Some("Restart required"), Position::Top)
+            tooltip(btn, Some(tr("Restart required")), Position::Top)
         };
 
         let size_in_quote_ccy_checkbox = {
@@ -151,7 +158,7 @@ impl Settings {
             let restart_required = self.volume_size_unit.restart_required();
 
             let checkbox = checkbox(is_active)
-                .label("Size in quote currency")
+                .label(tr("Size in quote currency"))
                 .on_toggle(|checked| {
                     Message::SetVolumeSizeUnit(if checked {
                         exchange::SizeUnit::Quote
@@ -183,9 +190,9 @@ impl Settings {
 
             let checkbox = tooltip(
                 checkbox(cache_enabled)
-                    .label("Cache ticker metadata")
+                    .label(tr("Cache ticker metadata"))
                     .on_toggle(Message::SetMetadataCaching),
-                Some("Cache ticker metadata for faster startup."),
+                Some(tr("Cache ticker metadata for faster startup.")),
                 Position::Top,
             );
 
@@ -207,7 +214,11 @@ impl Settings {
 
                     tooltip(
                         btn,
-                        if loading { None } else { Some("Refresh now") },
+                        if loading {
+                            None
+                        } else {
+                            Some(tr("Refresh now"))
+                        },
                         Position::Top,
                     )
                 };
@@ -284,14 +295,14 @@ impl Settings {
         let antialiasing_checkbox = {
             let restart_required = self.boot.differs(|boot| &boot.antialiasing);
             let checkbox = checkbox(self.boot.wanted().antialiasing)
-                .label("Antialiasing")
+                .label(tr("Antialiasing"))
                 .on_toggle(Message::SetAntialiasing);
 
             let checkbox = tooltip(
                 checkbox,
-                Some(
+                Some(tr(
                     "Disabling may increase performance, but expect rough edges\n- Restart required to apply.",
-                ),
+                )),
                 Position::Top,
             );
 
@@ -306,11 +317,11 @@ impl Settings {
         };
 
         let open_data_folder = {
-            let button = button(text("Open data folder")).on_press(Message::OpenDataFolder);
+            let button = button(text(tr("Open data folder"))).on_press(Message::OpenDataFolder);
 
             tooltip(
                 button,
-                Some("Open the folder where the data & config is stored"),
+                Some(tr("Open the folder where the data & config is stored")),
                 Position::Top,
             )
         };
@@ -368,14 +379,15 @@ impl Settings {
 
         let column_content = split_column![
             column![open_data_folder,].spacing(8),
-            column![text("Sidebar position").size(crate::style::text_size::SECTION), sidebar_pos_picklist,].spacing(12),
-            column![text("Time zone").size(crate::style::text_size::SECTION), timezone_picklist,].spacing(12),
-            column![text("Market data").size(crate::style::text_size::SECTION), column![size_in_quote_ccy_checkbox, cache_metadata_checkbox].spacing(4)].spacing(12),
-            column![text("Theme").size(crate::style::text_size::SECTION), theme_picklist,].spacing(12),
-            column![text("Interface scale").size(crate::style::text_size::SECTION), scale_factor,].spacing(12),
-            column![text("Rendering").size(crate::style::text_size::SECTION), antialiasing_checkbox,].spacing(12),
+            column![text(tr("Language")).size(crate::style::text_size::SECTION), language_picklist,].spacing(12),
+            column![text(tr("Sidebar position")).size(crate::style::text_size::SECTION), sidebar_pos_picklist,].spacing(12),
+            column![text(tr("Time zone")).size(crate::style::text_size::SECTION), timezone_picklist,].spacing(12),
+            column![text(tr("Market data")).size(crate::style::text_size::SECTION), column![size_in_quote_ccy_checkbox, cache_metadata_checkbox].spacing(4)].spacing(12),
+            column![text(tr("Theme")).size(crate::style::text_size::SECTION), theme_picklist,].spacing(12),
+            column![text(tr("Interface scale")).size(crate::style::text_size::SECTION), scale_factor,].spacing(12),
+            column![text(tr("Rendering")).size(crate::style::text_size::SECTION), antialiasing_checkbox,].spacing(12),
             column![
-                text("Experimental").size(crate::style::text_size::SECTION),
+                text(tr("Experimental")).size(crate::style::text_size::SECTION),
                 column![toggle_theme_editor, toggle_network_editor].spacing(8),
             ]
             .spacing(12),

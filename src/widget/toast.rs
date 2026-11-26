@@ -1,3 +1,4 @@
+use data::i18n::tr;
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::overlay;
 use iced::advanced::renderer;
@@ -47,7 +48,7 @@ impl Toast {
 
     pub fn error(body: impl Into<String>) -> Self {
         Self {
-            title: "Error".to_string(),
+            title: tr("Error").to_string(),
             body: body.into(),
             status: Status::Danger,
         }
@@ -55,7 +56,7 @@ impl Toast {
 
     pub fn warn(body: impl Into<String>) -> Self {
         Self {
-            title: "Warning".to_string(),
+            title: tr("Warning").to_string(),
             body: body.into(),
             status: Status::Warning,
         }
@@ -63,7 +64,7 @@ impl Toast {
 
     pub fn info(body: impl Into<String>) -> Self {
         Self {
-            title: "Info".to_string(),
+            title: tr("Info").to_string(),
             body: body.into(),
             status: Status::Primary,
         }

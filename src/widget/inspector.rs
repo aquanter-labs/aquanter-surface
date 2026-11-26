@@ -1,3 +1,4 @@
+use data::i18n::tr;
 use iced::{
     Element, Length,
     widget::{button, column, container, row, rule},
@@ -93,8 +94,8 @@ where
     for tab in available_tabs {
         let (label, width) = match tab {
             InspectorTab::Source => ("i", Length::Shrink),
-            InspectorTab::Inputs => ("Inputs", Length::FillPortion(1)),
-            InspectorTab::Style => ("Style", Length::FillPortion(1)),
+            InspectorTab::Inputs => (tr("Inputs"), Length::FillPortion(1)),
+            InspectorTab::Style => (tr("Style"), Length::FillPortion(1)),
         };
         tab_buttons = tab_buttons.push(tab_button(label, *tab, width));
     }

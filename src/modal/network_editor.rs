@@ -4,6 +4,7 @@ use crate::{
     style::{self, icon_text},
     widget::{BannerKind, banner, tooltip},
 };
+use data::i18n::tr;
 use exchange::proxy::{Proxy, ProxyScheme};
 
 use iced::{
@@ -104,7 +105,7 @@ impl NetworkEditor {
 
         if network.restart_required() {
             content = content.push(banner(
-                "Restart required.\nChanges will take effect after restart.",
+                tr("Restart required.\nChanges will take effect after restart."),
                 BannerKind::Warning,
             ));
         }
@@ -228,7 +229,7 @@ impl ProxyForm {
         let applied_proxy = {
             let applied = applied_cfg
                 .map(|c| c.to_ui_string())
-                .unwrap_or_else(|| "None (direct connection)".to_string());
+                .unwrap_or_else(|| tr("None (direct connection)").to_string());
 
             let pending_url = if is_pending {
                 Some(
@@ -237,7 +238,7 @@ impl ProxyForm {
                         .flatten()
                         .as_ref()
                         .map(|c| c.to_ui_string())
-                        .unwrap_or_else(|| "None (direct connection)".to_string()),
+                        .unwrap_or_else(|| tr("None (direct connection)").to_string()),
                 )
             } else {
                 None
@@ -245,7 +246,7 @@ impl ProxyForm {
 
             let mut lines = column![
                 row![
-                    text("Effective:").size(crate::style::text_size::SMALL),
+                    text(tr("Effective:")).size(crate::style::text_size::SMALL),
                     text(applied).size(crate::style::text_size::BODY),
                 ]
                 .spacing(4)
@@ -257,7 +258,7 @@ impl ProxyForm {
             if let Some(pending) = pending_url {
                 lines = lines.push(
                     row![
-                        text("Pending:").size(crate::style::text_size::SMALL),
+                        text(tr("Pending:")).size(crate::style::text_size::SMALL),
                         text(pending).size(crate::style::text_size::BODY),
                     ]
                     .spacing(4)
@@ -270,7 +271,7 @@ impl ProxyForm {
 
         let scheme_row = row![
             iced::widget::space::horizontal(),
-            text("Scheme:"),
+            text(tr("Scheme:")),
             pick_list(ProxyScheme::ALL, Some(self.scheme), ProxyMsg::SchemeChanged)
         ]
         .spacing(8)
@@ -278,7 +279,7 @@ impl ProxyForm {
 
         let host_row = row![
             iced::widget::space::horizontal(),
-            text("Host:"),
+            text(tr("Host:")),
             text_input("e.g. 127.0.0.1", &self.host)
                 .on_input(ProxyMsg::HostChanged)
                 .width(200)
@@ -288,7 +289,7 @@ impl ProxyForm {
 
         let port_row = row![
             iced::widget::space::horizontal(),
-            text("Port:"),
+            text(tr("Port:")),
             text_input("e.g. 8080", &self.port)
                 .on_input(ProxyMsg::PortChanged)
                 .width(200)
@@ -298,7 +299,7 @@ impl ProxyForm {
 
         let username_row = row![
             iced::widget::space::horizontal(),
-            text("Username:"),
+            text(tr("Username:")),
             text_input("(optional)", &self.username)
                 .on_input(ProxyMsg::UsernameChanged)
                 .width(200)
@@ -308,14 +309,14 @@ impl ProxyForm {
 
         let password_row = row![
             iced::widget::space::horizontal(),
-            text("Password:"),
+            text(tr("Password:")),
             text_input("(optional)", &self.password)
                 .on_input(ProxyMsg::PasswordChanged)
                 .width(180)
                 .secure(self.hide_password),
             tooltip(
                 checkbox(self.hide_password).on_toggle(ProxyMsg::ToggleShowPassword),
-                Some("Hide"),
+                Some(tr("Hide")),
                 iced::widget::tooltip::Position::Top,
             ),
         ]
@@ -323,7 +324,7 @@ impl ProxyForm {
         .align_y(iced::Alignment::Center);
 
         let buttons: Element<'_, ProxyMsg> = {
-            let msg = "Restore proxy settings to default";
+            let msg = tr("Restore proxy settings to default");
 
             match confirm {
                 ConfirmState::ProxyClear => confirm_row(msg, ProxyMsg::Clear, ProxyMsg::Cancel),
@@ -341,7 +342,7 @@ impl ProxyForm {
         let body = column![
             row![
                 iced::widget::rule::horizontal(1),
-                text("Proxy").size(crate::style::text_size::SECTION),
+                text(tr("Proxy")).size(crate::style::text_size::SECTION),
                 iced::widget::rule::horizontal(1),
             ]
             .spacing(4)
@@ -541,12 +542,12 @@ impl FetchForm {
         };
 
         let fetch_checkbox = checkbox(self.draft_active)
-            .label("Fetch historical trades")
+            .label(tr("Fetch historical trades"))
             .on_toggle(FetchMsg::ToggleFetchTrades);
 
         let mut fetch_section = column![tooltip(
             fetch_checkbox,
-            Some("Fetch historical trade data for footprint charts"),
+            Some(tr("Fetch historical trade data for footprint charts")),
             iced::widget::tooltip::Position::Top,
         ),]
         .spacing(8);
@@ -567,7 +568,7 @@ impl FetchForm {
             let server_radio = {
                 let radio_row = row![
                     radio(
-                        "Server",
+                        tr("Server"),
                         FetchModeTag::Server,
                         selected_tag,
                         FetchMsg::SelectFetchMode,
@@ -594,14 +595,14 @@ impl FetchForm {
 
                     let auth_token_input = row![
                         iced::widget::space::horizontal(),
-                        text("Auth:"),
+                        text(tr("Auth:")),
                         text_input("(optional)", &self.server_auth_token_input)
                             .on_input(FetchMsg::ServerAuthTokenChanged)
                             .width(160)
                             .secure(self.hide_token),
                         tooltip(
                             checkbox(self.hide_token).on_toggle(FetchMsg::ToggleShowToken),
-                            Some("Hide"),
+                            Some(tr("Hide")),
                             iced::widget::tooltip::Position::Top,
                         ),
                     ]
@@ -636,7 +637,7 @@ impl FetchForm {
             || (*effective_mode == fetcher::TradeFetchMode::Server && effective_url.is_some());
 
         let buttons: Element<'_, FetchMsg> = {
-            let msg = "Restore fetch settings to default";
+            let msg = tr("Restore fetch settings to default");
 
             match confirm {
                 ConfirmState::FetchClear => {
@@ -656,7 +657,7 @@ impl FetchForm {
         column![
             row![
                 iced::widget::rule::horizontal(1),
-                text("Historical backfill").size(crate::style::text_size::SECTION),
+                text(tr("Historical backfill")).size(crate::style::text_size::SECTION),
                 iced::widget::rule::horizontal(1),
             ]
             .spacing(4)
@@ -709,14 +710,15 @@ impl FetchForm {
                 if self.draft_tag == FetchModeTag::Server && self.draft_active {
                     let url = self.trimmed_url();
                     if url.is_none() || url.as_deref().is_none_or(|u| u.trim().is_empty()) {
-                        *error =
-                            Some("Server URL is required when mode is set to Server.".to_string());
+                        *error = Some(
+                            tr("Server URL is required when mode is set to Server.").to_string(),
+                        );
                         return None;
                     }
                     if let Some(ref u) = url
                         && url::Url::parse(u).is_err()
                     {
-                        *error = Some("Server URL is not a valid URL.".to_string());
+                        *error = Some(tr("Server URL is not a valid URL.").to_string());
                         return None;
                     }
                 }
@@ -802,7 +804,7 @@ fn apply_action_row<'a, M: Clone + 'a + 'static>(
     .spacing(8);
 
     if draft_differs {
-        row_buttons = row_buttons.push(button("Apply").on_press(apply_msg).height(28));
+        row_buttons = row_buttons.push(button(tr("Apply")).on_press(apply_msg).height(28));
     }
 
     if has_config {
@@ -824,7 +826,7 @@ fn pending_info<M: Clone + 'static>(is_pending: bool) -> Option<Element<'static,
     if is_pending {
         Some(tooltip(
             button("i").style(style::button::info).height(28),
-            Some("Pending changes require a full restart"),
+            Some(tr("Pending changes require a full restart")),
             iced::widget::tooltip::Position::Top,
         ))
     } else {

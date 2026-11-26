@@ -54,6 +54,7 @@ pub struct State {
     pub trade_fetch_enabled: Option<bool>,
     pub size_in_quote_ccy: exchange::SizeUnit,
     pub cache_market_metadata: bool,
+    pub language: crate::config::language::Language,
     #[serde(flatten)]
     pub boot: BootSettings,
 }
@@ -93,6 +94,7 @@ impl State {
             ai_cfg,
             alert_cfg,
             trading_cfg: Default::default(),
+            language: Default::default(),
         }
     }
 }

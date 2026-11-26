@@ -2,6 +2,7 @@ use crate::{
     style::{self, icon_text},
     widget::numeric_input_box,
 };
+use data::i18n::tr;
 
 use data::chart::Basis;
 use exchange::{
@@ -485,7 +486,7 @@ impl Modifier {
 
                             row![
                                 tab_button(
-                                    text("Timeframe"),
+                                    text(tr("Timeframe")),
                                     if timeframe_tab_is_selected {
                                         None
                                     } else {
@@ -495,7 +496,7 @@ impl Modifier {
                                     is_timeframe_selected,
                                 ),
                                 tab_button(
-                                    text("Ticks"),
+                                    text(tr("Ticks")),
                                     if tick_count_tab_is_selected {
                                         None
                                     } else {
@@ -524,8 +525,8 @@ impl Modifier {
                             .spacing(4)
                         } else {
                             let text_content = match kind {
-                                ModifierKind::Comparison(_) => "Timeframe",
-                                _ => "Aggregation",
+                                ModifierKind::Comparison(_) => tr("Timeframe"),
+                                _ => tr("Aggregation"),
                             };
                             row![text(text_content).size(crate::style::text_size::EMPHASIS)]
                         }
@@ -578,7 +579,7 @@ impl Modifier {
                                 });
                                 basis_selection_column =
                                     basis_selection_column.push(numeric_input_box::<_, Message>(
-                                        "Custom: ",
+                                        tr("Custom: "),
                                         &format!(
                                             "{}-{} min",
                                             CUSTOM_TIMEFRAME_MIN, CUSTOM_TIMEFRAME_MAX
@@ -618,7 +619,7 @@ impl Modifier {
                                 .filter(|tc| tc.0 >= TICK_COUNT_MIN && tc.0 <= TICK_COUNT_MAX);
 
                             numeric_input_box::<_, Message>(
-                                "Custom: ",
+                                tr("Custom: "),
                                 &format!("{}-{}", TICK_COUNT_MIN, TICK_COUNT_MAX),
                                 &raw_input_buf.to_display_string(),
                                 is_input_valid,
@@ -649,7 +650,7 @@ impl Modifier {
                 is_input_valid,
             } => {
                 let Some(exchange) = self.exchange else {
-                    return container(text("Exchange information is not available"))
+                    return container(text(tr("Exchange information is not available")))
                         .padding(16)
                         .style(style::chart_modal)
                         .into();
@@ -660,7 +661,10 @@ impl Modifier {
                         column![].padding(4).spacing(8).align_x(Horizontal::Center);
 
                     ticksizes_column = ticksizes_column
-                        .push(text("Tick size multiplier").size(crate::style::text_size::EMPHASIS))
+                        .push(
+                            text(tr("Tick size multiplier"))
+                                .size(crate::style::text_size::EMPHASIS),
+                        )
                         .push(rule::horizontal(1).style(style::split_ruler));
 
                     let allows_custom_tsizes = exchange.is_depth_client_aggr()
@@ -687,7 +691,7 @@ impl Modifier {
                             });
 
                             numeric_input_box::<_, Message>(
-                                "Custom: ",
+                                tr("Custom: "),
                                 &format!("{}-{}", TICK_MULTIPLIER_MIN, TICK_MULTIPLIER_MAX),
                                 &raw_input_buf.to_display_string(),
                                 is_input_valid,
@@ -700,7 +704,7 @@ impl Modifier {
                     }
                     if let Some(auto) = self.auto_ticksize {
                         ticksizes_column = ticksizes_column.push(create_button(
-                            text("Auto (fit zoom)"),
+                            text(tr("Auto (fit zoom)")),
                             Some(Message::TicksizeAuto),
                             auto,
                         ));
@@ -736,7 +740,7 @@ impl Modifier {
                     .style(style::chart_modal)
                     .into()
                 } else {
-                    container(text("No ticksize available for this chart type"))
+                    container(text(tr("No ticksize available for this chart type")))
                         .padding(16)
                         .style(style::chart_modal)
                         .into()

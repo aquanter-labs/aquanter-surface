@@ -11,6 +11,7 @@ use crate::widget::chart::heatmap::{
     },
     view::{self, ViewConfig, ViewInputs, ViewWindow},
 };
+use data::i18n::tr;
 
 use super::super::BackgroundJob;
 use crate::screen::dashboard::pane::ChartAction as Action;
@@ -332,7 +333,7 @@ impl HeatmapShader {
     ) -> iced::Element<'_, Message> {
         if self.base_price.is_none() {
             return iced::widget::center(
-                iced::widget::text("Waiting for data...").size(crate::style::text_size::TITLE),
+                iced::widget::text(tr("Waiting for data...")).size(crate::style::text_size::TITLE),
             )
             .into();
         }

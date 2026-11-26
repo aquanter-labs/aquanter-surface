@@ -15,6 +15,7 @@ use crate::{
     widget::inspector::InspectorContent,
 };
 use data::chart::kline::indicators::manifest;
+use data::i18n::tr;
 use data::{
     PaneSettingsSnapshot, PaneSettingsTransfer,
     chart::{Basis, kline::OpenInterestSeries},
@@ -569,8 +570,8 @@ impl Content {
                     row![
                         space::horizontal(),
                         crate::tooltip(
-                            button("Sync all").on_press(Message::SyncKlineSettings(pane)),
-                            Some("Apply configuration to similar panes"),
+                            button(tr("Sync all")).on_press(Message::SyncKlineSettings(pane)),
+                            Some(tr("Apply configuration to similar panes")),
                             iced::widget::tooltip::Position::Left,
                         ),
                     ]

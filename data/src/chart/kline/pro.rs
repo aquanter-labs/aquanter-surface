@@ -5,10 +5,10 @@ use serde::{Deserialize, Serialize};
 /// colors, so each maps to the closest base theme color of the default theme.
 fn nearest_theme_color(color: iced_core::Color) -> crate::config::theme::ThemeColor {
     use crate::config::theme::{
-        ThemeAccent, ThemeColor, ThemeColorRole, ThemeColorShade, default_theme,
-        generated_theme_accents,
+        ThemeAccent, ThemeColor, ThemeColorRole, ThemeColorShade, generated_theme_accents,
+        legacy_theme,
     };
-    let theme = iced_core::Theme::Custom(default_theme().into());
+    let theme = iced_core::Theme::Custom(legacy_theme().into());
     let palette = theme.extended_palette();
     let accents = generated_theme_accents(palette);
     let roles = [

@@ -6,6 +6,7 @@ use crate::ai::{
     ChartAnnotation, DepthLevel, LiquidationSummary, MarketBar, MarketFeatures, MarketSnapshot,
 };
 use data::chart::Basis;
+use data::i18n::tr;
 use exchange::{Liquidation, depth::Depth, unit::Price};
 use std::collections::BTreeMap;
 
@@ -26,9 +27,12 @@ impl KlineChart {
         exclude: bool,
     ) -> Result<MarketSnapshot, String> {
         let Basis::Time(timeframe) = self.basis else {
-            return Err("AI analysis currently requires a time-based Kline chart.".into());
+            return Err(tr("AI analysis currently requires a time-based Kline chart.").into());
         };
-        let series = self.data.base_series().ok_or("No primary series loaded.")?;
+        let series = self
+            .data
+            .base_series()
+            .ok_or(tr("No primary series loaded."))?;
         let limit = long.max(short).clamp(20, 500);
         let mut points = series
             .points()

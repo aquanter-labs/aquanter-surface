@@ -1,6 +1,7 @@
 use super::Message as BrowserMessage;
 use data::chart::kline::indicators::IndicatorId;
 use data::chart::kline::indicators::manifest::{Entry, Installation, Message, State};
+use data::i18n::tr;
 use iced::{
     Element, Length,
     widget::{button, column, container, row, scrollable, text, text_input},
@@ -34,7 +35,7 @@ impl ViewState {
                 .style(|theme, status| style::button::transparent(theme, status, false))
                 .padding([4, 6])
                 .on_press(BrowserMessage::Back),
-            text_input("Search catalog...", &self.search)
+            text_input(tr("Search catalog..."), &self.search)
                 .style(|theme, status| style::validated_text_input(theme, status, true))
                 .on_input(BrowserMessage::CatalogSearchChanged)
                 .padding(6)
@@ -54,7 +55,7 @@ impl ViewState {
                             .can_refresh()
                             .then_some(BrowserMessage::Catalog(Message::Refresh))
                     ),
-                Some("Refresh catalog"),
+                Some(tr("Refresh catalog")),
                 Position::Bottom,
             ),
         ]
@@ -87,13 +88,13 @@ impl ViewState {
 
             if count == 0 {
                 entries = entries.push(text(if published.indicators.is_empty() {
-                    "No indicators are available."
+                    tr("No indicators are available.")
                 } else {
-                    "No matching indicators."
+                    tr("No matching indicators.")
                 }));
             }
         } else if loading {
-            entries = entries.push(text("Loading indicators..."));
+            entries = entries.push(text(tr("Loading indicators...")));
         }
 
         let list = scrollable::Scrollable::with_direction(
@@ -202,30 +203,33 @@ impl ViewState {
         };
 
         let action = match installation {
-            Installation::Installed => "Remove",
-            Installation::Bundled => "Bundled",
-            Installation::NotInstalled => "Install",
+            Installation::Installed => tr("Remove"),
+            Installation::Bundled => tr("Bundled"),
+            Installation::NotInstalled => tr("Install"),
         };
 
-        let description = entry.description.as_deref().unwrap_or("Not provided");
+        let description = entry.description.as_deref().unwrap_or(tr("Not provided"));
         let author = entry
             .author
             .as_ref()
-            .map_or("Not provided", |author| author.name.as_str());
+            .map_or(tr("Not provided"), |author| author.name.as_str());
         let bases = entry.bases.join(", ");
 
         let mut details = column![
             crate::widget::text::muted(entry.id.as_str()),
-            setting_section("Author", text(author).style(style::text_color::secondary))
-                .with_modal_container()
-                .into_element(),
             setting_section(
-                "Description",
+                tr("Author"),
+                text(author).style(style::text_color::secondary)
+            )
+            .with_modal_container()
+            .into_element(),
+            setting_section(
+                tr("Description"),
                 text(description).style(style::text_color::secondary),
             )
             .with_modal_container()
             .into_element(),
-            setting_section("Basis", text(bases).style(style::text_color::secondary))
+            setting_section(tr("Basis"), text(bases).style(style::text_color::secondary))
                 .with_modal_container()
                 .into_element(),
         ]

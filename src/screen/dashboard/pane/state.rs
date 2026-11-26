@@ -1,5 +1,6 @@
 use super::settings::presets::{self as preset_editor, Action as PresetEditorAction};
 use crate::layout::{ChartResourcesMessage, SharedChartResources};
+use data::i18n::tr;
 use data::layout::presets::Library as PresetLibrary;
 
 use super::content::{
@@ -453,7 +454,7 @@ impl State {
         ) && !self.has_stream()
         {
             let content = row![
-                text("Choose a ticker")
+                text(tr("Choose a ticker"))
                     .size(crate::style::text_size::EMPHASIS)
                     .align_y(Alignment::Center)
                     .line_height(1.4)
@@ -502,7 +503,8 @@ impl State {
                         .into()
                 }
                 ResolvedStream::Ready(streams) if !streams.is_empty() => center(
-                    text("Waiting for pane initialization...").size(crate::style::text_size::TITLE),
+                    text(tr("Waiting for pane initialization..."))
+                        .size(crate::style::text_size::TITLE),
                 )
                 .into(),
                 ResolvedStream::Blocked {
@@ -535,7 +537,7 @@ impl State {
                 _ => {
                     let content = column![
                         text(kind.to_string()).size(crate::style::text_size::TITLE),
-                        text("No ticker selected").size(crate::style::text_size::SECTION)
+                        text(tr("No ticker selected")).size(crate::style::text_size::SECTION)
                     ]
                     .spacing(8)
                     .align_x(Alignment::Center);
@@ -551,7 +553,7 @@ impl State {
             top_left_buttons = top_left_buttons.push(button_with_tooltip(
                 icon_text(Icon::Cog, 14),
                 Message::PaneEvent(id, Event::ProSettings),
-                Some("Panel settings"),
+                Some(tr("Panel settings")),
                 tooltip::Position::Bottom,
                 move |theme, status| style::button::modifier(theme, status, !settings_open),
             ));
@@ -588,7 +590,7 @@ impl State {
                 let base: Element<_> = widget::toast::Manager::new(
                     center(
                         column![
-                            text("Choose a view to get started")
+                            text(tr("Choose a view to get started"))
                                 .size(crate::style::text_size::TITLE),
                             content_picklist
                         ]
@@ -1173,7 +1175,7 @@ impl State {
         }
 
         let title = match page {
-            InspectorPage::PaneSettings => "Pane settings".to_owned(),
+            InspectorPage::PaneSettings => tr("Pane settings").to_owned(),
             InspectorPage::Indicators => self.kline_chart()?.indicator_browser_title().to_owned(),
         };
 
@@ -1251,15 +1253,19 @@ impl State {
                     pane,
                     Event::KlineInteraction(content::kline::Message::ToggleDrawingSidebar),
                 ),
-                Some("Drawing tools"),
+                Some(tr("Drawing tools")),
                 tooltip_pos,
                 control_btn_style(chart.left_sidebar_visible()),
             ));
         }
 
         for (page, icon, label) in [
-            (InspectorPage::Indicators, Icon::ChartOutline, "Indicators"),
-            (InspectorPage::PaneSettings, Icon::Cog, "Pane settings"),
+            (
+                InspectorPage::Indicators,
+                Icon::ChartOutline,
+                tr("Indicators"),
+            ),
+            (InspectorPage::PaneSettings, Icon::Cog, tr("Pane settings")),
         ] {
             if self.supports_inspector(page) {
                 buttons = buttons.push(press_button_with_tooltip(
@@ -1277,7 +1283,7 @@ impl State {
                 buttons = buttons.push(button_with_tooltip(
                     icon_text(Icon::Popout, 12),
                     Message::Merge,
-                    Some("Merge"),
+                    Some(tr("Merge")),
                     tooltip_pos,
                     control_btn_style(is_popout),
                 ));
@@ -1285,7 +1291,7 @@ impl State {
                 buttons = buttons.push(button_with_tooltip(
                     icon_text(Icon::Popout, 12),
                     Message::Popout,
-                    Some("Pop out"),
+                    Some(tr("Pop out")),
                     tooltip_pos,
                     control_btn_style(is_popout),
                 ));
@@ -1386,7 +1392,7 @@ impl State {
                         tickers_table,
                         Some(sources.into_iter()),
                         self.stream_pair(),
-                        "Agg",
+                        tr("Agg"),
                     ),
                     (
                         Content::Kline {
@@ -1397,19 +1403,19 @@ impl State {
                         tickers_table,
                         Some(chart.series().iter().map(|series| series.ticker_info)),
                         self.stream_pair(),
-                        "Add",
+                        tr("Add"),
                     ),
                     (Content::TimeAndSales(Some(_)), ResolvedStream::Ready(streams)) => panel.view(
                         tickers_table,
                         Some(streams.iter().map(|stream| stream.ticker_info())),
                         self.stream_pair(),
-                        "Add",
+                        tr("Add"),
                     ),
                     _ => panel.view(
                         tickers_table,
                         None::<std::iter::Empty<TickerInfo>>,
                         self.stream_pair(),
-                        "Add",
+                        tr("Add"),
                     ),
                 }
                 .map(move |msg| Message::PaneEvent(pane, Event::MiniTickersListInteraction(msg)));
@@ -1497,7 +1503,7 @@ impl State {
         } = &self.content
         {
             let presets_section = crate::widget::inspector::InspectorSection::titled(
-                "Presets",
+                tr("Presets"),
                 self.preset_editor
                     .view(chart_resources.presets(), chart)
                     .map(move |message| Message::PaneEvent(pane, Event::PresetEditor(message))),
@@ -1526,7 +1532,7 @@ impl State {
     fn apply_chart_preset(&mut self, id: uuid::Uuid, presets: &PresetLibrary) -> Option<Effect> {
         let Some(preset) = presets.get(Some(id)) else {
             self.notifications
-                .push(Toast::error("This preset no longer exists."));
+                .push(Toast::error(tr("This preset no longer exists.")));
             return None;
         };
 
@@ -1777,7 +1783,7 @@ fn link_group_modal<'a>(
                 button_with_tooltip(
                     btn_content.align_x(iced::Alignment::Center),
                     Message::SwitchLinkGroup(pane, None),
-                    Some("Unlink"),
+                    Some(tr("Unlink")),
                     tooltip::Position::Bottom,
                     move |theme, status| style::button::menu_body(theme, status, true),
                 )

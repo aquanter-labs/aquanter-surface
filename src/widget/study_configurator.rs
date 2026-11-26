@@ -14,6 +14,7 @@ use data::chart::kline::{
     big_trades_threshold_label,
 };
 use data::config::theme::ThemeColor;
+use data::i18n::tr;
 use exchange::Timeframe;
 use iced::{
     Element, Length,
@@ -116,7 +117,7 @@ pub fn poc_line_controls<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let shown = show_poc || show_npoc;
     let toggle = checkbox(shown)
-        .label("Show POC lines")
+        .label(tr("Show POC lines"))
         .spacing(8)
         .text_size(crate::style::text_size::SECTION)
         .on_toggle_maybe(enabled.then_some(move |show| on_change(show, show)))
@@ -127,7 +128,7 @@ pub fn poc_line_controls<'a, M: Clone + 'a>(
             container(
                 column![
                     radio("All", true, Some(show_poc), move |all| on_change(all, true)),
-                    radio("Untouched only", false, Some(show_poc), move |all| {
+                    radio(tr("Untouched only"), false, Some(show_poc), move |all| {
                         on_change(all, true)
                     }),
                 ]
@@ -162,7 +163,7 @@ fn volume_profile_width_section<'a>(
         Some(5.0),
     );
 
-    study_setting("Width", control)
+    study_setting(tr("Width"), control)
 }
 
 fn volume_profile_opacity_section<'a>(
@@ -188,7 +189,7 @@ fn volume_profile_opacity_section<'a>(
         Some(5.0),
     );
 
-    study_setting("Opacity", control)
+    study_setting(tr("Opacity"), control)
 }
 
 fn big_trades_color_settings<'a>(
@@ -199,13 +200,13 @@ fn big_trades_color_settings<'a>(
 ) -> Element<'a, KlineStudy> {
     column![
         study_setting(
-            "Buy bubbles",
+            tr("Buy bubbles"),
             study_color_setting(buy_color, theme_accents, move |color| {
                 on_change(color, sell_color)
             }),
         ),
         study_setting(
-            "Sell bubbles",
+            tr("Sell bubbles"),
             study_color_setting(sell_color, theme_accents, move |color| {
                 on_change(buy_color, color)
             }),
@@ -223,7 +224,7 @@ fn big_trades_threshold_slider<'a>(
     visible: bool,
 ) -> Element<'a, KlineStudy> {
     classic_slider_row(
-        Some(text("Size filter")),
+        Some(text(tr("Size filter"))),
         0..=big_trades_step_count().saturating_sub(1) as u32,
         big_trades_step_for_threshold(threshold) as u32,
         move |step| KlineStudy::BigTrades {
@@ -261,9 +262,9 @@ fn kline_study_config_view<'a>(
             let visible = *visible;
 
             if matches!(schedule, VolumeProfileSchedule::Recurring { .. }) && !basis.is_time() {
-                return iced::widget::center(text(
+                return iced::widget::center(text(tr(
                     "Recurring volume profiles require a time-based chart",
-                ))
+                )))
                 .into();
             }
 
@@ -274,7 +275,10 @@ fn kline_study_config_view<'a>(
                     };
                     let intervals = VolumeProfileSchedule::recurring_intervals_for(basis);
                     let interval_control: Element<'_, KlineStudy> = if intervals.is_empty() {
-                        text("No recurring interval is at least 4x the chart timeframe").into()
+                        text(tr(
+                            "No recurring interval is at least 4x the chart timeframe",
+                        ))
+                        .into()
                     } else {
                         let selected_interval = intervals.contains(&interval).then_some(interval);
                         pick_list(intervals, selected_interval, move |new_interval| {
@@ -293,7 +297,7 @@ fn kline_study_config_view<'a>(
                         .into()
                     };
 
-                    column![study_setting("Interval", interval_control)]
+                    column![study_setting(tr("Interval"), interval_control)]
                         .spacing(inspector::MODAL_SECTION_SPACING)
                         .into()
                 }
@@ -377,13 +381,13 @@ fn kline_study_config_view<'a>(
                     };
                     let mut radius_controls = column![
                         checkbox(radius_scale.is_some())
-                            .label("Dynamic circle radius")
+                            .label(tr("Dynamic circle radius"))
                             .on_toggle(move |dynamic| on_radius_change(dynamic.then_some(100))),
                     ]
                     .spacing(8);
                     if let Some(scale) = radius_scale {
                         radius_controls = radius_controls.push(classic_slider_row(
-                            Some(crate::widget::text::body("Circle radius scaling")),
+                            Some(crate::widget::text::body(tr("Circle radius scaling"))),
                             10..=200,
                             scale,
                             move |value| on_radius_change(Some(value)),
@@ -391,7 +395,7 @@ fn kline_study_config_view<'a>(
                             Some(10),
                         ));
                     }
-                    let radius_section = study_setting("Visualization", radius_controls);
+                    let radius_section = study_setting(tr("Visualization"), radius_controls);
 
                     column![slider, radius_section]
                         .spacing(inspector::MODAL_SECTION_SPACING)
@@ -435,7 +439,7 @@ fn tpo_study_config_view<'a>(
     };
 
     if !basis.is_time() {
-        return iced::widget::center(text("TPO profiles require a time-based chart")).into();
+        return iced::widget::center(text(tr("TPO profiles require a time-based chart"))).into();
     }
 
     match tab {
@@ -492,21 +496,21 @@ fn tpo_study_config_view<'a>(
             );
 
             column![
-                study_setting("Anchor (UTC)", anchor_picker),
-                study_setting("Bracket duration", period_picker),
-                study_setting("Value area target", value_area_target),
+                study_setting(tr("Anchor (UTC)"), anchor_picker),
+                study_setting(tr("Bracket duration"), period_picker),
+                study_setting(tr("Value area target"), value_area_target),
             ]
             .spacing(inspector::MODAL_SECTION_SPACING)
             .into()
         }
         inspector::InspectorTab::Style => {
             let color_controls = [
-                (TpoColorSlot::ValueAreaCells, "Value area"),
-                (TpoColorSlot::OutsideValueArea, "Outside value area"),
+                (TpoColorSlot::ValueAreaCells, tr("Value area")),
+                (TpoColorSlot::OutsideValueArea, tr("Outside value area")),
                 (TpoColorSlot::Poc, "POC"),
-                (TpoColorSlot::InitialBalance, "Initial balance"),
-                (TpoColorSlot::SinglePrint, "Single print"),
-                (TpoColorSlot::PoorExtremes, "Poor high/low"),
+                (TpoColorSlot::InitialBalance, tr("Initial balance")),
+                (TpoColorSlot::SinglePrint, tr("Single print")),
+                (TpoColorSlot::PoorExtremes, tr("Poor high/low")),
             ]
             .into_iter()
             .map(|(slot, label)| {

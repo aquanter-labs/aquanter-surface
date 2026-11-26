@@ -6,6 +6,7 @@ use crate::widget::column_drag::DragEvent;
 use crate::widget::{manager_icon_button, manager_list, manager_row};
 use crate::{style, tooltip};
 use data::chart::kline::indicators::manifest;
+use data::i18n::tr;
 use data::layout::MAX_NAME_LENGTH;
 use data::layout::presets::{self, Library as PresetLibrary};
 
@@ -223,7 +224,7 @@ impl LayoutManager {
         self.active_layout_id = Some(layout_id);
 
         self.get_mut(layout_id)
-            .ok_or_else(|| "Layout not found".into())
+            .ok_or_else(|| tr("Layout not found").into())
     }
 
     pub fn update(&mut self, message: Message) -> Option<Action> {
@@ -304,7 +305,7 @@ impl LayoutManager {
             button(icon_text(style::Icon::Return, 12))
                 .on_press(Message::ToggleEditMode(Editing::Preview))
         } else {
-            button(text("Edit")).on_press(Message::ToggleEditMode(Editing::Preview))
+            button(text(tr("Edit"))).on_press(Message::ToggleEditMode(Editing::Preview))
         };
 
         content = content.push(row![
@@ -350,7 +351,7 @@ impl LayoutManager {
                 }
                 Editing::Renaming(renaming_id, name) => {
                     if *renaming_id == layout_id.unique {
-                        let input_box = text_input("New layout name", name)
+                        let input_box = text_input(tr("New layout name"), name)
                             .on_input(|new_name| Message::Renaming(new_name.clone()))
                             .on_submit(Message::SetLayoutName(*renaming_id, name.clone()));
 
@@ -401,7 +402,7 @@ impl LayoutManager {
 
         if self.edit_mode != Editing::None {
             content = content.push(
-                button(text("Add layout"))
+                button(text(tr("Add layout")))
                     .style(move |t, s| style::button::transparent(t, s, true))
                     .width(iced::Length::Fill)
                     .on_press(Message::AddLayout),
@@ -444,7 +445,7 @@ fn create_clone_button<'a>(layout: &LayoutId) -> Element<'a, Message> {
             style::Icon::Clone,
             Some(Message::CloneLayout(layout.unique)),
         ),
-        Some("Duplicate layout"),
+        Some(tr("Duplicate layout")),
         TooltipPosition::Top,
     )
 }
