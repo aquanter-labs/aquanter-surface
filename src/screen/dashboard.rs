@@ -105,6 +105,32 @@ fn market_label(market: exchange::adapter::MarketKind) -> &'static str {
     }
 }
 
+/// Charts with the same symbol, venue and timeframe get their link group,
+/// then a running number, so the picker can tell them apart.
+fn number_duplicate_labels(mut labels: Vec<(&mut String, Option<data::layout::pane::LinkGroup>)>) {
+    for pass in 0..2 {
+        let names: Vec<String> = labels.iter().map(|(label, _)| label.to_string()).collect();
+        let mut seen: Vec<&String> = Vec::new();
+        for (index, (label, group)) in labels.iter_mut().enumerate() {
+            let name = &names[index];
+            if names.iter().filter(|other| *other == name).count() < 2 {
+                continue;
+            }
+            seen.push(name);
+            match (pass, group) {
+                (0, Some(group)) => {
+                    label.push_str(&format!(" · {} {group}", crate::i18n::tr("Link")))
+                }
+                (0, None) => {}
+                _ => label.push_str(&format!(
+                    " #{}",
+                    seen.iter().filter(|n| **n == name).count()
+                )),
+            }
+        }
+    }
+}
+
 impl Dashboard {
     pub fn analysis_sources(&self, main_window: window::Id) -> Vec<crate::ai::ChartSource> {
         let ai_group = self.iter_all_panes(main_window).find_map(|(_, _, state)| {
@@ -112,34 +138,45 @@ impl Dashboard {
                 .then_some(state.link_group)
                 .flatten()
         });
-        self.iter_all_panes(main_window)
+        let mut sources = self
+            .iter_all_panes(main_window)
             .filter_map(|(_, _, state)| match &state.content {
                 pane::Content::Kline {
                     chart: Some(chart), ..
                 } if ai_group.is_none() || state.link_group == ai_group => {
                     let ticker_info = chart.base_ticker_info();
-                    let chart_kind = "Kline";
                     let (symbol, market) = ticker_info.ticker.display_symbol_and_type();
-                    Some(crate::ai::ChartSource {
-                        pane_id: state.unique_id(),
-                        label: format!(
-                            "{symbol} {} | {:?} | {} | {chart_kind}",
-                            market_label(market),
-                            ticker_info.exchange().venue(),
-                            chart.basis()
-                        ),
-                        symbol: ticker_info.ticker.to_string(),
-                        venue: format!("{:?}", ticker_info.exchange()),
-                        basis: chart.basis().to_string(),
-                    })
+                    Some((
+                        state.link_group,
+                        crate::ai::ChartSource {
+                            pane_id: state.unique_id(),
+                            label: format!(
+                                "{symbol} {} · {:?} · {}",
+                                market_label(market),
+                                ticker_info.exchange().venue(),
+                                chart.basis()
+                            ),
+                            symbol: ticker_info.ticker.to_string(),
+                            venue: format!("{:?}", ticker_info.exchange()),
+                            basis: chart.basis().to_string(),
+                        },
+                    ))
                 }
                 _ => None,
             })
-            .collect()
+            .collect::<Vec<_>>();
+        number_duplicate_labels(
+            sources
+                .iter_mut()
+                .map(|(group, source)| (&mut source.label, *group))
+                .collect(),
+        );
+        sources.into_iter().map(|(_, source)| source).collect()
     }
 
     pub fn trading_sources(&self, main_window: window::Id) -> Vec<crate::trading::ChartSource> {
-        self.iter_all_panes(main_window)
+        let mut sources: Vec<crate::trading::ChartSource> = self
+            .iter_all_panes(main_window)
             .filter_map(|(_, _, state)| match &state.content {
                 pane::Content::Kline {
                     chart: Some(chart), ..
@@ -147,7 +184,6 @@ impl Dashboard {
                     let (symbol, market) =
                         chart.base_ticker_info().ticker.display_symbol_and_type();
                     let (market_latency_ms, best_bid, best_ask) = chart.trading_market_info();
-                    let chart_kind = "Kline";
                     Some(crate::trading::ChartSource {
                         pane_id: state.unique_id(),
                         link_group: state.link_group,
@@ -156,7 +192,7 @@ impl Dashboard {
                             && chart.base_ticker_info().market_type()
                                 == exchange::adapter::MarketKind::LinearPerps,
                         label: format!(
-                            "{symbol} {} | {:?} | {} | {chart_kind}",
+                            "{symbol} {} · {:?} · {}",
                             market_label(market),
                             chart.base_ticker_info().exchange().venue(),
                             chart.basis()
@@ -187,7 +223,14 @@ impl Dashboard {
                 }
                 _ => None,
             })
-            .collect()
+            .collect();
+        number_duplicate_labels(
+            sources
+                .iter_mut()
+                .map(|source| (&mut source.label, source.link_group))
+                .collect(),
+        );
+        sources
     }
 
     pub fn sync_trading(&mut self, main_window: window::Id, proxy: Option<exchange::proxy::Proxy>) {
@@ -1835,5 +1878,27 @@ impl From<fetcher::FetchUpdate> for Message {
                 req_id,
             } => Message::ErrorOccurred(Some(pane_id), DashboardError::Fetch(error, req_id)),
         }
+    }
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::number_duplicate_labels;
+    use data::layout::pane::LinkGroup;
+
+    #[test]
+    fn duplicate_chart_labels_get_link_group_then_number() {
+        let mut labels = ["A", "A", "A", "B"].map(String::from);
+        let [a, b, c, d] = &mut labels;
+        number_duplicate_labels(vec![
+            (a, Some(LinkGroup::A)),
+            (b, None),
+            (c, None),
+            (d, None),
+        ]);
+        assert_eq!(labels[0], "A · Link 1");
+        assert_eq!(labels[1], "A #1");
+        assert_eq!(labels[2], "A #2");
+        assert_eq!(labels[3], "B");
     }
 }

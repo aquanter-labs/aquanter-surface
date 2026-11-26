@@ -167,21 +167,21 @@ pub fn open(
     })
 }
 
-/// Settles `symbol`'s expired contracts at `price`; returns what goes back to the
-/// wallet (stake plus profit for each win), or `None` when nothing settled.
-// ponytail: settles at the first price seen after expiry; if the app was closed at
-// expiry that is the price on restart. Fetch the expiry-minute kline if that matters.
+/// Settles each expired contract `price_for` has a price for; returns what goes
+/// back to the wallet (stake plus profit for each win), or `None` when nothing settled.
 pub fn settle_due(
     contracts: &mut [EventContract],
-    symbol: &str,
-    price: f64,
     now_ms: u64,
+    mut price_for: impl FnMut(&EventContract) -> Option<f64>,
 ) -> Option<f64> {
     let mut credit = None;
     for contract in contracts
         .iter_mut()
-        .filter(|c| c.is_open() && c.symbol == symbol && c.expiry_ms <= now_ms)
+        .filter(|c| c.is_open() && c.expiry_ms <= now_ms)
     {
+        let Some(price) = price_for(contract) else {
+            continue;
+        };
         contract.settle_price = Some(price);
         let back = contract
             .pnl()
@@ -210,17 +210,17 @@ mod tests {
             opened(&[], true, EventDuration::H1),
         ];
         // Not yet expired: nothing settles.
-        assert_eq!(settle_due(&mut contracts, "BTCUSDT", 50_100.0, 1_000), None);
+        assert_eq!(settle_due(&mut contracts, 1_000, |_| Some(50_100.0)), None);
         // At 10m only the 10m contract settles: up and price rose -> 100 + 80.
         let ten = 1_000 + EventDuration::M10.ms();
         assert_eq!(
-            settle_due(&mut contracts, "BTCUSDT", 50_100.0, ten),
+            settle_due(&mut contracts, ten, |_| Some(50_100.0)),
             Some(180.0)
         );
         // At 1h: down loses on a rise (0 back), up ties at the open price and loses too.
         let hour = 1_000 + EventDuration::H1.ms();
         assert_eq!(
-            settle_due(&mut contracts, "BTCUSDT", 50_000.0, hour),
+            settle_due(&mut contracts, hour, |_| Some(50_000.0)),
             Some(0.0)
         );
         assert_eq!(

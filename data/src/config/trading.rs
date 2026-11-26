@@ -48,6 +48,8 @@ pub struct TradingConfig {
     pub event_tab: bool,
     /// Draw trades / event contracts on every active chart, not just the selected one.
     pub overlay_all_charts: bool,
+    /// Futures and event contract history list every symbol, not just the chart's.
+    pub history_all_symbols: bool,
     /// The chart position line shows the break-even price (fees included)
     /// instead of the plain entry price.
     pub chart_price_with_fees: bool,
@@ -89,6 +91,7 @@ impl Default for TradingConfig {
             event_show_history: true,
             event_tab: false,
             overlay_all_charts: false,
+            history_all_symbols: false,
             chart_price_with_fees: false,
             chart_show_position: true,
             chart_show_fills: true,
