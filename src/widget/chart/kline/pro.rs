@@ -3,78 +3,287 @@ use crate::ai::{ChartAnnotation, ChartSignal};
 use crate::trading::{PositionOverlay, TradingLineId};
 use data::chart::kline::indicators::pro::{VwapPoint, vwap_for_series};
 use data::chart::kline::pro::VwapMode;
+use data::i18n::tr;
 use exchange::UnixMs;
 
 struct TradingLine {
     id: Option<TradingLineId>,
     price: f64,
-    label: String,
+    tag: String,
+    /// Estimated PnL if price reaches the line; shown only while it is dragged.
+    pnl: Option<f64>,
     color: iced::Color,
 }
 
 fn trading_lines(overlay: &PositionOverlay, palette: &Extended) -> Vec<TradingLine> {
     let mut lines = Vec::new();
-    let mut add = |price: Option<f64>, id, label: String, color| {
+    let mut add = |price: Option<f64>, id, tag: &str, pnl, color| {
         if let Some(price) = price.filter(|p| p.is_finite() && *p > 0.0) {
             lines.push(TradingLine {
                 id,
                 price,
-                label,
+                tag: tag.to_string(),
+                pnl,
                 color,
             });
         }
     };
+    let (position_price, position_tag) = if overlay.price_with_fees {
+        (overlay.break_even_price, "BE")
+    } else {
+        (
+            overlay.entry_price,
+            tr(if overlay.is_long { "Long" } else { "Short" }),
+        )
+    };
     add(
-        overlay.entry_price,
+        position_price,
         None,
-        format!("Entry  PnL {:.2}", overlay.unrealized_pnl),
+        position_tag,
+        None,
         palette.primary.base.color,
-    );
-    add(
-        overlay.break_even_price,
-        None,
-        "Break Even".into(),
-        palette.background.base.text,
     );
     add(
         overlay.liquidation_price,
         None,
-        if overlay.liquidation_estimated {
-            "Liq (est.)"
-        } else {
-            "Liquidation"
-        }
-        .into(),
+        "Liq",
+        None,
         palette.danger.base.color,
     );
     add(
         overlay.stop_loss,
         Some(TradingLineId::StopLoss),
-        overlay
-            .stop_loss_pnl
-            .map_or_else(|| "SL".into(), |v| format!("SL {v:.2}")),
+        "SL",
+        overlay.stop_loss_pnl,
         palette.danger.base.color,
     );
     add(
         overlay.take_profit,
         Some(TradingLineId::TakeProfit),
-        overlay
-            .take_profit_pnl
-            .map_or_else(|| "TP".into(), |v| format!("TP {v:.2}")),
+        "TP",
+        overlay.take_profit_pnl,
         palette.success.base.color,
     );
     for order in &overlay.orders {
+        let buy = order.side == crate::trading::Side::Buy;
         add(
             Some(order.price),
             Some(order.id),
-            order.label.clone(),
-            match order.side {
-                crate::trading::Side::Buy => palette.success.base.color,
-                crate::trading::Side::Sell => palette.danger.base.color,
+            tr(if buy { "Buy" } else { "Sell" }),
+            None,
+            if buy {
+                palette.success.base.color
+            } else {
+                palette.danger.base.color
             },
         );
     }
     lines
+}
+
+struct PriceLine {
+    price: f64,
+    /// Short tag at the left edge (TP, SL, S, R ...).
+    tag: String,
+    /// Extra text beside the tag, e.g. the PnL while a line is dragged.
+    detail: Option<String>,
+    color: iced::Color,
+    width: f32,
+    /// Dashed so the candles under the line stay readable.
+    dashed: bool,
+    /// Trading lines get a filled tag; AI guides an outlined one.
+    filled: bool,
+}
+
+const LINE_LABEL_SIZE: f32 = 11.0;
+const LINE_LABEL_HEIGHT: f32 = 15.0;
+const LINE_LABEL_GAP: f32 = 4.0;
+const LINE_TAG_PAD: f32 = 3.0;
+
+// ponytail: width estimated from the monospace advance (~0.62em, CJK ~1em).
+fn label_width(content: &str) -> f32 {
+    content
+        .chars()
+        .map(|c| if c.is_ascii() { 0.62 } else { 1.0 })
+        .sum::<f32>()
+        * LINE_LABEL_SIZE
+}
+
+/// Horizontal price lines with a short tag at the left edge; the price itself
+/// goes on the price axis (`paint_axis_prices`). Tags at nearby prices step
+/// right instead of stacking, and every line breaks around every tag it would
+/// cross, so text never sits on a line.
+fn paint_price_lines(
+    frame: &mut PaintInputs,
+    scene: &Scene,
+    bounds: Rectangle,
+    lines: &[PriceLine],
+    palette: &Extended,
+) {
+    struct Placed<'a> {
+        line: &'a PriceLine,
+        y: f32,
+        left: f32,
+        right: f32,
+    }
+    let right_edge = bounds.x + bounds.width;
+    let mut items = lines
+        .iter()
+        .filter_map(|line| {
+            let y = price_y(scene, line.price)
+                .filter(|y| *y >= bounds.y && *y <= bounds.y + bounds.height)?;
+            Some((line, y))
+        })
+        .collect::<Vec<_>>();
+    items.sort_by(|a, b| a.1.total_cmp(&b.1));
+
+    let mut placed: Vec<Placed> = Vec::with_capacity(items.len());
+    for (line, y) in items {
+        let width = label_width(&line.tag)
+            + LINE_TAG_PAD * 2.0
+            + line
+                .detail
+                .as_deref()
+                .map_or(0.0, |detail| label_width(detail) + LINE_LABEL_GAP);
+        let mut left = bounds.x + LINE_LABEL_GAP;
+        while let Some(blocker) = placed.iter().find(|other| {
+            (other.y - y).abs() < LINE_LABEL_HEIGHT
+                && other.left - LINE_LABEL_GAP < left + width
+                && left < other.right + LINE_LABEL_GAP
+        }) {
+            left = blocker.right + LINE_LABEL_GAP;
+        }
+        placed.push(Placed {
+            line,
+            y,
+            left,
+            right: left + width,
+        });
+    }
+
+    for item in &placed {
+        let mut holes = placed
+            .iter()
+            .filter(|other| (other.y - item.y).abs() < LINE_LABEL_HEIGHT * 0.5 + 1.0)
+            .map(|other| (other.left - LINE_LABEL_GAP, other.right + LINE_LABEL_GAP))
+            .collect::<Vec<_>>();
+        holes.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut stroke = canvas::Stroke::default()
+            .with_color(if item.line.filled {
+                item.line.color
+            } else {
+                item.line.color.scale_alpha(0.8)
+            })
+            .with_width(item.line.width);
+        if item.line.dashed {
+            stroke.line_dash = canvas::LineDash {
+                segments: &[4.0, 3.0],
+                offset: 0,
+            };
+        }
+        let mut from = bounds.x;
+        for (hole_left, hole_right) in holes.into_iter().chain([(right_edge, right_edge)]) {
+            if hole_left > from {
+                frame.stroke(
+                    &canvas::Path::line(Point::new(from, item.y), Point::new(hole_left, item.y)),
+                    stroke,
+                );
+            }
+            from = from.max(hole_right);
+        }
+    }
+    for item in placed {
+        let tag_width = label_width(&item.line.tag) + LINE_TAG_PAD * 2.0;
+        let tag = canvas::Path::rounded_rectangle(
+            Point::new(item.left, item.y - LINE_LABEL_HEIGHT * 0.5),
+            iced::Size::new(tag_width, LINE_LABEL_HEIGHT),
+            2.0.into(),
+        );
+        let text_color = if item.line.filled {
+            frame.fill(&tag, item.line.color);
+            text_on(item.line.color)
+        } else {
+            frame.fill(&tag, palette.background.base.color.scale_alpha(0.85));
+            frame.stroke(
+                &tag,
+                canvas::Stroke::default()
+                    .with_color(item.line.color)
+                    .with_width(1.0),
+            );
+            item.line.color
+        };
+        frame.fill_text(canvas::Text {
+            content: item.line.tag.clone(),
+            position: Point::new(item.left + tag_width * 0.5, item.y),
+            align_x: iced::alignment::Horizontal::Center.into(),
+            align_y: iced::alignment::Vertical::Center,
+            color: text_color,
+            size: LINE_LABEL_SIZE.into(),
+            font: style::AZERET_MONO,
+            ..Default::default()
+        });
+        if let Some(detail) = &item.line.detail {
+            frame.fill_text(canvas::Text {
+                content: detail.clone(),
+                position: Point::new(item.left + tag_width + LINE_LABEL_GAP, item.y),
+                align_x: iced::alignment::Horizontal::Left.into(),
+                align_y: iced::alignment::Vertical::Center,
+                color: item.line.color,
+                size: LINE_LABEL_SIZE.into(),
+                font: style::AZERET_MONO,
+                ..Default::default()
+            });
+        }
+    }
+}
+
+/// Each line's price as a colored badge on the price axis.
+fn paint_axis_prices(
+    frame: &mut PaintInputs,
+    scene: &Scene,
+    bounds: Rectangle,
+    lines: &[PriceLine],
+) {
+    let axis = scene.layout.regions.y_axis;
+    frame.with_clip(axis, |frame| {
+        for line in lines {
+            let Some(y) = price_y(scene, line.price)
+                .filter(|y| *y >= bounds.y && *y <= bounds.y + bounds.height)
+            else {
+                continue;
+            };
+            let fill = if line.filled {
+                line.color
+            } else {
+                line.color.scale_alpha(0.7)
+            };
+            frame.fill_rectangle(
+                Point::new(axis.x, y - LINE_LABEL_HEIGHT * 0.5),
+                iced::Size::new(axis.width, LINE_LABEL_HEIGHT),
+                fill,
+            );
+            frame.fill_text(canvas::Text {
+                content: scene.format_primary_cursor_label(line.price as f32),
+                position: Point::new(axis.x + 4.0, y),
+                align_x: iced::alignment::Horizontal::Left.into(),
+                align_y: iced::alignment::Vertical::Center,
+                color: text_on(fill),
+                size: LINE_LABEL_SIZE.into(),
+                font: style::AZERET_MONO,
+                ..Default::default()
+            });
+        }
+    });
+}
+
+/// Black or white, whichever reads better on `fill`.
+fn text_on(fill: iced::Color) -> iced::Color {
+    let luminance = 0.299 * fill.r + 0.587 * fill.g + 0.114 * fill.b;
+    if luminance > 0.6 {
+        iced::Color::from_rgb(0.08, 0.09, 0.11)
+    } else {
+        iced::Color::WHITE
+    }
 }
 
 fn primary_bounds(scene: &Scene) -> Rectangle {
@@ -286,7 +495,7 @@ impl<'a> KlineWidget<'a> {
         } else {
             0.0
         };
-        let right = if config.is_enabled("OrderBook") {
+        let right = if config.is_enabled("OrderBook") && !config.order_book_transparent {
             super::order_book_strip_width(bounds.width)
         } else {
             0.0
@@ -335,9 +544,10 @@ impl<'a> KlineWidget<'a> {
             .map(|series| series.tick_size())
             .unwrap_or(exchange::unit::PriceStep { units: 1 });
         if self.footprint.visible && config.is_enabled("OrderBook") {
+            let width = super::order_book_strip_width(bounds.width);
             let book = Rectangle {
-                x: main.x + main.width,
-                width: bounds.x + bounds.width - main.x - main.width,
+                x: bounds.x + bounds.width - width,
+                width,
                 ..bounds
             };
             let mut bids = std::collections::BTreeMap::<exchange::unit::Price, f64>::new();
@@ -375,11 +585,13 @@ impl<'a> KlineWidget<'a> {
             let scale = visible_qty.into_iter().fold(0.0_f64, f64::max);
             if scale > 0.0 && book.width > 1.0 {
                 frame.with_clip(book, |frame| {
-                    frame.fill_rectangle(
-                        Point::new(book.x, book.y),
-                        Size::new(book.width, book.height),
-                        palette.background.weakest.color,
-                    );
+                    if !config.order_book_transparent {
+                        frame.fill_rectangle(
+                            Point::new(book.x, book.y),
+                            Size::new(book.width, book.height),
+                            palette.background.weakest.color,
+                        );
+                    }
                     for price in keys {
                         let Some((top, height)) = tick_row(scene, price, tick) else {
                             continue;
@@ -593,6 +805,21 @@ impl<'a> KlineWidget<'a> {
         self
     }
 
+    /// The candle holding `time`: its open time, high and low.
+    fn pro_bar_at(&self, time: u64) -> Option<(u64, f64, f64)> {
+        let time = UnixMs::new(time);
+        let point = self
+            .series
+            .first()?
+            .points()
+            .rfind(|p| p.kline.time <= time)?;
+        Some((
+            point.kline.time.as_u64(),
+            point.kline.high.to_f64(),
+            point.kline.low.to_f64(),
+        ))
+    }
+
     fn pro_time_x(&self, scene: &Scene, time: u64) -> Option<f32> {
         let series = self.series.first()?;
         let time = UnixMs::new(time);
@@ -614,7 +841,7 @@ impl<'a> KlineWidget<'a> {
         if !self.pro_main_bounds(scene).contains(position) {
             return None;
         }
-        let overlay = self.pro_trading?;
+        let overlay = self.pro_trading.filter(|overlay| overlay.draggable)?;
         let mut candidates = vec![
             (TradingLineId::StopLoss, overlay.stop_loss),
             (TradingLineId::TakeProfit, overlay.take_profit),
@@ -811,37 +1038,19 @@ impl<'a> KlineWidget<'a> {
         self.paint_pro_market(frame, scene, palette);
         self.paint_pro_studies(frame, scene, palette);
         let bounds = self.pro_main_bounds(scene);
+        let mut axis_lines = Vec::new();
         frame.with_clip(bounds, |frame| {
-            let line = |frame: &mut PaintInputs,
-                        price: f64,
-                        label: &str,
-                        color: iced::Color,
-                        width: f32| {
-                let Some(y) = price_y(scene, price)
-                    .filter(|y| *y >= bounds.y && *y <= bounds.y + bounds.height)
-                else {
-                    return;
-                };
-                frame.stroke(
-                    &canvas::Path::line(
-                        Point::new(bounds.x, y),
-                        Point::new(bounds.x + bounds.width, y),
-                    ),
-                    canvas::Stroke::default()
-                        .with_color(color)
-                        .with_width(width),
-                );
-                frame.fill_text(canvas::Text {
-                    content: format!(
-                        "{label} {}",
-                        scene.format_primary_cursor_label(price as f32)
-                    ),
-                    position: Point::new(bounds.x + bounds.width - 5.0, y - 3.0),
-                    align_x: iced::alignment::Horizontal::Right.into(),
+            // Collected first so labels can be laid out together, then painted at once.
+            let mut lines: Vec<PriceLine> = Vec::new();
+            let mut guide = |price: f64, tag: &str, color: iced::Color| {
+                lines.push(PriceLine {
+                    price,
+                    tag: tag.to_string(),
+                    detail: None,
                     color,
-                    size: 11.0.into(),
-                    font: style::AZERET_MONO,
-                    ..Default::default()
+                    width: 1.0,
+                    dashed: true,
+                    filled: false,
                 });
             };
             let annotations = self
@@ -851,33 +1060,27 @@ impl<'a> KlineWidget<'a> {
                 .collect::<Vec<_>>();
             if let Some(annotation) = annotations.last() {
                 for level in &annotation.levels {
-                    line(
-                        frame,
-                        level.price,
-                        if level.is_support {
-                            "AI Support"
-                        } else {
-                            "AI Resistance"
-                        },
-                        if level.is_support {
-                            palette.success.base.color
-                        } else {
-                            palette.danger.base.color
-                        },
-                        1.0 + level.strength.clamp(0.0, 1.0),
-                    );
-                }
-                for (price, label) in [
-                    (annotation.entry_low, "AI Entry"),
-                    (annotation.entry_high, "AI Entry"),
-                    (annotation.stop_loss, "AI SL"),
-                ] {
-                    if let Some(price) = price {
-                        line(frame, price, label, palette.primary.base.color, 1.0);
+                    if level.is_support {
+                        guide(level.price, "S", palette.success.base.color);
+                    } else {
+                        guide(level.price, "R", palette.danger.base.color);
                     }
                 }
-                for target in &annotation.targets {
-                    line(frame, *target, "AI Target", palette.primary.base.color, 1.0);
+                for (price, tag) in [
+                    (annotation.entry_low, "E"),
+                    (annotation.entry_high, "E"),
+                    (annotation.stop_loss, "SL"),
+                ] {
+                    if let Some(price) = price {
+                        guide(price, tag, palette.primary.base.color);
+                    }
+                }
+                for (index, target) in annotation.targets.iter().enumerate() {
+                    guide(
+                        *target,
+                        &format!("T{}", index + 1),
+                        palette.primary.base.color,
+                    );
                 }
             }
             for annotation in annotations {
@@ -906,15 +1109,57 @@ impl<'a> KlineWidget<'a> {
                 );
             }
             if let Some(overlay) = self.pro_trading {
-                for mut item in trading_lines(overlay, palette) {
-                    if let Some((id, price)) = drag
-                        && item.id == Some(id)
-                    {
-                        item.price = price;
-                    }
-                    line(frame, item.price, &item.label, item.color, 1.5);
+                for item in trading_lines(overlay, palette) {
+                    let dragged = drag.filter(|(id, _)| item.id == Some(*id));
+                    lines.push(PriceLine {
+                        price: dragged.map_or(item.price, |(_, price)| price),
+                        tag: item.tag,
+                        detail: item
+                            .pnl
+                            .filter(|_| dragged.is_some())
+                            .map(|v| format!("{v:+.2}")),
+                        color: item.color,
+                        width: 1.5,
+                        dashed: true,
+                        filled: true,
+                    });
                 }
-                for marker in &overlay.trade_history {
+            }
+            paint_price_lines(frame, scene, bounds, &lines, palette);
+            axis_lines = lines;
+            if let Some(overlay) = self.pro_trading {
+                let mut badged: Vec<(u64, bool)> = Vec::new();
+                for marker in overlay.trade_history.iter().filter(|_| overlay.fill_badges) {
+                    let buy = marker.side == crate::trading::Side::Buy;
+                    let Some((bar_time, high, low)) = self.pro_bar_at(marker.time_ms) else {
+                        continue;
+                    };
+                    // One badge per candle and side, however many fills it holds.
+                    if badged.contains(&(bar_time, buy)) {
+                        continue;
+                    }
+                    badged.push((bar_time, buy));
+                    if let (Some(x), Some(y)) = (
+                        self.pro_time_x(scene, bar_time),
+                        price_y(scene, if buy { low } else { high }),
+                    ) {
+                        paint_fill_badge(
+                            frame,
+                            Point::new(x, y),
+                            buy,
+                            if buy {
+                                palette.success.base.color
+                            } else {
+                                palette.danger.base.color
+                            },
+                        );
+                    }
+                }
+                for marker in overlay
+                    .trade_history
+                    .iter()
+                    .filter(|_| !overlay.fill_badges)
+                {
                     if let (Some(x), Some(y)) = (
                         self.pro_time_x(scene, marker.time_ms),
                         price_y(scene, marker.price),
@@ -998,6 +1243,7 @@ impl<'a> KlineWidget<'a> {
                 }
             }
         });
+        paint_axis_prices(frame, scene, bounds, &axis_lines);
     }
 
     pub(super) fn handle_pro_pointer<M: Clone + From<KlineWidgetEvent>>(
@@ -1444,6 +1690,41 @@ fn bin_samples(samples: &[ProfileSample], low: f64, step: f64, rows: usize) -> V
     bins
 }
 
+/// Exchange-style fill badge: a rounded box with B / S, below the candle's
+/// low for buys and above its high for sells, pointing at the candle.
+fn paint_fill_badge(frame: &mut PaintInputs, anchor: Point, buy: bool, color: iced::Color) {
+    const SIZE: f32 = 15.0;
+    const GAP: f32 = 7.0;
+    let dir = if buy { 1.0 } else { -1.0 };
+    let center = Point::new(anchor.x, anchor.y + dir * (GAP + SIZE / 2.0));
+    let base_y = center.y - dir * SIZE / 2.0;
+    let pointer = canvas::Path::new(|p| {
+        p.move_to(Point::new(anchor.x, anchor.y + dir * 2.0));
+        p.line_to(Point::new(anchor.x - 3.5, base_y));
+        p.line_to(Point::new(anchor.x + 3.5, base_y));
+        p.close();
+    });
+    frame.fill(&pointer, color);
+    frame.fill(
+        &canvas::Path::rounded_rectangle(
+            Point::new(center.x - SIZE / 2.0, center.y - SIZE / 2.0),
+            iced::Size::new(SIZE, SIZE),
+            3.0.into(),
+        ),
+        color,
+    );
+    frame.fill_text(canvas::Text {
+        content: if buy { "B" } else { "S" }.to_string(),
+        position: center,
+        align_x: iced::alignment::Horizontal::Center.into(),
+        align_y: iced::alignment::Vertical::Center,
+        color: iced::Color::WHITE,
+        size: 10.0.into(),
+        font: style::AZERET_MONO,
+        ..Default::default()
+    });
+}
+
 fn paint_marker(frame: &mut PaintInputs, point: Point, buy: bool, color: iced::Color) {
     let direction = if buy { 1.0 } else { -1.0 };
     let path = canvas::Path::new(|p| {
@@ -1723,6 +2004,15 @@ mod tests {
         let lower = scene.layout.panels[1].plot;
         assert_eq!(clips[1].width, lower.width);
         assert_eq!(clips[1].x, scene.layout.regions.plot.x + lower.x);
+
+        // Without a background the book draws over the candles: no strip reserved.
+        let transparent = ProConfig {
+            order_book_transparent: true,
+            ..config.clone()
+        };
+        let widget = widget.with_pro_market(&transparent, &depth);
+        let clips = widget.pro_panel_clips(&scene, false);
+        assert_eq!(clips[0].x + clips[0].width, bounds.x + bounds.width);
         let _ = ChartStepMs::from_u64(60_000);
     }
 

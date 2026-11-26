@@ -1136,3 +1136,40 @@ pub fn dashed_line_from_palette(palette: &'_ Extended) -> Stroke<'_> {
             .scale_alpha(if palette.is_dark { 0.8 } else { 1.0 }),
     )
 }
+
+/// Vertical scrollable with a 3px bar in its own gutter, so it never covers content.
+pub fn thin_scrollable<'a, M: 'a>(
+    content: impl Into<iced::Element<'a, M>>,
+) -> widget::Scrollable<'a, M> {
+    widget::scrollable(content)
+        .direction(widget::scrollable::Direction::Vertical(
+            widget::scrollable::Scrollbar::new()
+                .width(3)
+                .scroller_width(3)
+                .spacing(4),
+        ))
+        .style(thin_scroll_bar)
+}
+
+pub fn thin_scroll_bar(
+    theme: &Theme,
+    status: widget::scrollable::Status,
+) -> widget::scrollable::Style {
+    let mut style = scroll_bar(theme, status);
+    let palette = theme.extended_palette();
+    let active = matches!(
+        status,
+        widget::scrollable::Status::Hovered { .. } | widget::scrollable::Status::Dragged { .. }
+    );
+    for rail in [&mut style.vertical_rail, &mut style.horizontal_rail] {
+        rail.background = None;
+        rail.border.width = 0.0;
+        rail.scroller.background = iced::Background::Color(if active {
+            palette.background.strong.color
+        } else {
+            palette.background.strong.color.scale_alpha(0.5)
+        });
+        rail.scroller.border.radius = 1.5.into();
+    }
+    style
+}

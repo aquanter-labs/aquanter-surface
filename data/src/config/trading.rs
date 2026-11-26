@@ -24,7 +24,7 @@ impl std::fmt::Display for TradingExchange {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct TradingConfig {
     #[serde(default = "new_account_id")]
@@ -38,6 +38,9 @@ pub struct TradingConfig {
     pub confirm_orders: bool,
     pub allocation_percent: u8,
     pub simulated_balance: u64,
+    /// Simulated fee rates in percent of notional (Binance VIP 0 defaults).
+    pub simulated_maker_fee_pct: f64,
+    pub simulated_taker_fee_pct: f64,
     /// Chart markers for open / settled simulated event contracts.
     pub event_show_open: bool,
     pub event_show_history: bool,
@@ -45,6 +48,21 @@ pub struct TradingConfig {
     pub event_tab: bool,
     /// Draw trades / event contracts on every active chart, not just the selected one.
     pub overlay_all_charts: bool,
+    /// The chart position line shows the break-even price (fees included)
+    /// instead of the plain entry price.
+    pub chart_price_with_fees: bool,
+    /// Chart shows the open position, its SL/TP and pending orders.
+    pub chart_show_position: bool,
+    /// Chart shows filled trades.
+    pub chart_show_fills: bool,
+    /// Fills as a B/S badge under / over the candle instead of an arrow at the fill price.
+    pub chart_fill_badges: bool,
+    /// Only mark fills that open or add to a position (no realized PnL).
+    pub chart_opening_fills_only: bool,
+    /// TP / SL and limit-order lines can be dragged on the chart.
+    pub chart_drag_orders: bool,
+    /// A chart drag waits for confirmation before it is sent.
+    pub chart_drag_confirm: bool,
     /// Last order-ticket inputs (price, qty, SL/TP, event stake...), owned by the app crate.
     pub ticket: serde_json::Value,
 }
@@ -62,17 +80,50 @@ impl Default for TradingConfig {
             confirm_orders: true,
             allocation_percent: 10,
             simulated_balance: 10_000,
+            simulated_maker_fee_pct: 0.02,
+            simulated_taker_fee_pct: 0.04,
             event_show_open: true,
             event_show_history: true,
             event_tab: false,
             overlay_all_charts: false,
+            chart_price_with_fees: false,
+            chart_show_position: true,
+            chart_show_fills: true,
+            chart_fill_badges: true,
+            chart_opening_fills_only: false,
+            chart_drag_orders: true,
+            chart_drag_confirm: true,
             ticket: serde_json::Value::Null,
         }
     }
 }
 
+/// One account shared by every trading panel in every layout, so switching
+/// layouts never shows a different (empty) account.
+pub const SHARED_ACCOUNT_ID: &str = "shared";
+
 fn new_account_id() -> String {
-    uuid::Uuid::new_v4().to_string()
+    SHARED_ACCOUNT_ID.to_string()
+}
+
+/// Copies the API keys saved under a per-panel account (older versions) to the
+/// shared account, unless the shared account already has its own.
+pub fn adopt_credentials(old_account_id: &str) {
+    for testnet in [true, false] {
+        let Ok(target) = entry_for(SHARED_ACCOUNT_ID, testnet) else {
+            continue;
+        };
+        if target.get_password().is_ok() {
+            continue;
+        }
+        if let Some(value) = entry_for(old_account_id, testnet)
+            .ok()
+            .and_then(|entry| entry.get_password().ok())
+            && let Err(error) = target.set_password(&value)
+        {
+            log::warn!("Failed to move trading credentials to the shared account: {error}");
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -154,10 +205,6 @@ mod tests {
         assert!(config.testnet);
         assert!(config.confirm_orders);
         assert_eq!(config.poll_interval_secs, 1);
-        assert!(!config.account_id.is_empty());
-        assert_ne!(
-            TradingConfig::default().account_id,
-            TradingConfig::default().account_id
-        );
+        assert_eq!(config.account_id, SHARED_ACCOUNT_ID);
     }
 }

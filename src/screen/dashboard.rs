@@ -43,6 +43,8 @@ use std::{collections::HashMap, time::Instant, vec};
 pub enum Message {
     Trading(uuid::Uuid, crate::trading::Message),
     TradingLevelDragged(uuid::Uuid, crate::trading::TradingLineId, f64, bool),
+    /// Confirm (`true`) or cancel a chart edit from the popup on chart `source`.
+    TradingChartConfirm(uuid::Uuid, bool),
     Pane(window::Id, pane::Message),
     SavePopoutSpecs(HashMap<window::Id, WindowSpec>),
     ErrorOccurred(Option<uuid::Uuid>, DashboardError),
@@ -162,8 +164,21 @@ impl Dashboard {
                         symbol,
                         min_tick: chart.base_ticker_info().min_ticksize.as_f64(),
                         min_qty: chart.base_ticker_info().min_qty.as_f64(),
+                        // Only a live price: at startup the chart may still show
+                        // cached candles, and an old close would fill simulated
+                        // stop / take-profit orders at a price that never traded.
                         latest_price: chart
                             .alert_observation(state.unique_id())
+                            .filter(|value| {
+                                let interval = match chart.basis() {
+                                    data::chart::Basis::Time(timeframe) => {
+                                        timeframe.to_milliseconds()
+                                    }
+                                    data::chart::Basis::Tick(_) => 0,
+                                };
+                                value.market_time_ms + interval + 60_000
+                                    >= exchange::UnixMs::now().as_u64()
+                            })
                             .map(|value| value.price),
                         market_latency_ms,
                         best_bid,
@@ -236,7 +251,7 @@ impl Dashboard {
                 .filter_map(|(_, _, state)| {
                     let pane_id = state.unique_id();
                     let trader = state.trader_mut()?;
-                    (trader.selected_chart() == Some(source)).then(|| {
+                    trader.accepts_chart_drag(source).then(|| {
                         trader
                             .update(crate::trading::Message::ChartLevelDragged(
                                 id, price, finished,
@@ -512,6 +527,28 @@ impl Dashboard {
             }
             Message::TradingLevelDragged(source, id, price, finished) => {
                 let task = self.update_trading_level(main_window.id, source, id, price, finished);
+                self.sync_trading_overlays(main_window.id);
+                return (task, None);
+            }
+            Message::TradingChartConfirm(source, confirm) => {
+                let message = if confirm {
+                    crate::trading::Message::ConfirmAction
+                } else {
+                    crate::trading::Message::CancelAction
+                };
+                let task = Task::batch(
+                    self.iter_all_panes_mut(main_window.id)
+                        .filter_map(|(_, _, state)| {
+                            let pane_id = state.unique_id();
+                            let trader = state.trader_mut()?;
+                            trader.accepts_chart_drag(source).then(|| {
+                                trader
+                                    .update(message.clone())
+                                    .map(move |message| Message::Trading(pane_id, message))
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                );
                 self.sync_trading_overlays(main_window.id);
                 return (task, None);
             }
@@ -1706,6 +1743,10 @@ impl Dashboard {
             }
             Some(pane::Effect::TradingLevelDragged(source, id, price, finished)) => (
                 Task::done(Message::TradingLevelDragged(source, id, price, finished)),
+                None,
+            ),
+            Some(pane::Effect::TradingChartConfirm(source, confirm)) => (
+                Task::done(Message::TradingChartConfirm(source, confirm)),
                 None,
             ),
             Some(pane::Effect::RefreshStreams) => (self.refresh_streams(main_window), None),

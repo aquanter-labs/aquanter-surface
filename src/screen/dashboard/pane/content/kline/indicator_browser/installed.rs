@@ -302,15 +302,15 @@ fn pro_row(
         Some(BrowserMessage::TogglePro(id)),
         active,
     );
-    let mut row = row![toggle].spacing(2).width(Length::Fill);
-    if id != "OrderBook" {
-        row = row.push(
-            button(icon_text(Icon::Cog, 12))
-                .style(|theme, status| style::button::transparent(theme, status, false))
-                .on_press(BrowserMessage::ConfigurePro(id)),
-        );
-    }
-    row.into()
+    row![
+        toggle,
+        button(icon_text(Icon::Cog, 12))
+            .style(|theme, status| style::button::transparent(theme, status, false))
+            .on_press(BrowserMessage::ConfigurePro(id)),
+    ]
+    .spacing(2)
+    .width(Length::Fill)
+    .into()
 }
 
 fn indicators_title() -> Element<'static, BrowserMessage> {

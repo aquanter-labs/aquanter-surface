@@ -10,7 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [workspace.package]
-version = "0.9.2"
+version = "0.9.3"
 edition = "2024"
 repository = "https://github.com/aquanter-labs/aquanter-surface"
 homepage = "https://aquanter.com"

@@ -71,6 +71,7 @@ const SETTINGS_SIDEBAR_WIDTH: f32 = 240.0;
 
 pub enum Action {
     TradingLineDragged(crate::trading::TradingLineId, f64, bool),
+    TradingChartConfirm(bool),
     RemoveSeries(TickerInfo),
     RequestFetch(Vec<FetchSpec>),
     OpenUrl(String),
@@ -82,6 +83,7 @@ pub enum Action {
 #[derive(Debug, Clone)]
 pub enum Message {
     Chart(KlineWidgetEvent),
+    TradingChartConfirm(bool),
     Drawing(drawing::Event),
     ToggleDrawingSidebar,
     CloseContextualSettings,
@@ -329,6 +331,9 @@ impl KlineChart {
                 }
                 let update = self.drawings.update(message, &mut chart_settings.drawing);
                 self.apply_drawing_update(update);
+            }
+            Message::TradingChartConfirm(confirm) => {
+                return Some(Action::TradingChartConfirm(confirm));
             }
             Message::Chart(event) => {
                 match event {
@@ -688,13 +693,17 @@ impl KlineChart {
             };
 
         let chart = {
-            iced::widget::Stack::new()
+            let stack = iced::widget::Stack::new()
                 .width(iced::Length::Fill)
                 .height(iced::Length::Fill)
                 .push(chart)
-                .push(self.drawings.view(theme_accents).map(Message::Drawing))
-                .clip(true)
-                .into()
+                .push(self.drawings.view(theme_accents).map(Message::Drawing));
+            match self.chart_confirm_popup() {
+                Some(popup) => stack.push(popup),
+                None => stack,
+            }
+            .clip(true)
+            .into()
         };
 
         let sidebar = if self.has_settings_target() {
@@ -720,6 +729,35 @@ impl KlineChart {
         .width(iced::Length::Fill)
         .height(iced::Length::Fill)
         .into()
+    }
+
+    /// Confirm / cancel card for a pending chart edit (dragged TP / SL or order).
+    fn chart_confirm_popup(&self) -> Option<iced::Element<'_, Message>> {
+        use iced::widget::{button, container, row, text};
+        let summary = self.pro.trading.as_ref()?.confirm.as_deref()?;
+        let card = container(
+            row![
+                text(summary).font(style::AZERET_MONO).size(12),
+                button(text(tr("Cancel")).size(12))
+                    .padding([3, 10])
+                    .style(|theme, status| style::button::transparent(theme, status, false))
+                    .on_press(Message::TradingChartConfirm(false)),
+                button(text(tr("Confirm")).size(12))
+                    .padding([3, 10])
+                    .on_press(Message::TradingChartConfirm(true)),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+        )
+        .padding([6, 10])
+        .style(style::chart_modal);
+        Some(
+            container(card)
+                .width(iced::Length::Fill)
+                .align_x(iced::Alignment::Center)
+                .padding(iced::Padding::new(0.0).top(40.0))
+                .into(),
+        )
     }
 
     pub fn invalidate(&mut self, now: Option<Instant>) -> Option<ChartAction> {

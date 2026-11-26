@@ -25,6 +25,13 @@ pub struct Config {
     /// Pro: hide wall markers whose 30s same-side burst is smaller than this; one-off pulls are noise.
     #[serde(default = "default_wall_min_count")]
     pub wall_min_count: u32,
+    /// Pro: show the 5m pulled / absorbed summary at the top of the chart.
+    #[serde(default = "default_show_wall_summary")]
+    pub show_wall_summary: bool,
+}
+
+fn default_show_wall_summary() -> bool {
+    true
 }
 
 fn default_wall_min_count() -> u32 {
@@ -44,6 +51,7 @@ impl Default for Config {
             coalescing: Some(CoalesceKind::Average(0.15)),
             wall_min_strength: default_wall_min_strength(),
             wall_min_count: default_wall_min_count(),
+            show_wall_summary: true,
         }
     }
 }

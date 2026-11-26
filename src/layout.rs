@@ -297,7 +297,7 @@ fn configuration_with_trading(
             pane::Content::Trading(Box::new(crate::trading::Trader::new(
                 {
                     let mut config = legacy_trading.cloned().unwrap_or_default();
-                    config.account_id = Uuid::new_v4().to_string();
+                    config.account_id = data::config::trading::SHARED_ACCOUNT_ID.to_string();
                     if let Err(error) = data::config::trading::migrate_legacy_credentials(
                         &config.account_id,
                         config.testnet,
