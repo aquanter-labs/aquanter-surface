@@ -126,7 +126,7 @@ pub(crate) async fn cached_download(
     // Bybit's CDN answers 403 to requests without a User-Agent.
     let resp = client
         .get(url)
-        .header(reqwest::header::USER_AGENT, "flowsurface")
+        .header(reqwest::header::USER_AGENT, "aquanter-surface")
         .send()
         .await
         .map_err(AdapterError::from)?;
@@ -154,7 +154,7 @@ use super::http::{TickerMetadataMap, TickerStatsMap};
 use super::ws::TradeBuffer;
 use super::ws::{HeartbeatPolicy, WsAdapter, WsSession, WsTransport};
 
-/// Live network checks: `cargo test -p flowsurface-exchange trade_history -- --ignored`.
+/// Live network checks: `cargo test -p aquanter-surface-exchange trade_history -- --ignored`.
 #[cfg(test)]
 mod trade_history_tests {
     use crate::{Ticker, TickerInfo, Timeframe, Trade, UnixMs, adapter::Exchange};
@@ -192,7 +192,7 @@ mod trade_history_tests {
             UnixMs::new(day + 15 * 3_600_000),
             UnixMs::new(day + 17 * 3_600_000),
         );
-        let dir = std::env::temp_dir().join("flowsurface-okx-test");
+        let dir = std::env::temp_dir().join("aquanter-surface-okx-test");
         assert_sane(
             &handle
                 .fetch_trades(info, from, until, Some(dir))
@@ -215,7 +215,7 @@ mod trade_history_tests {
         );
         let day = UnixMs::now().floor_to(Timeframe::D1).as_u64() - 86_400_000;
         let (from, until) = (UnixMs::new(day), UnixMs::new(day + 86_400_000));
-        let dir = std::env::temp_dir().join("flowsurface-bybit-test");
+        let dir = std::env::temp_dir().join("aquanter-surface-bybit-test");
         assert_sane(
             &handle
                 .fetch_trades(info, from, until, Some(dir))

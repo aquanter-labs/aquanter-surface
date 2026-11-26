@@ -1,10 +1,10 @@
 use exchange::proxy::{Proxy, ProxyAuth};
 
-const KEYCHAIN_SERVICE: &str = "flowsurface.proxy";
+const KEYCHAIN_SERVICE: &str = "proxy";
 
 fn entry_for(proxy: &Proxy) -> Result<keyring::Entry, keyring::Error> {
     let key = proxy.to_url_string_no_auth();
-    keyring::Entry::new(KEYCHAIN_SERVICE, &key)
+    super::keychain::entry(KEYCHAIN_SERVICE, &key)
 }
 
 pub fn load_proxy_auth(proxy: &Proxy) -> Option<ProxyAuth> {

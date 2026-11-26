@@ -1,4 +1,4 @@
-use flowsurface_indicator_engine::{
+use aquanter_surface_indicator_engine::{
     ChartFrame, CompileLimits, CompiledIndicator, Diagnostic, FrameOutput, IndicatorConfig,
     IndicatorFrame, IndicatorId, InstrumentContext, RuntimeLimits, Severity, TimeOrTick,
     TradeAggregate, compile,
@@ -31,7 +31,7 @@ fn main() {
 }
 
 fn usage() -> String {
-    "usage: flowsurface-indicator <new|check|test|catalog> ...\n\n  flowsurface-indicator new [directory] --id <namespace.name> --title <Title>\n  flowsurface-indicator check <file.ind|directory> [--namespace <prefix>]\n  flowsurface-indicator test <file.ind|directory> [--namespace <prefix>]\n  flowsurface-indicator catalog <file.ind|directory> --output <catalog.json> [--namespace <prefix>]"
+    "usage: aquanter-indicator <new|check|test|catalog> ...\n\n  aquanter-indicator new [directory] --id <namespace.name> --title <Title>\n  aquanter-indicator check <file.ind|directory> [--namespace <prefix>[,<prefix>...]]\n  aquanter-indicator test <file.ind|directory> [--namespace <prefix>[,<prefix>...]]\n  aquanter-indicator catalog <file.ind|directory> --output <catalog.json> [--namespace <prefix>[,<prefix>...]]"
         .to_owned()
 }
 
@@ -45,9 +45,7 @@ fn global_output(arguments: &[String]) -> Option<String> {
 
 fn command_new(arguments: &[String]) -> Result<(), String> {
     if wants_help(arguments) {
-        println!(
-            "usage: flowsurface-indicator new [directory] --id <namespace.name> --title <Title>"
-        );
+        println!("usage: aquanter-indicator new [directory] --id <namespace.name> --title <Title>");
         return Ok(());
     }
     let options = parse_new_arguments(arguments)?;
@@ -97,7 +95,7 @@ fn command_new(arguments: &[String]) -> Result<(), String> {
 fn command_check(arguments: &[String], command: &str) -> Result<(), String> {
     if wants_help(arguments) {
         println!(
-            "usage: flowsurface-indicator {command} <file.ind|directory> [--namespace <prefix>]"
+            "usage: aquanter-indicator {command} <file.ind|directory> [--namespace <prefix>[,<prefix>...]]"
         );
         return Ok(());
     }
@@ -114,7 +112,9 @@ fn command_check(arguments: &[String], command: &str) -> Result<(), String> {
 
 fn command_test(arguments: &[String]) -> Result<(), String> {
     if wants_help(arguments) {
-        println!("usage: flowsurface-indicator test <file.ind|directory> [--namespace <prefix>]");
+        println!(
+            "usage: aquanter-indicator test <file.ind|directory> [--namespace <prefix>[,<prefix>...]]"
+        );
         return Ok(());
     }
     let (path, namespace) = parse_source_arguments(arguments, "test")?;
@@ -144,7 +144,7 @@ fn command_test(arguments: &[String]) -> Result<(), String> {
 fn command_catalog(arguments: &[String]) -> Result<(), String> {
     if wants_help(arguments) {
         println!(
-            "usage: flowsurface-indicator catalog <file.ind|directory> --output <catalog.json> [--namespace <prefix>]"
+            "usage: aquanter-indicator catalog <file.ind|directory> --output <catalog.json> [--namespace <prefix>[,<prefix>...]]"
         );
         return Ok(());
     }
@@ -355,9 +355,11 @@ fn load_sources(paths: &[PathBuf], namespace: Option<&str>) -> SourceReport {
         let id = indicator.descriptor.id.as_str().to_owned();
         let mut invalid = false;
         if let Some(namespace) = namespace {
-            let has_namespace = id
-                .strip_prefix(namespace)
-                .is_some_and(|suffix| suffix.starts_with('.'));
+            // `--namespace core,pro` accepts any of the listed prefixes.
+            let has_namespace = namespace.split(',').any(|prefix| {
+                id.strip_prefix(prefix)
+                    .is_some_and(|suffix| suffix.starts_with('.'))
+            });
             if !has_namespace {
                 report.diagnostics.push(format!(
                     "{}:1:1: error: indicator ID '{}' must use namespace '{}'",
@@ -642,7 +644,13 @@ fn parse_source_arguments(
     Ok((path, namespace))
 }
 
-fn validate_namespace_prefix(namespace: &str) -> Result<(), String> {
+fn validate_namespace_prefix(namespaces: &str) -> Result<(), String> {
+    namespaces
+        .split(',')
+        .try_for_each(validate_one_namespace_prefix)
+}
+
+fn validate_one_namespace_prefix(namespace: &str) -> Result<(), String> {
     IndicatorId::new(format!("{namespace}.indicator"))
         .map(|_| ())
         .map_err(|error| format!("invalid namespace prefix '{namespace}': {error}"))
@@ -653,7 +661,7 @@ fn source_paths(path: &Path) -> Result<Vec<PathBuf>, String> {
         return Ok(vec![path.to_owned()]);
     }
 
-    let (paths, diagnostics) = flowsurface_indicator_engine::source_files_in_directory(path)?;
+    let (paths, diagnostics) = aquanter_surface_indicator_engine::source_files_in_directory(path)?;
     if !diagnostics.is_empty() {
         return Err(diagnostics.join("\n"));
     }
@@ -735,10 +743,8 @@ mod tests {
         assert_eq!(parsed.directory, PathBuf::from("."));
         assert_eq!(parsed.id, "community.example");
 
-        let root = std::env::temp_dir().join(format!(
-            "flowsurface-indicator-cli-new-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("aquanter-indicator-cli-new-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let directory = root.join("collection");
         command_new(&arguments(&[
@@ -783,7 +789,7 @@ mod tests {
     #[test]
     fn directory_validation_reports_invalid_sources_and_duplicates() {
         let root = std::env::temp_dir().join(format!(
-            "flowsurface-indicator-cli-directory-{}",
+            "aquanter-indicator-cli-directory-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
@@ -878,7 +884,7 @@ mod tests {
     #[test]
     fn test_runs_ta_smoke_and_reports_runtime_failures() {
         let root = std::env::temp_dir().join(format!(
-            "flowsurface-indicator-cli-test-{}",
+            "aquanter-indicator-cli-test-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
@@ -906,7 +912,7 @@ mod tests {
     #[test]
     fn namespace_filter_accepts_matching_ids_and_rejects_other_ids() {
         let root = std::env::temp_dir().join(format!(
-            "flowsurface-indicator-cli-namespace-{}",
+            "aquanter-indicator-cli-namespace-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);

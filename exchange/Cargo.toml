@@ -1,6 +1,6 @@
 [package]
-name = "flowsurface-exchange"
-description = "Adapters for data providers/crypto exchanges to work with Flowsurface"
+name = "aquanter-surface-exchange"
+description = "Adapters for data providers/crypto exchanges to work with Aquanter Surface"
 version.workspace = true
 license = "MIT"
 edition.workspace = true

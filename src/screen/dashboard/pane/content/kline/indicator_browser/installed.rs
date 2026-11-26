@@ -204,12 +204,15 @@ impl ViewState {
         let scrollable = scrollable::Scrollable::with_direction(
             available_column,
             scrollable::Direction::Vertical(
-                scrollable::Scrollbar::new().width(4).scroller_width(4),
+                scrollable::Scrollbar::new()
+                    .width(4)
+                    .scroller_width(4)
+                    .spacing(4),
             ),
         )
         .id(self.scroll_id())
         .height(Length::Fill)
-        .style(style::scroll_bar);
+        .style(style::thin_scroll_bar);
 
         container(column![search, scrollable].spacing(12))
             .width(Length::Fill)

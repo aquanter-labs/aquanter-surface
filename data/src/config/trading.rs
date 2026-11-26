@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-const KEYCHAIN_SERVICE: &str = "flowsurface.trading";
+const KEYCHAIN_SERVICE: &str = "trading";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub enum TradingExchange {
@@ -140,7 +140,7 @@ pub struct TradingCredentials {
 }
 
 fn entry_for(account_id: &str, testnet: bool) -> Result<keyring::Entry, keyring::Error> {
-    keyring::Entry::new(
+    super::keychain::entry(
         KEYCHAIN_SERVICE,
         &format!(
             "{}-{}",
@@ -165,7 +165,7 @@ pub fn migrate_legacy_credentials(account_id: &str, testnet: bool) -> Result<(),
     if target.get_password().is_ok() {
         return Ok(());
     }
-    let legacy = keyring::Entry::new(
+    let legacy = super::keychain::entry(
         KEYCHAIN_SERVICE,
         if testnet {
             "binance-usdm-testnet"

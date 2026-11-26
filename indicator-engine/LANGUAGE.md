@@ -184,7 +184,7 @@ Raw trade arrays are unavailable. Plot offsets change presentation only.
 
 Scripts cannot access files, networks, other symbols/timeframes, strategies,
 or alerts. `varip`, maps, and mutable drawing/table handles are unsupported.
-Flowsurface replays affected indicators when historical data changes.
+Aquanter Surface replays affected indicators when historical data changes.
 
 ## Inputs and source composition
 
@@ -553,7 +553,7 @@ copy-work limits.
 
 ## Resource limits
 
-Flowsurface and CLI `test` use these limits. Closed bars and open previews have
+Aquanter Surface and CLI `test` use these limits. Closed bars and open previews have
 the same per-bar budget. Exceeding a limit fails evaluation.
 
 | Limit | Maximum |
