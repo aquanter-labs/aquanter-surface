@@ -56,6 +56,12 @@ pub struct AiConfig {
     pub short_bars: u16,
     pub long_bars: u16,
     pub timeout_secs: u16,
+    /// Draw the AI result on the analysed chart.
+    pub show_on_chart: bool,
+    /// Support and resistance lines.
+    pub chart_levels: bool,
+    /// Entry, stop loss, targets and the entry marker.
+    pub chart_trade: bool,
 }
 
 impl Default for AiConfig {
@@ -87,6 +93,9 @@ impl AiConfig {
             short_bars: 30,
             long_bars: 120,
             timeout_secs: 180,
+            show_on_chart: true,
+            chart_levels: true,
+            chart_trade: true,
         }
     }
 }

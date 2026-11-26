@@ -260,6 +260,9 @@ pub struct ProConfig {
     /// Shift each source's trade prices by its estimated spread to this chart's venue.
     pub aggregate_basis_adjust: bool,
     pub show_footprint_orderbook: bool,
+    /// Draw the order book over the candles with no background, instead of
+    /// reserving a strip on the right.
+    pub order_book_transparent: bool,
     pub quantity_format: QuantityFormat,
     pub session_vwap: SessionVwapConfig,
     pub anchored_vwap: AnchoredVwapConfig,
@@ -288,6 +291,7 @@ impl Default for ProConfig {
             aggregate_sources: Vec::new(),
             aggregate_basis_adjust: false,
             show_footprint_orderbook: false,
+            order_book_transparent: false,
             quantity_format: QuantityFormat::default(),
             session_vwap: SessionVwapConfig::default(),
             anchored_vwap: AnchoredVwapConfig::default(),

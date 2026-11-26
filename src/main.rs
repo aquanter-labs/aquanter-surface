@@ -276,6 +276,9 @@ impl Flowsurface {
                     ai::Message::SelectHistory(_)
                         | ai::Message::CloseHistoryDetail
                         | ai::Message::ToggleHistory
+                        | ai::Message::ShowOnChartChanged(_)
+                        | ai::Message::ChartLevelsChanged(_)
+                        | ai::Message::ChartTradeChanged(_)
                 );
                 let annotation_cleared = matches!(
                     &message,
@@ -794,6 +797,12 @@ impl Flowsurface {
                     Some(Action::ThemeSelected(theme)) => {
                         self.theme_editor.reset_input();
                         self.replace_theme(theme);
+                    }
+                    Some(Action::LanguageChanged) => {
+                        let (main_window, theme) =
+                            (self.main_window.id, self.theme.current().clone());
+                        self.active_dashboard_mut()
+                            .theme_updated(main_window, &theme);
                     }
                     Some(Action::SetMetadataCaching(enabled)) => {
                         self.sidebar.set_cache_enabled(enabled);

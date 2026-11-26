@@ -33,6 +33,8 @@ pub enum Action {
     /// A restart-gated setting changed, so what is on disk is now stale.
     Persist,
     ThemeSelected(iced::Theme),
+    /// Charts cache drawn labels; redraw them in the new language.
+    LanguageChanged,
     SetMetadataCaching(bool),
     RefreshMetadata,
     OpenDataFolder,
@@ -71,6 +73,7 @@ impl Settings {
             Message::LanguageChanged(language) => {
                 self.language = language;
                 crate::i18n::set_language(language);
+                return Some(Action::LanguageChanged);
             }
             Message::TimezoneChanged(timezone) => {
                 self.timezone = timezone;

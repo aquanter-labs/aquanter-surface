@@ -400,7 +400,10 @@ impl<'a> KlineWidget<'a> {
         let Some((config, _)) = self.pro_market else {
             return 0.0;
         };
-        if self.footprint.visible && config.is_enabled("OrderBook") {
+        if self.footprint.visible
+            && config.is_enabled("OrderBook")
+            && !config.order_book_transparent
+        {
             order_book_strip_width(plot_width)
         } else {
             0.0
@@ -1700,7 +1703,7 @@ impl<'a> KlineWidget<'a> {
         })
     }
 
-    /// Pro: mirrors another chart's crosshair (time always, price only on the same ticker).
+    /// Pro: mirrors another chart's crosshair (time always, price when both chart the same coin).
     fn apply_synced_cursor(
         &self,
         scene: &mut Scene,
@@ -1718,9 +1721,14 @@ impl<'a> KlineWidget<'a> {
             return;
         }
         let x_plot = scene.map_x_plot(x_unit);
-        let price = shared
-            .price
-            .filter(|_| shared.ticker.is_some() && shared.ticker == self.base_ticker_info());
+        // Price carries over between charts of the same coin, across venues and spot/perp.
+        let price = shared.price.filter(|_| {
+            matches!(
+                (shared.ticker, self.base_ticker_info()),
+                (Some(a), Some(b)) if a.ticker == b.ticker
+                    || exchange::directory::same_asset(a.ticker, b.ticker)
+            )
+        });
         let (y_primary_unit, y_plot) = price
             .map(|price| {
                 (

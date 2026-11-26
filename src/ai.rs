@@ -381,7 +381,6 @@ pub(crate) struct ChartAnnotation {
 pub(crate) struct ChartLevel {
     pub price: f64,
     pub is_support: bool,
-    pub strength: f32,
 }
 
 impl ChartAnnotation {
@@ -409,7 +408,6 @@ fn build_chart_annotation(
                 LevelRole::Resistance => false,
                 LevelRole::Pivot => latest_price.is_some_and(|last| level.price <= last),
             },
-            strength: level.strength,
         })
         .collect::<Vec<_>>();
     if levels.is_empty() {
@@ -420,13 +418,11 @@ fn build_chart_annotation(
                 .map(|price| ChartLevel {
                     price: *price,
                     is_support: true,
-                    strength: 50.0,
                 })
                 .into_iter()
                 .chain(analysis.resistance_levels.first().map(|price| ChartLevel {
                     price: *price,
                     is_support: false,
-                    strength: 50.0,
                 })),
         );
     }
@@ -469,6 +465,24 @@ fn analysis_title(mode: AnalysisMode, action: TradeAction) -> String {
     } else {
         action.to_string()
     }
+}
+
+fn muted(theme: &iced::Theme) -> iced::widget::text::Style {
+    iced::widget::text::Style {
+        color: Some(theme.extended_palette().background.weak.text),
+    }
+}
+
+fn section_title(title: &'static str) -> iced::widget::Text<'static> {
+    text(tr(title)).style(|theme: &iced::Theme| iced::widget::text::Style {
+        color: Some(theme.extended_palette().primary.base.color),
+    })
+}
+
+/// A price without trailing zeros (`61079.6`, not `61079.600000`).
+fn price(value: f64) -> String {
+    let text = format!("{value:.6}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -813,6 +827,9 @@ pub enum Message {
     ShortBarsChanged(String),
     LongBarsChanged(String),
     TimeoutChanged(String),
+    ShowOnChartChanged(bool),
+    ChartLevelsChanged(bool),
+    ChartTradeChanged(bool),
     ModeChanged(AnalysisMode),
     RefreshSnapshot,
     Analyze,
@@ -967,6 +984,25 @@ impl Agent {
             false,
             Some(expires_at),
         )
+        .and_then(|annotation| self.chart_options(annotation))
+    }
+
+    /// Drops the parts of the annotation the chart display settings turn off.
+    fn chart_options(&self, mut annotation: ChartAnnotation) -> Option<ChartAnnotation> {
+        if !self.config.show_on_chart {
+            return None;
+        }
+        if !self.config.chart_levels {
+            annotation.levels.clear();
+        }
+        if !self.config.chart_trade {
+            annotation.entry_low = None;
+            annotation.entry_high = None;
+            annotation.stop_loss = None;
+            annotation.targets.clear();
+            annotation.mark_time = false;
+        }
+        Some(annotation)
     }
 
     pub(crate) fn displayed_chart_annotation(&self) -> Option<(uuid::Uuid, ChartAnnotation)> {
@@ -1006,6 +1042,7 @@ impl Agent {
                 true,
                 None,
             )
+            .and_then(|annotation| self.chart_options(annotation))
             .map(|annotation| (source, annotation));
         }
         self.analysis_source.zip(self.chart_annotation())
@@ -1124,6 +1161,9 @@ impl Agent {
                     self.config.timeout_secs = value.clamp(15, 600);
                 }
             }
+            Message::ShowOnChartChanged(value) => self.config.show_on_chart = value,
+            Message::ChartLevelsChanged(value) => self.config.chart_levels = value,
+            Message::ChartTradeChanged(value) => self.config.chart_trade = value,
             Message::ModeChanged(mode) => {
                 self.mode = mode;
                 self.snapshot = None;
@@ -1382,7 +1422,7 @@ impl Agent {
             .spacing(8)
             .into()
         };
-        container(scrollable(
+        container(crate::style::thin_scrollable(
             column![
                 row![
                     column![
@@ -1409,6 +1449,27 @@ impl Agent {
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
+                checkbox(self.config.show_on_chart)
+                    .label(tr("Show AI results on chart"))
+                    .on_toggle(Message::ShowOnChartChanged),
+                row![
+                    checkbox(self.config.chart_levels)
+                        .label(tr("Support / resistance"))
+                        .on_toggle_maybe(
+                            self.config
+                                .show_on_chart
+                                .then_some(Message::ChartLevelsChanged)
+                        ),
+                    checkbox(self.config.chart_trade)
+                        .label(tr("Entry / stop / targets"))
+                        .on_toggle_maybe(
+                            self.config
+                                .show_on_chart
+                                .then_some(Message::ChartTradeChanged)
+                        ),
+                ]
+                .spacing(16)
+                .padding([0, 24]),
                 rule::horizontal(1),
                 text(tr("Provider")),
                 pick_list(
@@ -1535,7 +1596,7 @@ impl Agent {
                 ]
                 .spacing(4)
                 .align_y(Alignment::Center),
-                scrollable(output).height(Length::Fill),
+                crate::style::thin_scrollable(output).height(Length::Fill),
             ]
             .spacing(10),
         )
@@ -1550,7 +1611,10 @@ impl Agent {
             } else {
                 &self.prompt
             };
-            let scrollbar = scrollable::Scrollbar::new().width(4).scroller_width(4);
+            let scrollbar = scrollable::Scrollbar::new()
+                .width(3)
+                .scroller_width(3)
+                .spacing(4);
             let direction = if self.prompt_wrap {
                 scrollable::Direction::Vertical(scrollbar)
             } else {
@@ -1588,6 +1652,7 @@ impl Agent {
                     .align_y(Alignment::Center),
                     scrollable(prompt_text)
                         .direction(direction)
+                        .style(crate::style::thin_scroll_bar)
                         .height(Length::Fill),
                 ]
                 .spacing(12),
@@ -1624,7 +1689,7 @@ impl Agent {
                     ]
                     .spacing(12)
                     .align_y(Alignment::Center),
-                    scrollable(text(raw_json)).height(Length::Fill),
+                    crate::style::thin_scrollable(text(raw_json)).height(Length::Fill),
                 ]
                 .spacing(12),
             )
@@ -1657,7 +1722,7 @@ impl Agent {
         let validity = if remaining == 0 {
             tr("Expired").to_string()
         } else {
-            format!("Valid for {remaining}s")
+            format!("{} {remaining}s", tr("Valid for"))
         };
         Self::analysis_details(analysis, validity, self.mode)
     }
@@ -1667,147 +1732,240 @@ impl Agent {
         validity: String,
         mode: AnalysisMode,
     ) -> Element<'_, Message> {
-        let prices = |values: &[f64]| {
-            if values.is_empty() {
-                "n/a".to_string()
-            } else {
-                values
-                    .iter()
-                    .map(|value| format!("{value:.6}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            }
-        };
-        let lines = |values: &[String]| {
-            if values.is_empty() {
-                "n/a".to_string()
-            } else {
-                values.join("\n")
-            }
-        };
-        let entry = match (analysis.entry_zone.low, analysis.entry_zone.high) {
-            (Some(low), Some(high)) => format!("{low:.6} - {high:.6}"),
-            _ => "n/a".to_string(),
-        };
-        let key_levels = if analysis.key_levels.is_empty() {
-            "n/a".to_string()
-        } else {
-            analysis
-                .key_levels
-                .iter()
-                .map(|level| {
-                    format!(
-                        "{} {:.6} | {:.0}/100 | {}",
-                        level.role, level.price, level.strength, level.reason
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
+        let next_candle = mode == AnalysisMode::NextCandle;
+        let action = analysis.action;
+        let mut body = column![].spacing(10).width(Length::Fill);
 
-        if mode == AnalysisMode::NextCandle {
-            return column![
-                text(analysis_title(mode, analysis.action)).size(crate::style::text_size::TITLE),
-                row![
-                    text(format!(
-                        "Evidence strength {:.0}%",
-                        analysis.confidence.clamp(0.0, 100.0)
-                    )),
-                    text(validity),
-                ]
-                .spacing(16)
-                .align_y(Alignment::Center),
+        body = body.push(
+            row![
+                text(analysis_title(mode, action))
+                    .size(crate::style::text_size::TITLE)
+                    .style(move |theme: &iced::Theme| {
+                        let palette = theme.extended_palette();
+                        iced::widget::text::Style {
+                            color: Some(match action {
+                                TradeAction::Long => palette.success.base.color,
+                                TradeAction::Short => palette.danger.base.color,
+                                TradeAction::Wait => palette.warning.base.color,
+                                TradeAction::Avoid => palette.background.weak.text,
+                            }),
+                        }
+                    }),
+                iced::widget::space::horizontal(),
                 text(format!(
-                    "UP {:.0} / DOWN {:.0}",
-                    analysis.bullish_score, analysis.bearish_score
-                )),
-                text(format!("Decision: {}", analysis.decision_summary)),
-                text(format!("Regime: {}", analysis.market_regime)),
-                text(format!("Support: {}", prices(&analysis.support_levels))),
-                text(format!(
-                    "Resistance: {}",
-                    prices(&analysis.resistance_levels)
-                )),
-                text(tr("Priority levels")),
-                text(key_levels),
-                text(tr("Evidence for UP")),
-                text(lines(&analysis.bullish_evidence)),
-                text(tr("Evidence for DOWN")),
-                text(lines(&analysis.bearish_evidence)),
-                text(tr("Risks and data quality")),
-                text(format!(
-                    "{}\n{}",
-                    lines(&analysis.risks),
-                    lines(&analysis.data_quality_notes)
-                )),
+                    "{} {:.0}%  ·  {validity}",
+                    tr(if next_candle {
+                        "Evidence strength"
+                    } else {
+                        "Confidence"
+                    }),
+                    analysis.confidence.clamp(0.0, 100.0)
+                ))
+                .style(muted),
             ]
-            .spacing(8)
-            .into();
+            .align_y(Alignment::Center),
+        );
+
+        let (bull, bear) = if next_candle {
+            ("UP", "DOWN")
+        } else {
+            ("Bull", "Bear")
+        };
+        let mut status = format!(
+            "{} {:.0}  ·  {} {:.0}",
+            tr(bull),
+            analysis.bullish_score,
+            tr(bear),
+            analysis.bearish_score
+        );
+        if !next_candle {
+            status = format!(
+                "{} {}  ·  {}  ·  {status}",
+                tr("Bias"),
+                analysis.preferred_bias,
+                analysis.execution_state
+            );
+        }
+        body = body.push(text(status).style(muted));
+
+        if !analysis.decision_summary.is_empty() {
+            body = body.push(text(analysis.decision_summary.clone()));
+        }
+        let context = [&analysis.setup, &analysis.market_regime]
+            .into_iter()
+            .filter(|value| !value.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("  ·  ");
+        if !context.is_empty() {
+            body = body.push(text(context).style(muted));
         }
 
-        column![
-            text(analysis_title(mode, analysis.action)).size(crate::style::text_size::TITLE),
-            row![
-                text(format!(
-                    "Confidence {:.0}%",
-                    analysis.confidence.clamp(0.0, 100.0)
-                )),
-                text(validity),
+        if !next_candle {
+            let entry = match (analysis.entry_zone.low, analysis.entry_zone.high) {
+                (Some(low), Some(high)) => Some(format!("{} – {}", price(low), price(high))),
+                (Some(value), None) | (None, Some(value)) => Some(price(value)),
+                (None, None) => None,
+            };
+            let plan = [
+                ("Entry", entry),
+                ("Stop", analysis.stop_loss.map(price)),
+                (
+                    "Targets",
+                    (!analysis.targets.is_empty()).then(|| {
+                        analysis
+                            .targets
+                            .iter()
+                            .map(|value| price(*value))
+                            .collect::<Vec<_>>()
+                            .join("  →  ")
+                    }),
+                ),
+                (
+                    "R:R",
+                    analysis.risk_reward.map(|value| format!("{value:.2}")),
+                ),
             ]
-            .spacing(16)
-            .align_y(Alignment::Center),
-            text(format!("Bias: {}", analysis.preferred_bias)),
-            text(format!(
-                "State: {} | Bull {:.0} / Bear {:.0}",
-                analysis.execution_state, analysis.bullish_score, analysis.bearish_score
-            )),
-            text(format!("Decision: {}", analysis.decision_summary)),
-            text(format!("Setup: {}", analysis.setup)),
-            text(format!("Regime: {}", analysis.market_regime)),
-            text(format!("Entry: {entry}")),
-            text(format!(
-                "Stop: {}",
+            .into_iter()
+            .filter_map(|(label, value)| Some((label, value?)))
+            .collect::<Vec<_>>();
+            if !plan.is_empty() {
+                let mut fields = column![section_title("Trade plan")].spacing(4);
+                for (label, value) in plan {
+                    fields = fields.push(
+                        row![
+                            text(tr(label)).width(Length::Fixed(72.0)).style(muted),
+                            text(value)
+                        ]
+                        .spacing(8),
+                    );
+                }
+                body = body.push(rule::horizontal(1)).push(fields);
+            }
+        }
+
+        let mut levels = analysis
+            .key_levels
+            .iter()
+            .map(|level| {
+                (
+                    level.role,
+                    level.price,
+                    Some(level.strength),
+                    level.reason.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        if levels.is_empty() {
+            levels.extend(
                 analysis
-                    .stop_loss
-                    .map_or_else(|| "n/a".to_string(), |value| format!("{value:.6}"))
-            )),
-            text(format!(
-                "R:R: {}",
+                    .resistance_levels
+                    .iter()
+                    .map(|value| (LevelRole::Resistance, *value, None, String::new())),
+            );
+            levels.extend(
                 analysis
-                    .risk_reward
-                    .map_or_else(|| "n/a".to_string(), |value| format!("{value:.2}"))
-            )),
-            text(format!("Targets: {}", prices(&analysis.targets))),
-            text(format!("Support: {}", prices(&analysis.support_levels))),
-            text(format!(
-                "Resistance: {}",
-                prices(&analysis.resistance_levels)
-            )),
-            text(tr("Priority levels")),
-            text(key_levels),
-            text(format!("Why wait: {}", analysis.no_trade_reason)),
-            text(tr("Trigger conditions")),
-            text(lines(&analysis.trigger_conditions)),
-            text(tr("Execution guide")),
-            text(lines(&analysis.execution_steps)),
-            rule::horizontal(1),
-            text(tr("Bullish evidence")),
-            text(lines(&analysis.bullish_evidence)),
-            text(tr("Bearish evidence")),
-            text(lines(&analysis.bearish_evidence)),
-            text(tr("Invalidation")),
-            text(lines(&analysis.invalidation)),
-            text(tr("Risks and data quality")),
-            text(format!(
-                "{}\n{}",
-                lines(&analysis.risks),
-                lines(&analysis.data_quality_notes)
-            )),
-            text(tr("Recheck when")),
-            text(lines(&analysis.recheck_conditions)),
-        ]
-        .spacing(8)
-        .into()
+                    .support_levels
+                    .iter()
+                    .map(|value| (LevelRole::Support, *value, None, String::new())),
+            );
+        }
+        if !levels.is_empty() {
+            let mut rows = column![section_title("Priority levels")].spacing(4);
+            for (role, value, strength, reason) in levels {
+                rows = rows.push(
+                    row![
+                        text(tr(match role {
+                            LevelRole::Support => "Support",
+                            LevelRole::Resistance => "Resistance",
+                            LevelRole::Pivot => "Pivot",
+                        }))
+                        .width(Length::Fixed(72.0))
+                        .style(move |theme: &iced::Theme| {
+                            let palette = theme.extended_palette();
+                            iced::widget::text::Style {
+                                color: Some(match role {
+                                    LevelRole::Support => palette.success.base.color,
+                                    LevelRole::Resistance => palette.danger.base.color,
+                                    LevelRole::Pivot => palette.primary.base.color,
+                                }),
+                            }
+                        }),
+                        text(price(value)).width(Length::Fixed(96.0)),
+                        text(strength.map_or_else(String::new, |s| format!("{s:.0}")))
+                            .width(Length::Fixed(28.0))
+                            .style(muted),
+                        text(reason).style(muted),
+                    ]
+                    .spacing(8),
+                );
+            }
+            body = body.push(rule::horizontal(1)).push(rows);
+        }
+
+        let why_wait = if analysis.no_trade_reason.is_empty() {
+            Vec::new()
+        } else {
+            vec![analysis.no_trade_reason.clone()]
+        };
+        let (bull_title, bear_title) = if next_candle {
+            ("Evidence for UP", "Evidence for DOWN")
+        } else {
+            ("Bullish evidence", "Bearish evidence")
+        };
+        let mut sections = vec![
+            ("Why wait", why_wait.as_slice(), false),
+            (
+                "Trigger conditions",
+                analysis.trigger_conditions.as_slice(),
+                false,
+            ),
+            ("Execution guide", analysis.execution_steps.as_slice(), true),
+            (bull_title, analysis.bullish_evidence.as_slice(), false),
+            (bear_title, analysis.bearish_evidence.as_slice(), false),
+            ("Invalidation", analysis.invalidation.as_slice(), false),
+            ("Risks", analysis.risks.as_slice(), false),
+            (
+                "Data quality",
+                analysis.data_quality_notes.as_slice(),
+                false,
+            ),
+            (
+                "Recheck when",
+                analysis.recheck_conditions.as_slice(),
+                false,
+            ),
+        ];
+        if next_candle {
+            sections.retain(|(title, ..)| {
+                !matches!(
+                    *title,
+                    "Why wait" | "Trigger conditions" | "Execution guide"
+                )
+            });
+        }
+        for (title, items, numbered) in sections {
+            if items.is_empty() {
+                continue;
+            }
+            let mut list = column![section_title(title)].spacing(4);
+            for (index, item) in items.iter().enumerate() {
+                let marker = if numbered {
+                    format!("{}.", index + 1)
+                } else {
+                    "•".to_string()
+                };
+                list = list.push(
+                    row![
+                        text(marker).width(Length::Fixed(18.0)).style(muted),
+                        text(item.clone()).width(Length::Fill),
+                    ]
+                    .spacing(4),
+                );
+            }
+            body = body.push(rule::horizontal(1)).push(list);
+        }
+        body.into()
     }
 
     fn history_view(&self, timezone: data::UserTimezone) -> Element<'_, Message> {
@@ -2161,6 +2319,21 @@ pub fn build_prompt(mode: AnalysisMode, snapshot: &AnalysisBundle) -> String {
 }
 
 fn system_prompt(mode: AnalysisMode) -> String {
+    let prompt = system_prompt_for(mode);
+    let language = data::i18n::language();
+    if language == data::config::language::Language::ENGLISH {
+        return prompt;
+    }
+    format!(
+        "{prompt}\n\nOutput language: write every free-text string value (summaries, setup, \
+         regime, reasons, evidence, conditions, steps, risks, notes) in {language} ({}). Keep \
+         JSON keys, enum values such as LONG/SHORT/WAIT/READY/SUPPORT, and numbers exactly as \
+         specified.",
+        language.code()
+    )
+}
+
+fn system_prompt_for(mode: AnalysisMode) -> String {
     let base = r#"You are a read-only crypto market microstructure decision-support analyst. You do not place orders. Use only supplied data and never invent news, levels, open interest, liquidity or probabilities.
 
 Decision policy:

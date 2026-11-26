@@ -92,7 +92,7 @@ pub fn heatmap_shader_cfg_view<'a>(
             }),
             sync_all: false,
         },
-        |value| format!(">{value:.0}x median"),
+        move |value| format!(">{value:.0}{}", tr("x median")),
         Some(1.0),
     );
 
@@ -107,15 +107,31 @@ pub fn heatmap_shader_cfg_view<'a>(
             }),
             sync_all: false,
         },
-        |value| format!(">= {value:.0} in 30s"),
+        move |value| format!(">= {value:.0} {}", tr("in 30s")),
         Some(1.0),
     );
+
+    let wall_summary_checkbox = row![
+        checkbox(cfg.show_wall_summary)
+            .label(tr("Show pulled / absorbed summary"))
+            .on_toggle(move |value| Message::VisualConfigChanged {
+                config: VisualConfig::Heatmap(heatmap::Config {
+                    show_wall_summary: value,
+                    ..cfg
+                }),
+                sync_all: false,
+            })
+    ]
+    .height(36)
+    .align_y(iced::Alignment::Center)
+    .padding([0, 8]);
 
     let size_filters = column![
         trade_size_slider,
         order_size_slider,
         wall_slider,
-        wall_count_slider
+        wall_count_slider,
+        wall_summary_checkbox
     ]
     .spacing(8);
 

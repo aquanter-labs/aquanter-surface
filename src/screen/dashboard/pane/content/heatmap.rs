@@ -399,7 +399,10 @@ impl HeatmapShader {
             volume_strip_max_qty: self.instances.volume_strip_scale_max_qty,
             depth_profile_max_qty: self.instances.depth_profile_scale_max_qty,
             volume_profile_max_qty: self.instances.volume_profile_scale_max_qty,
-            wall_summary: self.wall_summary.as_deref(),
+            wall_summary: self
+                .wall_summary
+                .as_deref()
+                .filter(|_| self.config.show_wall_summary),
         };
 
         let chart = HeatmapShaderWidget::new(
@@ -879,11 +882,17 @@ impl HeatmapShader {
             let absorbed = mark.event == data::chart::walls::WallEvent::Absorbed;
             counts[usize::from(absorbed) * 2 + usize::from(!mark.is_bid)] += 1;
         }
-        self.wall_summary = Some(format!(
-            "5m pulled   bid {:>2}  ask {:>2}
-5m absorbed bid {:>2}  ask {:>2}",
-            counts[0], counts[1], counts[2], counts[3]
-        ));
+        let (pulled, absorbed) = (data::i18n::tr("5m pulled"), data::i18n::tr("5m absorbed"));
+        let label_w = pulled.chars().count().max(absorbed.chars().count());
+        let (bid, ask) = (data::i18n::tr("bid"), data::i18n::tr("ask"));
+        self.wall_summary = Some(
+            [
+                (pulled, counts[0], counts[1]),
+                (absorbed, counts[2], counts[3]),
+            ]
+            .map(|(label, b, a)| format!("{label:<label_w$}  {bid} {b:>2}  {ask} {a:>2}"))
+            .join("\n"),
+        );
 
         built.circles.extend(
             strong_marks

@@ -2,8 +2,7 @@ use crate::i18n::tr;
 use data::config::trading::{TradingConfig, TradingCredentials, TradingExchange};
 use hmac::{Hmac, Mac};
 use iced::widget::{
-    button, checkbox, column, container, pick_list, row, rule, scrollable, slider, text,
-    text_input, tooltip,
+    button, checkbox, column, container, pick_list, row, rule, slider, text, text_input, tooltip,
 };
 use iced::{Alignment, Element, Length, Task, padding};
 use reqwest::Method;
@@ -380,6 +379,14 @@ pub struct PositionOverlay {
     pub is_long: bool,
     pub entry_price: Option<f64>,
     pub break_even_price: Option<f64>,
+    /// Draw `break_even_price` instead of `entry_price`.
+    pub price_with_fees: bool,
+    /// Fills drawn as B/S badges on their candle rather than arrows at the price.
+    pub fill_badges: bool,
+    /// TP / SL and limit lines accept drags.
+    pub draggable: bool,
+    /// A chart edit waiting for confirmation, shown as a popup on the chart.
+    pub confirm: Option<String>,
     pub liquidation_price: Option<f64>,
     pub liquidation_estimated: bool,
     pub stop_loss: Option<f64>,
@@ -486,10 +493,19 @@ pub enum Message {
     AccountLabelChanged(String),
     ExchangeChanged(TradingExchange),
     SimulationBalanceChanged(String),
+    SimulationMakerFeeChanged(String),
+    SimulationTakerFeeChanged(String),
     ResetSimulation,
     ApiKeyChanged(String),
     SecretKeyChanged(String),
     ConfirmOrdersChanged(bool),
+    ChartPriceWithFeesChanged(bool),
+    ChartShowPositionChanged(bool),
+    ChartShowFillsChanged(bool),
+    ChartFillBadgesChanged(bool),
+    ChartOpeningFillsOnlyChanged(bool),
+    ChartDragOrdersChanged(bool),
+    ChartDragConfirmChanged(bool),
     SaveCredentials,
     Connect,
     Disconnect,
@@ -591,9 +607,13 @@ pub struct Trader {
     take_profit: String,
     protection_editor: Option<ProtectionEditor>,
     dragged_protection: Option<(Option<f64>, Option<f64>)>,
+    /// Popup text when `pending_action` came from a chart drag.
+    chart_confirm: Option<String>,
     show_account_analytics: bool,
     leverage: String,
     simulation_balance: String,
+    simulation_maker_fee: String,
+    simulation_taker_fee: String,
     risk_percent: String,
     reward_ratio: String,
     reduce_only: bool,
@@ -608,10 +628,18 @@ pub struct Trader {
     proxy: Option<exchange::proxy::Proxy>,
     event_duration: EventDuration,
     event_stake: String,
+    simulation_revision: u64,
 }
+
+/// Bumped on every simulation save; panels holding an older copy reload.
+static SIMULATION_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Trader {
     pub fn new(mut config: TradingConfig, proxy: Option<exchange::proxy::Proxy>) -> Self {
+        if config.account_id != data::config::trading::SHARED_ACCOUNT_ID {
+            data::config::trading::adopt_credentials(&config.account_id);
+            config.account_id = data::config::trading::SHARED_ACCOUNT_ID.to_string();
+        }
         if config.exchange == TradingExchange::BinanceTestnet && !config.testnet {
             config.exchange = TradingExchange::BinanceLive;
         }
@@ -621,6 +649,8 @@ impl Trader {
         let credentials =
             data::config::trading::load_credentials(&config.account_id, config.testnet);
         let simulation_balance = config.simulated_balance.to_string();
+        let simulation_maker_fee = format_decimal(config.simulated_maker_fee_pct);
+        let simulation_taker_fee = format_decimal(config.simulated_taker_fee_pct);
         let ticket: Ticket = serde_json::from_value(config.ticket.clone()).unwrap_or_default();
         let mut trader = Self {
             api_key: credentials
@@ -650,9 +680,12 @@ impl Trader {
             take_profit: ticket.take_profit,
             protection_editor: None,
             dragged_protection: None,
+            chart_confirm: None,
             show_account_analytics: false,
             leverage: ticket.leverage,
             simulation_balance,
+            simulation_maker_fee,
+            simulation_taker_fee,
             risk_percent: ticket.risk_percent,
             reward_ratio: ticket.reward_ratio,
             reduce_only: ticket.reduce_only,
@@ -667,12 +700,14 @@ impl Trader {
             proxy,
             event_duration: ticket.event_duration,
             event_stake: ticket.event_stake,
+            simulation_revision: SIMULATION_REVISION.load(std::sync::atomic::Ordering::Relaxed),
         };
         if trader.is_simulation() {
             trader.snapshot = Some(load_simulated_snapshot(
                 &trader.config.account_id,
                 trader.config.simulated_balance,
             ));
+            trader.apply_simulated_fees(false);
             trader.healthy = true;
             trader.status = tr("Local simulation ready.").to_string();
         }
@@ -738,6 +773,17 @@ impl Trader {
 
     /// Panes that should carry this trader's overlay: every compatible chart when
     /// "All charts" is on, otherwise only the selected one.
+    /// Whether a drag on chart `source` belongs to this panel: the selected
+    /// chart, or any chart of the traded symbol when trades show on every chart.
+    pub fn accepts_chart_drag(&self, source: uuid::Uuid) -> bool {
+        self.config.chart_drag_orders
+            && (self.selected_chart == Some(source)
+                || (self.config.overlay_all_charts
+                    && self.chart_sources.iter().any(|chart| {
+                        chart.pane_id == source && chart.symbol == self.config.symbol
+                    })))
+    }
+
     pub fn overlay_targets(&self) -> Vec<(uuid::Uuid, Option<PositionOverlay>)> {
         if self.config.overlay_all_charts {
             self.chart_sources
@@ -806,10 +852,12 @@ impl Trader {
     /// Chart overlay (position, orders, fills, event contracts) for `symbol`.
     pub fn overlay_for(&self, symbol: &str) -> Option<PositionOverlay> {
         let snapshot = self.snapshot.as_ref()?;
+        let show_position = self.config.chart_show_position;
         let position = snapshot
             .positions
             .iter()
-            .find(|position| position.symbol == symbol);
+            .find(|position| position.symbol == symbol)
+            .filter(|_| show_position);
         let (mut stop_loss, mut take_profit) = self.protection_levels(symbol);
         if let Some((preview_stop, preview_take)) = self
             .dragged_protection
@@ -818,10 +866,13 @@ impl Trader {
             stop_loss = preview_stop;
             take_profit = preview_take;
         }
+        if !show_position {
+            (stop_loss, take_profit) = (None, None);
+        }
         let orders = snapshot
             .open_orders
             .iter()
-            .filter(|order| order.symbol == symbol && order.order_type == "LIMIT")
+            .filter(|order| show_position && order.symbol == symbol && order.order_type == "LIMIT")
             .map(|order| TradingOrderOverlay {
                 id: TradingLineId::LimitOrder {
                     order_id: order.order_id,
@@ -834,7 +885,12 @@ impl Trader {
         let trade_history = snapshot
             .trade_history
             .iter()
-            .filter(|trade| trade.symbol == symbol && trade.price > 0.0)
+            .filter(|trade| {
+                self.config.chart_show_fills
+                    && trade.symbol == symbol
+                    && trade.price > 0.0
+                    && (!self.config.chart_opening_fills_only || trade.realized_pnl == 0.0)
+            })
             .map(|trade| TradeMarker {
                 time_ms: trade.time_ms,
                 price: trade.price,
@@ -866,6 +922,14 @@ impl Trader {
             is_long: position.is_none_or(Position::is_long),
             entry_price: position.map(|position| position.entry_price),
             break_even_price: position.map(|position| position.economic_break_even_price),
+            price_with_fees: self.config.chart_price_with_fees,
+            fill_badges: self.config.chart_fill_badges,
+            draggable: self.config.chart_drag_orders && symbol == self.config.symbol,
+            confirm: self
+                .pending_action
+                .as_ref()
+                .and(self.chart_confirm.clone())
+                .filter(|_| symbol == self.config.symbol),
             liquidation_price: position.and_then(|position| {
                 (position.liquidation_price > 0.0).then_some(position.liquidation_price)
             }),
@@ -904,6 +968,19 @@ impl Trader {
     }
 
     pub fn tick(&mut self, now: std::time::Instant) -> Task<Message> {
+        // Another layout's panel traded on the shared account: pick up its file
+        // before this panel's stale copy can overwrite it.
+        let revision = SIMULATION_REVISION.load(std::sync::atomic::Ordering::Relaxed);
+        if self.simulation_revision != revision {
+            self.simulation_revision = revision;
+            if self.is_simulation() {
+                self.snapshot = Some(load_simulated_snapshot(
+                    &self.config.account_id,
+                    self.config.simulated_balance,
+                ));
+                self.apply_simulated_fees(false);
+            }
+        }
         if self.is_simulation()
             && self
                 .selected_source()
@@ -946,6 +1023,7 @@ impl Trader {
                         &self.config.account_id,
                         self.config.simulated_balance,
                     ));
+                    self.apply_simulated_fees(false);
                     self.healthy = true;
                     self.status = tr("Local simulation ready.").to_string();
                 } else {
@@ -970,6 +1048,20 @@ impl Trader {
             Message::SimulationBalanceChanged(value) => {
                 self.simulation_balance = integer_input(value);
             }
+            Message::SimulationMakerFeeChanged(value) => {
+                if let Some(pct) = fee_input(&value) {
+                    self.config.simulated_maker_fee_pct = pct;
+                    self.apply_simulated_fees(true);
+                }
+                self.simulation_maker_fee = value;
+            }
+            Message::SimulationTakerFeeChanged(value) => {
+                if let Some(pct) = fee_input(&value) {
+                    self.config.simulated_taker_fee_pct = pct;
+                    self.apply_simulated_fees(true);
+                }
+                self.simulation_taker_fee = value;
+            }
             Message::ResetSimulation => {
                 let Some(balance) = self
                     .simulation_balance
@@ -982,6 +1074,7 @@ impl Trader {
                 };
                 self.config.simulated_balance = balance;
                 self.snapshot = Some(simulated_snapshot(balance));
+                self.apply_simulated_fees(false);
                 self.healthy = true;
                 self.persist_simulation();
                 self.recalculate_quantity();
@@ -990,6 +1083,17 @@ impl Trader {
             Message::ApiKeyChanged(value) => self.api_key = value,
             Message::SecretKeyChanged(value) => self.secret_key = value,
             Message::ConfirmOrdersChanged(value) => self.config.confirm_orders = value,
+            Message::ChartPriceWithFeesChanged(value) => {
+                self.config.chart_price_with_fees = value;
+            }
+            Message::ChartShowPositionChanged(value) => self.config.chart_show_position = value,
+            Message::ChartShowFillsChanged(value) => self.config.chart_show_fills = value,
+            Message::ChartFillBadgesChanged(value) => self.config.chart_fill_badges = value,
+            Message::ChartOpeningFillsOnlyChanged(value) => {
+                self.config.chart_opening_fills_only = value;
+            }
+            Message::ChartDragOrdersChanged(value) => self.config.chart_drag_orders = value,
+            Message::ChartDragConfirmChanged(value) => self.config.chart_drag_confirm = value,
             Message::SaveCredentials => {
                 self.status = match data::config::trading::save_credentials(
                     &self.config.account_id,
@@ -1325,7 +1429,11 @@ impl Trader {
                 };
                 return self.execute(action);
             }
-            Message::CancelAction => self.pending_action = None,
+            Message::CancelAction => {
+                self.pending_action = None;
+                // A cancelled chart drag snaps the line back.
+                self.dragged_protection = None;
+            }
             Message::ActionCompleted(result) => {
                 self.busy = false;
                 self.dragged_protection = None;
@@ -1373,7 +1481,38 @@ impl Trader {
                 if !finished {
                     return Task::none();
                 }
-                return match id {
+                let confirm = self.config.chart_drag_confirm;
+                let queued = confirm || self.config.exchange == TradingExchange::BinanceLive;
+                let summary = match id {
+                    TradingLineId::StopLoss | TradingLineId::TakeProfit => {
+                        let tag = if id == TradingLineId::StopLoss {
+                            "SL"
+                        } else {
+                            "TP"
+                        };
+                        let pnl = self.snapshot.as_ref().and_then(|snapshot| {
+                            snapshot
+                                .positions
+                                .iter()
+                                .find(|position| position.symbol == self.config.symbol)
+                                .map(|position| {
+                                    position.estimated_pnl_at(price, snapshot.commission.taker)
+                                })
+                        });
+                        match pnl {
+                            Some(pnl) => format!(
+                                "{tag} → {}   {} {pnl:+.2}",
+                                format_decimal(price),
+                                tr("Est. PnL")
+                            ),
+                            None => format!("{tag} → {}", format_decimal(price)),
+                        }
+                    }
+                    TradingLineId::LimitOrder { .. } => {
+                        format!("{} → {}", tr("Move limit order"), format_decimal(price))
+                    }
+                };
+                let task = match id {
                     TradingLineId::StopLoss | TradingLineId::TakeProfit => self
                         .snapshot
                         .as_ref()
@@ -1385,12 +1524,17 @@ impl Trader {
                         })
                         .cloned()
                         .map(|position| {
-                            self.queue_or_execute(PendingAction::Protect {
-                                existing: self.protection_orders(&position.symbol),
-                                position,
-                                stop_loss: self.dragged_protection.and_then(|levels| levels.0),
-                                take_profit: self.dragged_protection.and_then(|levels| levels.1),
-                            })
+                            self.queue_or_execute_with(
+                                PendingAction::Protect {
+                                    existing: self.protection_orders(&position.symbol),
+                                    position,
+                                    stop_loss: self.dragged_protection.and_then(|levels| levels.0),
+                                    take_profit: self
+                                        .dragged_protection
+                                        .and_then(|levels| levels.1),
+                                },
+                                confirm,
+                            )
                         })
                         .unwrap_or_else(Task::none),
                     TradingLineId::LimitOrder { order_id } => self
@@ -1404,10 +1548,17 @@ impl Trader {
                         })
                         .cloned()
                         .map(|order| {
-                            self.queue_or_execute(PendingAction::ModifyLimit { order, price })
+                            self.queue_or_execute_with(
+                                PendingAction::ModifyLimit { order, price },
+                                confirm,
+                            )
                         })
                         .unwrap_or_else(Task::none),
                 };
+                if queued && self.pending_action.is_some() {
+                    self.chart_confirm = Some(summary);
+                }
+                return task;
             }
         }
         Task::none()
@@ -1432,12 +1583,34 @@ impl Trader {
         }
     }
 
-    fn persist_simulation(&self) {
+    /// Simulated account uses the fee rates from settings.
+    fn apply_simulated_fees(&mut self, persist: bool) {
+        if !self.is_simulation() {
+            return;
+        }
+        let rate = CommissionRate {
+            maker: self.config.simulated_maker_fee_pct / 100.0,
+            taker: self.config.simulated_taker_fee_pct / 100.0,
+        };
+        if let Some(snapshot) = self.snapshot.as_mut() {
+            let changed = (snapshot.commission.maker - rate.maker).abs() > f64::EPSILON
+                || (snapshot.commission.taker - rate.taker).abs() > f64::EPSILON;
+            snapshot.commission = rate;
+            if changed && persist {
+                self.persist_simulation();
+            }
+        }
+    }
+
+    fn persist_simulation(&mut self) {
         if self.is_simulation()
             && let Some(snapshot) = &self.snapshot
-            && let Err(error) = save_simulated_snapshot(&self.config.account_id, snapshot)
         {
-            log::error!("Failed to persist simulation account: {error}");
+            if let Err(error) = save_simulated_snapshot(&self.config.account_id, snapshot) {
+                log::error!("Failed to persist simulation account: {error}");
+            }
+            self.simulation_revision =
+                SIMULATION_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         }
     }
 
@@ -1638,11 +1811,18 @@ impl Trader {
     }
 
     fn queue_or_execute(&mut self, action: PendingAction) -> Task<Message> {
+        self.chart_confirm = None;
+        self.queue_or_execute_with(action, self.config.confirm_orders)
+    }
+
+    /// Chart drags use their own confirmation switch; live funds always confirm.
+    fn queue_or_execute_with(&mut self, action: PendingAction, confirm: bool) -> Task<Message> {
         if self.client.is_none() && !self.is_simulation() {
             self.status = tr("Connect a Binance account first.").to_string();
+            self.dragged_protection = None;
             return Task::none();
         }
-        if self.config.confirm_orders || self.config.exchange == TradingExchange::BinanceLive {
+        if confirm || self.config.exchange == TradingExchange::BinanceLive {
             self.pending_action = Some(action);
             Task::none()
         } else {
@@ -1656,6 +1836,7 @@ impl Trader {
                 Ok(message) => message,
                 Err(error) => error,
             };
+            self.dragged_protection = None;
             self.persist_simulation();
             return Task::none();
         }
@@ -1926,6 +2107,21 @@ impl Trader {
                     &self.simulation_balance,
                     Message::SimulationBalanceChanged,
                 ),
+                row![
+                    labeled_input(
+                        tr("Maker fee %"),
+                        "0.02",
+                        &self.simulation_maker_fee,
+                        Message::SimulationMakerFeeChanged,
+                    ),
+                    labeled_input(
+                        tr("Taker fee %"),
+                        "0.04",
+                        &self.simulation_taker_fee,
+                        Message::SimulationTakerFeeChanged,
+                    ),
+                ]
+                .spacing(8),
                 button(text(tr("Reset simulation"))).on_press(Message::ResetSimulation),
             ]
             .spacing(6)
@@ -1961,7 +2157,7 @@ impl Trader {
             .spacing(6)
             .into()
         };
-        container(scrollable(
+        container(crate::style::thin_scrollable(
             column![
                 row![
                     text(tr("Exchange")).width(Length::Fill),
@@ -1986,6 +2182,64 @@ impl Trader {
                     }),
                 ]
                 .spacing(10),
+                row![
+                    text(tr("Chart position line")).width(Length::Fill),
+                    pick_list(
+                        [tr("Entry price"), tr("Break-even (incl. fees)")],
+                        Some(if self.config.chart_price_with_fees {
+                            tr("Break-even (incl. fees)")
+                        } else {
+                            tr("Entry price")
+                        }),
+                        |choice| Message::ChartPriceWithFeesChanged(
+                            choice == tr("Break-even (incl. fees)")
+                        ),
+                    ),
+                ]
+                .align_y(Alignment::Center),
+                row![
+                    text(tr("Show on chart")).width(Length::Fill),
+                    checkbox(self.config.chart_show_position)
+                        .label(tr("Position & orders"))
+                        .on_toggle(Message::ChartShowPositionChanged),
+                    checkbox(self.config.chart_show_fills)
+                        .label(tr("Fills"))
+                        .on_toggle(Message::ChartShowFillsChanged),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
+                row![
+                    text(tr("Fill markers")).width(Length::Fill),
+                    pick_list(
+                        [tr("B/S badge on candle"), tr("Arrow at fill price")],
+                        Some(if self.config.chart_fill_badges {
+                            tr("B/S badge on candle")
+                        } else {
+                            tr("Arrow at fill price")
+                        }),
+                        |choice| Message::ChartFillBadgesChanged(
+                            choice == tr("B/S badge on candle")
+                        ),
+                    ),
+                ]
+                .align_y(Alignment::Center),
+                checkbox(self.config.chart_opening_fills_only)
+                    .label(tr("Opening fills only"))
+                    .on_toggle(Message::ChartOpeningFillsOnlyChanged),
+                row![
+                    checkbox(self.config.chart_drag_orders)
+                        .label(tr("Drag TP/SL and orders on chart"))
+                        .on_toggle(Message::ChartDragOrdersChanged),
+                    checkbox(self.config.chart_drag_confirm)
+                        .label(tr("Confirm chart edits"))
+                        .on_toggle_maybe(
+                            self.config
+                                .chart_drag_orders
+                                .then_some(Message::ChartDragConfirmChanged)
+                        ),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
                 connection,
                 text(&self.status).size(crate::style::text_size::SMALL),
             ]
@@ -2252,7 +2506,12 @@ impl Trader {
         } else {
             column![].into()
         };
-        let confirmation: Element<'_, Message> = if let Some(action) = &self.pending_action {
+        // Chart edits confirm in a popup on the chart, not here.
+        let confirmation: Element<'_, Message> = if let Some(action) = self
+            .pending_action
+            .as_ref()
+            .filter(|_| self.chart_confirm.is_none())
+        {
             let summary = match action {
                 PendingAction::Place { request: order, .. } => format!(
                     "Confirm {} {} {} at {}",
@@ -2317,7 +2576,7 @@ impl Trader {
             column![].into()
         };
 
-        let base = container(scrollable(
+        let base = container(crate::style::thin_scrollable(
             if event_tab {
                 column![panel_header, tabs, self.event_contracts_view(timezone),]
             } else {
@@ -2756,9 +3015,7 @@ impl Trader {
             }
             header = header.push(text(tr("Price")).width(Length::FillPortion(2)));
             header = header.push(text(tr("PnL USDT")).width(Length::FillPortion(2)));
-            if !compact {
-                header = header.push(text(tr("Fee")).width(Length::FillPortion(2)));
-            }
+            header = header.push(text(tr("Fee")).width(Length::FillPortion(2)));
             let mut list = column![
                 text(tr("Trade history")).size(crate::style::text_size::SECTION),
                 header.spacing(6),
@@ -2766,7 +3023,8 @@ impl Trader {
             ]
             .spacing(5);
             for trade in trades.into_iter().rev().take(100) {
-                let pnl = trade.net_pnl_usdt();
+                // Realized PnL before fees; the fee has its own column.
+                let pnl = trade.realized_pnl;
                 let pnl_positive = pnl >= 0.0;
                 let time = timezone
                     .format_with_kind(
@@ -2783,26 +3041,35 @@ impl Trader {
                 fields = fields
                     .push(text(format_decimal(trade.price)).width(Length::FillPortion(2)))
                     .push(
-                        text(format!("{pnl:.2}"))
-                            .width(Length::FillPortion(2))
-                            .style(move |theme: &iced::Theme| iced::widget::text::Style {
-                                color: Some(if pnl_positive {
-                                    theme.extended_palette().success.base.color
-                                } else {
-                                    theme.extended_palette().danger.base.color
-                                }),
+                        text(if pnl.abs() < f64::EPSILON {
+                            "--".to_string()
+                        } else {
+                            format!("{pnl:+.2}")
+                        })
+                        .width(Length::FillPortion(2))
+                        .style(move |theme: &iced::Theme| iced::widget::text::Style {
+                            color: Some(if pnl_positive {
+                                theme.extended_palette().success.base.color
+                            } else {
+                                theme.extended_palette().danger.base.color
                             }),
+                        }),
                     );
-                if !compact {
-                    fields = fields.push(
-                        text(format!(
-                            "{} {}",
+                fields = fields.push(
+                    text(if compact || trade.commission_asset == "USDT" {
+                        format!("-{:.2}", trade.commission)
+                    } else {
+                        format!(
+                            "-{} {}",
                             format_decimal(trade.commission),
                             trade.commission_asset
-                        ))
-                        .width(Length::FillPortion(2)),
-                    );
-                }
+                        )
+                    })
+                    .width(Length::FillPortion(2))
+                    .style(|theme: &iced::Theme| iced::widget::text::Style {
+                        color: Some(theme.extended_palette().background.strong.text),
+                    }),
+                );
                 list = list.push(fields.spacing(6).align_y(Alignment::Center));
             }
             if is_empty {
@@ -3150,6 +3417,15 @@ fn numeric_input(value: String) -> String {
         .collect()
 }
 
+/// A fee rate in percent: 0 up to 1 %.
+fn fee_input(value: &str) -> Option<f64> {
+    value
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|pct| pct.is_finite() && (0.0..=1.0).contains(pct))
+}
+
 fn integer_input(value: String) -> String {
     value
         .chars()
@@ -3181,13 +3457,108 @@ fn simulation_path(account_id: &str) -> String {
 }
 
 fn load_simulated_snapshot(account_id: &str, balance: u64) -> AccountSnapshot {
+    // Tests must never read or write the real simulation account.
+    if cfg!(test) {
+        return simulated_snapshot(balance);
+    }
     std::fs::read_to_string(data::data_path(Some(&simulation_path(account_id))))
         .ok()
         .and_then(|json| serde_json::from_str(&json).ok())
+        .or_else(|| merge_legacy_simulations(account_id))
         .unwrap_or_else(|| simulated_snapshot(balance))
 }
 
+/// Older versions kept one simulation file per trading panel. The first time
+/// the shared account is opened, merge every one of them into it; the old files
+/// stay on disk untouched.
+fn merge_legacy_simulations(account_id: &str) -> Option<AccountSnapshot> {
+    if account_id != data::config::trading::SHARED_ACCOUNT_ID {
+        return None;
+    }
+    let dir = data::data_path(Some("trading/simulation"));
+    let mut accounts = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            let json = std::fs::read_to_string(entry.path()).ok()?;
+            Some((
+                modified,
+                serde_json::from_str::<AccountSnapshot>(&json).ok()?,
+            ))
+        })
+        .collect::<Vec<_>>();
+    accounts.sort_by_key(|(modified, _)| *modified);
+    let merged = merge_snapshots(accounts.into_iter().map(|(_, snapshot)| snapshot).collect())?;
+    if let Err(error) = save_simulated_snapshot(account_id, &merged) {
+        log::error!("Failed to save merged simulation account: {error}");
+    }
+    Some(merged)
+}
+
+/// Oldest first. Balance, positions and orders come from the newest account;
+/// trade history and event contracts from all of them.
+fn merge_snapshots(snapshots: Vec<AccountSnapshot>) -> Option<AccountSnapshot> {
+    let mut trades = Vec::new();
+    let mut events = Vec::new();
+    let mut newest = None;
+    for snapshot in snapshots {
+        trades.extend(snapshot.trade_history.iter().cloned());
+        events.extend(snapshot.event_contracts.iter().cloned());
+        newest = Some(snapshot);
+    }
+    let mut merged = newest?;
+    trades.sort_by_key(|trade: &TradeHistory| (trade.time_ms, trade.trade_id));
+    trades.dedup_by_key(|trade| (trade.time_ms, trade.trade_id));
+    events.sort_by_key(|event: &EventContract| (event.open_time_ms, event.id));
+    events.dedup_by_key(|event| (event.open_time_ms, event.id));
+    merged.trade_history = trades;
+    merged.event_contracts = events;
+    Some(merged)
+}
+
+#[cfg(test)]
+mod shared_account_tests {
+    use super::*;
+
+    #[test]
+    fn merge_keeps_every_history_and_newest_balance() {
+        let trade = |id, time_ms| TradeHistory {
+            trade_id: id,
+            order_id: id,
+            symbol: "BTCUSDT".into(),
+            side: Side::Buy,
+            quantity: 1.0,
+            price: 1.0,
+            realized_pnl: 0.0,
+            commission: 0.0,
+            commission_asset: "USDT".into(),
+            time_ms,
+        };
+        let old = AccountSnapshot {
+            trade_history: vec![trade(1, 10), trade(2, 20)],
+            ..simulated_snapshot(1_000)
+        };
+        let new = AccountSnapshot {
+            trade_history: vec![trade(2, 20), trade(3, 5)],
+            ..simulated_snapshot(5_000)
+        };
+        let merged = merge_snapshots(vec![old, new.clone()]).unwrap();
+        let ids: Vec<_> = merged.trade_history.iter().map(|t| t.trade_id).collect();
+        assert_eq!(ids, [3, 1, 2]);
+        assert_eq!(merged.balances.len(), new.balances.len());
+        assert_eq!(
+            merged.balances.first().map(|b| b.wallet),
+            new.balances.first().map(|b| b.wallet)
+        );
+        assert!(merge_snapshots(Vec::new()).is_none());
+    }
+}
+
 fn save_simulated_snapshot(account_id: &str, snapshot: &AccountSnapshot) -> Result<(), String> {
+    if cfg!(test) {
+        return Ok(());
+    }
     let json = serde_json::to_string(snapshot).map_err(|error| error.to_string())?;
     data::write_json_to_file(&json, &simulation_path(account_id)).map_err(|error| error.to_string())
 }
@@ -3196,6 +3567,8 @@ fn simulation_order_id(snapshot: &AccountSnapshot) -> u64 {
     local_time_ms().saturating_mul(100) + snapshot.open_orders.len() as u64
 }
 
+/// A taker fill (market orders, stop / take-profit triggers).
+#[allow(clippy::too_many_arguments)]
 fn simulated_fill(
     snapshot: &mut AccountSnapshot,
     symbol: &str,
@@ -3205,6 +3578,32 @@ fn simulated_fill(
     leverage: u16,
     margin_mode: MarginMode,
     reduce_only: bool,
+) -> Result<(), String> {
+    let taker = snapshot.commission.taker;
+    simulated_fill_with_fee(
+        snapshot,
+        symbol,
+        side,
+        quantity,
+        price,
+        leverage,
+        margin_mode,
+        reduce_only,
+        taker,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn simulated_fill_with_fee(
+    snapshot: &mut AccountSnapshot,
+    symbol: &str,
+    side: Side,
+    quantity: f64,
+    price: f64,
+    leverage: u16,
+    margin_mode: MarginMode,
+    reduce_only: bool,
+    fee_rate: f64,
 ) -> Result<(), String> {
     if !quantity.is_finite() || quantity <= 0.0 || !price.is_finite() || price <= 0.0 {
         return Err("Simulation fill has an invalid quantity or price.".to_string());
@@ -3232,8 +3631,8 @@ fn simulated_fill(
             (quantity - current.abs()).max(0.0)
         }
     });
-    let required = opening_quantity * price / f64::from(leverage.max(1))
-        + quantity * price * snapshot.commission.taker;
+    let required =
+        opening_quantity * price / f64::from(leverage.max(1)) + quantity * price * fee_rate;
     let available = snapshot
         .balances
         .iter()
@@ -3243,7 +3642,7 @@ fn simulated_fill(
         return Err(tr("Insufficient simulated available balance.").to_string());
     }
 
-    let commission = quantity * price * snapshot.commission.taker;
+    let commission = quantity * price * fee_rate;
     let mut realized_pnl = 0.0;
     let mut wallet_delta = -commission;
     match position_index {
@@ -3256,6 +3655,17 @@ fn simulated_fill(
             };
             let old_quantity = position.quantity;
             let new_quantity = old_quantity + fill;
+            // Break-even carries every fee and realized PnL since the position
+            // opened, like Binance's: qty × (P − BE) is the net PnL at price P.
+            let economic = if new_quantity.abs() <= f64::EPSILON {
+                position.economic_break_even_price
+            } else if new_quantity.signum() != old_quantity.signum() {
+                let opening_fee = commission * (new_quantity.abs() / quantity);
+                price + opening_fee / new_quantity
+            } else {
+                (position.economic_break_even_price * old_quantity + price * fill + commission)
+                    / new_quantity
+            };
             if old_quantity.signum() == fill.signum() {
                 position.entry_price = (position.entry_price * old_quantity.abs()
                     + price * fill.abs())
@@ -3272,8 +3682,8 @@ fn simulated_fill(
             }
             position.quantity = new_quantity;
             position.mark_price = price;
-            position.break_even_price = position.entry_price;
-            position.economic_break_even_price = position.entry_price;
+            position.break_even_price = economic;
+            position.economic_break_even_price = economic;
             position.leverage = leverage.max(1);
             position.margin_mode = margin_mode;
         }
@@ -3283,8 +3693,8 @@ fn simulated_fill(
             quantity: signed,
             entry_price: price,
             mark_price: price,
-            break_even_price: price,
-            economic_break_even_price: price,
+            break_even_price: price + commission / signed,
+            economic_break_even_price: price + commission / signed,
             liquidation_price: 0.0,
             leverage: leverage.max(1),
             margin_mode,
@@ -3461,15 +3871,24 @@ fn match_simulated_orders(
             .map_or((fallback_leverage, fallback_margin_mode), |position| {
                 (position.leverage, position.margin_mode)
             });
-        if simulated_fill(
+        // A resting limit order fills at its own price as maker; stop and
+        // take-profit orders trigger a market order and pay taker.
+        let limit = order.order_type == "LIMIT";
+        let fee_rate = if limit {
+            snapshot.commission.maker
+        } else {
+            snapshot.commission.taker
+        };
+        if simulated_fill_with_fee(
             snapshot,
             symbol,
             order.side,
             order.quantity,
-            market,
+            if limit { order.price } else { market },
             leverage,
             margin_mode,
             order.reduce_only,
+            fee_rate,
         )
         .is_ok()
         {
@@ -4832,6 +5251,46 @@ mod tests {
         assert!(snapshot.balances[0].wallet > 10_019.0);
         assert_eq!(snapshot.trade_history.len(), 2);
         assert!(snapshot.trade_history[1].realized_pnl > 0.0);
+    }
+
+    #[test]
+    fn simulation_break_even_includes_fees() {
+        let mut snapshot = simulated_snapshot(10_000);
+        let taker = snapshot.commission.taker;
+        let buy = |snapshot: &mut AccountSnapshot, side, quantity, price| {
+            simulated_fill(
+                snapshot,
+                "BTCUSDT",
+                side,
+                quantity,
+                price,
+                10,
+                MarginMode::Cross,
+                false,
+            )
+            .unwrap();
+        };
+        buy(&mut snapshot, Side::Buy, 1.0, 100.0);
+        let position = &snapshot.positions[0];
+        assert!((position.economic_break_even_price - 100.0 * (1.0 + taker)).abs() < 1e-9);
+        // Net PnL at break-even, before the exit fee, is zero.
+        assert!(
+            position
+                .estimated_pnl_at(position.economic_break_even_price, 0.0)
+                .abs()
+                < 1e-9
+        );
+
+        // Half closed at 110: like Binance, break-even absorbs the realized
+        // profit, so PnL at a price is the whole position's net since opening.
+        buy(&mut snapshot, Side::Sell, 0.5, 110.0);
+        let at_110 = snapshot.positions[0].estimated_pnl_at(110.0, 0.0);
+        assert!((at_110 - (10.0 - 100.0 * taker - 55.0 * taker)).abs() < 1e-9);
+
+        // Short: break-even sits below entry.
+        let mut snapshot = simulated_snapshot(10_000);
+        buy(&mut snapshot, Side::Sell, 1.0, 100.0);
+        assert!(snapshot.positions[0].economic_break_even_price < 100.0);
     }
 
     #[test]

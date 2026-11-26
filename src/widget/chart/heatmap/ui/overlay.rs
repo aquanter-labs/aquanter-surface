@@ -225,7 +225,16 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                     let line_h = size + 4.0;
                     let lines = summary.lines().collect::<Vec<_>>();
                     // Generous monospace advance so the box always covers the text.
-                    let longest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+                    // CJK glyphs take about twice the advance of ASCII ones.
+                    let longest = lines
+                        .iter()
+                        .map(|l| {
+                            l.chars()
+                                .map(|c| if c.is_ascii() { 1 } else { 2 })
+                                .sum::<usize>()
+                        })
+                        .max()
+                        .unwrap_or(0);
                     let w = longest as f32 * size * 0.75 + 16.0;
                     let h = lines.len() as f32 * line_h + 8.0;
                     let center = bounds.width * 0.5;

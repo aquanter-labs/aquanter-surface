@@ -66,6 +66,8 @@ pub enum Effect {
     Ai(crate::ai::Message),
     Trading(uuid::Uuid, crate::trading::Message),
     TradingLevelDragged(uuid::Uuid, crate::trading::TradingLineId, f64, bool),
+    /// Confirm (`true`) or cancel a chart edit from the popup on chart `source`.
+    TradingChartConfirm(uuid::Uuid, bool),
     RefreshStreams,
     RequestFetch(Vec<FetchSpec>),
     SwitchTickersInGroup(TickerInfo),
@@ -1577,6 +1579,9 @@ impl State {
             Some(KlineAction::RequestFetch(fetch)) => Some(Effect::RequestFetch(fetch)),
             Some(KlineAction::TradingLineDragged(id, price, finished)) => {
                 Some(Effect::TradingLevelDragged(self.id, id, price, finished))
+            }
+            Some(KlineAction::TradingChartConfirm(confirm)) => {
+                Some(Effect::TradingChartConfirm(self.id, confirm))
             }
             Some(KlineAction::OpenNetworkSettings) => Some(Effect::OpenNetworkSettings),
             Some(KlineAction::OpenUrl(url)) => Some(Effect::OpenUrl(url)),

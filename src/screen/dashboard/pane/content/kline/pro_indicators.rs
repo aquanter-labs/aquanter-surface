@@ -257,6 +257,18 @@ pub(crate) fn inputs(name: &str, config: &ProConfig) -> Element<'static, Message
                 |c, v| c.volume_profile.rows = v as u16,
             ));
         }
+        "OrderBook" => {
+            let book = config.clone();
+            controls = controls.push(
+                checkbox(!config.order_book_transparent)
+                    .label(tr("Background (off: draw over candles)"))
+                    .on_toggle(move |value| {
+                        let mut c = book.clone();
+                        c.order_book_transparent = !value;
+                        Message::ProConfigChanged(c)
+                    }),
+            );
+        }
         _ => {}
     }
     controls.into()
