@@ -2179,7 +2179,7 @@ impl Trader {
                         .label(tr("Confirm orders"))
                         .on_toggle(Message::ConfirmOrdersChanged),
                     text(if self.config.exchange == TradingExchange::BinanceLive {
-                        "LIVE FUNDS"
+                        "LIVE FUNDS · BETA"
                     } else if self.is_simulation() {
                         "LOCAL"
                     } else {
@@ -2187,6 +2187,20 @@ impl Trader {
                     }),
                 ]
                 .spacing(10),
+                column![
+                    text(tr(
+                        "Live trading is in beta and not fully tested yet. Use small sizes."
+                    ))
+                    .size(crate::style::text_size::SMALL)
+                    .style(|theme: &iced::Theme| iced::widget::text::Style {
+                        color: Some(theme.extended_palette().danger.base.color),
+                    })
+                ]
+                .height(if self.config.exchange == TradingExchange::BinanceLive {
+                    Length::Shrink
+                } else {
+                    Length::Fixed(0.0)
+                }),
                 row![
                     text(tr("Chart position line")).width(Length::Fill),
                     pick_list(
@@ -3756,24 +3770,50 @@ fn simulated_fill_with_fee(
 }
 
 fn refresh_simulated_account(snapshot: &mut AccountSnapshot, symbol: &str, price: f64) {
-    let mut unrealized = 0.0;
-    let mut margin = 0.0;
     let liquidation_fee_rate = snapshot.liquidation_fee_rate;
     for position in &mut snapshot.positions {
         if position.symbol == symbol {
             position.mark_price = price;
             position.unrealized_pnl = position.quantity * (price - position.entry_price);
-            position.liquidation_price = estimated_liquidation_price(
-                position.entry_price,
-                position.leverage,
-                position.is_long(),
-                SIM_MAINTENANCE_MARGIN_RATE,
-                liquidation_fee_rate,
-            )
-            .unwrap_or_default();
         }
+    }
+    let wallet = snapshot
+        .balances
+        .iter()
+        .find(|balance| balance.asset == "USDT")
+        .map_or(0.0, |balance| balance.wallet);
+    let liquidation = (0..snapshot.positions.len())
+        .map(|index| {
+            let position = &snapshot.positions[index];
+            if position.symbol != symbol {
+                return position.liquidation_price;
+            }
+            match position.margin_mode {
+                MarginMode::Isolated => estimated_liquidation_price(
+                    position.entry_price,
+                    position.leverage,
+                    position.is_long(),
+                    SIM_MAINTENANCE_MARGIN_RATE,
+                    liquidation_fee_rate,
+                ),
+                MarginMode::Cross => cross_liquidation_price(
+                    &snapshot.positions,
+                    index,
+                    wallet,
+                    SIM_MAINTENANCE_MARGIN_RATE,
+                    liquidation_fee_rate,
+                ),
+            }
+            .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    let mut unrealized = 0.0;
+    let mut margin = 0.0;
+    for (position, liquidation) in snapshot.positions.iter_mut().zip(liquidation) {
+        position.liquidation_price = liquidation;
         unrealized += position.unrealized_pnl;
-        margin += position.quantity.abs() * price / f64::from(position.leverage.max(1));
+        margin +=
+            position.quantity.abs() * position.mark_price / f64::from(position.leverage.max(1));
     }
     if let Some(balance) = snapshot
         .balances
@@ -3786,6 +3826,64 @@ fn refresh_simulated_account(snapshot: &mut AccountSnapshot, symbol: &str, price
     snapshot.updated_at_ms = local_time_ms();
 }
 
+/// Maintenance reserve as a share of notional: maintenance margin plus the
+/// liquidation fee, capped at half the initial margin. Binance gets the same
+/// effect with lower maintenance rates on high-leverage brackets (125x: 0.8%
+/// initial, 0.4% maintenance); uncapped, the price would land on the wrong
+/// side of entry above ~57x.
+fn maintenance_reserve_rate(leverage: u16, maintenance_margin_rate: f64, fee_rate: f64) -> f64 {
+    (maintenance_margin_rate.max(0.0) + fee_rate.max(0.0)).min(0.5 / f64::from(leverage.max(1)))
+}
+
+/// Cross margin: the whole wallet backs the position. Liquidation is the
+/// price where account equity (wallet, the other cross positions' PnL, minus
+/// margin locked by isolated positions) falls to the maintenance reserve.
+/// `None` when the wallet covers any move (a long never liquidates above 0).
+fn cross_liquidation_price(
+    positions: &[Position],
+    index: usize,
+    wallet: f64,
+    maintenance_margin_rate: f64,
+    liquidation_fee_rate: f64,
+) -> Option<f64> {
+    let position = positions.get(index)?;
+    let quantity = position.quantity;
+    if quantity.abs() <= f64::EPSILON || !position.entry_price.is_finite() {
+        return None;
+    }
+    let mut equity = wallet;
+    for (other_index, other) in positions.iter().enumerate() {
+        if other_index == index {
+            continue;
+        }
+        match other.margin_mode {
+            MarginMode::Isolated => {
+                equity -=
+                    other.quantity.abs() * other.entry_price / f64::from(other.leverage.max(1));
+            }
+            MarginMode::Cross => {
+                equity += other.unrealized_pnl
+                    - other.quantity.abs()
+                        * other.mark_price
+                        * maintenance_reserve_rate(
+                            other.leverage,
+                            maintenance_margin_rate,
+                            liquidation_fee_rate,
+                        );
+            }
+        }
+    }
+    let rate = maintenance_reserve_rate(
+        position.leverage,
+        maintenance_margin_rate,
+        liquidation_fee_rate,
+    );
+    // equity + q (P - entry) = |q| P rate, solved for P.
+    let price =
+        (quantity * position.entry_price - equity) / (quantity * (1.0 - quantity.signum() * rate));
+    (price.is_finite() && price > 0.0).then_some(price)
+}
+
 fn estimated_liquidation_price(
     entry_price: f64,
     leverage: u16,
@@ -3796,13 +3894,9 @@ fn estimated_liquidation_price(
     if !entry_price.is_finite() || entry_price <= 0.0 || leverage == 0 {
         return None;
     }
-    let leverage = f64::from(leverage);
-    // The reserve kept at liquidation must stay below the initial margin
-    // (1 / leverage), or the price lands on the wrong side of entry. Binance
-    // gets there with lower maintenance rates on high-leverage brackets
-    // (125x: 0.8% initial, 0.4% maintenance), so cap it at half the margin.
     let margin_rate =
-        (maintenance_margin_rate.max(0.0) + liquidation_fee_rate.max(0.0)).min(0.5 / leverage);
+        maintenance_reserve_rate(leverage, maintenance_margin_rate, liquidation_fee_rate);
+    let leverage = f64::from(leverage);
     let price = if is_long {
         entry_price * (1.0 - 1.0 / leverage) / (1.0 - margin_rate)
     } else {
@@ -5152,6 +5246,37 @@ mod tests {
     }
 
     #[test]
+    fn cross_liquidation_uses_the_whole_wallet() {
+        let open = |wallet: u64, side, mode| {
+            let mut snapshot = simulated_snapshot(wallet);
+            simulated_fill(&mut snapshot, "BTCUSDT", side, 1.0, 100.0, 10, mode, false).unwrap();
+            refresh_simulated_account(&mut snapshot, "BTCUSDT", 100.0);
+            snapshot
+        };
+        // A wallet far larger than the position: no liquidation at all.
+        let rich = open(10_000, Side::Buy, MarginMode::Cross);
+        assert_eq!(rich.positions[0].liquidation_price, 0.0);
+
+        // Wallet just above the margin: cross sits below isolated for a long,
+        // above it for a short, always on the losing side of entry.
+        let long = open(20, Side::Buy, MarginMode::Cross).positions[0].liquidation_price;
+        let isolated = open(20, Side::Buy, MarginMode::Isolated).positions[0].liquidation_price;
+        assert!(
+            long > 0.0 && long < isolated && isolated < 100.0,
+            "{long} {isolated}"
+        );
+        let short = open(20, Side::Sell, MarginMode::Cross).positions[0].liquidation_price;
+        let isolated = open(20, Side::Sell, MarginMode::Isolated).positions[0].liquidation_price;
+        assert!(short > isolated && isolated > 100.0, "{short} {isolated}");
+
+        // At the cross price, equity equals the maintenance reserve.
+        let snapshot = open(20, Side::Buy, MarginMode::Cross);
+        let wallet = snapshot.balances[0].wallet;
+        let rate = maintenance_reserve_rate(10, SIM_MAINTENANCE_MARGIN_RATE, 0.0125);
+        assert!((wallet + (long - 100.0) - long * rate).abs() < 1e-9);
+    }
+
+    #[test]
     fn long_and_short_actions_map_to_open_and_reduce_only_sides() {
         assert_eq!(
             trade_actions(PositionSide::Long),
@@ -5257,7 +5382,8 @@ mod tests {
         assert_eq!(snapshot.trade_history.len(), 1);
         refresh_simulated_account(&mut snapshot, "BTCUSDT", 110.0);
         assert_eq!(snapshot.positions[0].unrealized_pnl, 10.0);
-        assert!(snapshot.positions[0].liquidation_price > 0.0);
+        // Cross: a 10k wallet behind a 100 USDT position never liquidates.
+        assert_eq!(snapshot.positions[0].liquidation_price, 0.0);
 
         snapshot.open_orders.push(OpenOrder {
             symbol: "BTCUSDT".to_string(),

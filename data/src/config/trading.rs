@@ -18,7 +18,7 @@ impl std::fmt::Display for TradingExchange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::BinanceTestnet => "Binance Testnet",
-            Self::BinanceLive => "Binance Live",
+            Self::BinanceLive => "Binance Live (Beta)",
             Self::Simulation => "Local Simulation",
         })
     }
