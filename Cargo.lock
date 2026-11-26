@@ -135,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "aquanter-surface"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "aquanter-surface-data",
  "aquanter-surface-exchange",
@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "aquanter-surface-data"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "aquanter-surface-exchange",
  "aquanter-surface-indicator-engine",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "aquanter-surface-exchange"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -229,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "aquanter-surface-indicator-engine"
-version = "0.9.3"
+version = "0.9.4"
 dependencies = [
  "chrono",
  "ring",
