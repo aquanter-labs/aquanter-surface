@@ -183,7 +183,7 @@ pub fn open_url(url: &str) -> Result<(), InternalError> {
 }
 
 pub fn data_path(path_name: Option<&str>) -> PathBuf {
-    if let Ok(path) = std::env::var("FLOWSURFACE_DATA_PATH") {
+    if let Ok(path) = std::env::var("AQUANTER_SURFACE_DATA_PATH") {
         let root = PathBuf::from(path);
         match path_name {
             Some(name) => root.join(name),
@@ -204,7 +204,7 @@ const DATA_DIR_NAME: &str = "aquanter-surface";
 /// One-time copy of settings from an upstream Flowsurface data dir, left intact so
 /// both apps can coexist. Market data cache and logs are not copied.
 pub fn migrate_legacy_data_dir() -> std::io::Result<bool> {
-    if std::env::var_os("FLOWSURFACE_DATA_PATH").is_some() {
+    if std::env::var_os("AQUANTER_SURFACE_DATA_PATH").is_some() {
         return Ok(false);
     }
     let Some(base) = dirs_next::data_dir() else {

@@ -1,5 +1,5 @@
 1 ICON "../../../assets/app-icon/aquanter-surface.ico"
-1 24 "flowsurface.manifest"
+1 24 "aquanter-surface.manifest"
 
 1 VERSIONINFO
 FILEVERSION APP_VERSION

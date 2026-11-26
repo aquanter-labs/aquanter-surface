@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-const KEYCHAIN_SERVICE: &str = "flowsurface.ai";
+const KEYCHAIN_SERVICE: &str = "ai";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub enum AiProvider {
@@ -106,7 +106,7 @@ fn entry_for(config: &AiConfig) -> Result<keyring::Entry, keyring::Error> {
         config.provider,
         config.base_url.trim_end_matches('/')
     );
-    keyring::Entry::new(KEYCHAIN_SERVICE, &account)
+    super::keychain::entry(KEYCHAIN_SERVICE, &account)
 }
 
 pub fn load_api_key(config: &AiConfig) -> Option<String> {

@@ -1129,6 +1129,8 @@ impl<'a> KlineWidget<'a> {
             axis_lines = lines;
             if let Some(overlay) = self.pro_trading {
                 let mut badged: Vec<(u64, bool)> = Vec::new();
+                // Badges already on each candle side, so later ones stack outward.
+                let mut stacked: Vec<(u64, bool)> = Vec::new();
                 for marker in overlay.trade_history.iter().filter(|_| overlay.fill_badges) {
                     let buy = marker.side == crate::trading::Side::Buy;
                     let Some((bar_time, high, low)) = self.pro_bar_at(marker.time_ms) else {
@@ -1143,10 +1145,14 @@ impl<'a> KlineWidget<'a> {
                         self.pro_time_x(scene, bar_time),
                         price_y(scene, if buy { low } else { high }),
                     ) {
+                        let stack = stacked.iter().filter(|k| **k == (bar_time, buy)).count();
+                        stacked.push((bar_time, buy));
                         paint_fill_badge(
                             frame,
                             Point::new(x, y),
                             buy,
+                            if buy { "B" } else { "S" },
+                            stack,
                             if buy {
                                 palette.success.base.color
                             } else {
@@ -1178,7 +1184,45 @@ impl<'a> KlineWidget<'a> {
                     }
                 }
                 // Event contracts: open price held across the contract window, result at expiry.
+                let mut event_badged: Vec<(u64, bool, bool)> = Vec::new();
                 for contract in &overlay.event_contracts {
+                    // Settled: W/L badge on the expiry candle, below for Up and
+                    // above for Down, like B/S.
+                    if overlay.event_badges
+                        && let Some(pnl) = contract.pnl()
+                    {
+                        let won = pnl > 0.0;
+                        let below = contract.up;
+                        let Some((bar_time, high, low)) =
+                            self.pro_bar_at(contract.expiry_ms.saturating_sub(1))
+                        else {
+                            continue;
+                        };
+                        if event_badged.contains(&(bar_time, below, won)) {
+                            continue;
+                        }
+                        event_badged.push((bar_time, below, won));
+                        if let (Some(x), Some(y)) = (
+                            self.pro_time_x(scene, bar_time),
+                            price_y(scene, if below { low } else { high }),
+                        ) {
+                            let stack = stacked.iter().filter(|k| **k == (bar_time, below)).count();
+                            stacked.push((bar_time, below));
+                            paint_fill_badge(
+                                frame,
+                                Point::new(x, y),
+                                below,
+                                if won { "W" } else { "L" },
+                                stack,
+                                if won {
+                                    palette.success.base.color
+                                } else {
+                                    palette.danger.base.color
+                                },
+                            );
+                        }
+                        continue;
+                    }
                     let (Some(x0), Some(x1), Some(y)) = (
                         self.pro_time_x(scene, contract.open_time_ms),
                         self.pro_time_x(scene, contract.expiry_ms),
@@ -1692,19 +1736,31 @@ fn bin_samples(samples: &[ProfileSample], low: f64, step: f64, rows: usize) -> V
 
 /// Exchange-style fill badge: a rounded box with B / S, below the candle's
 /// low for buys and above its high for sells, pointing at the candle.
-fn paint_fill_badge(frame: &mut PaintInputs, anchor: Point, buy: bool, color: iced::Color) {
+/// Letter badge under (`below`) or over a candle; `stack` > 0 sits further
+/// out, past the badges already on that side.
+fn paint_fill_badge(
+    frame: &mut PaintInputs,
+    anchor: Point,
+    below: bool,
+    letter: &str,
+    stack: usize,
+    color: iced::Color,
+) {
     const SIZE: f32 = 15.0;
     const GAP: f32 = 7.0;
-    let dir = if buy { 1.0 } else { -1.0 };
-    let center = Point::new(anchor.x, anchor.y + dir * (GAP + SIZE / 2.0));
-    let base_y = center.y - dir * SIZE / 2.0;
-    let pointer = canvas::Path::new(|p| {
-        p.move_to(Point::new(anchor.x, anchor.y + dir * 2.0));
-        p.line_to(Point::new(anchor.x - 3.5, base_y));
-        p.line_to(Point::new(anchor.x + 3.5, base_y));
-        p.close();
-    });
-    frame.fill(&pointer, color);
+    let dir = if below { 1.0 } else { -1.0 };
+    let offset = GAP + SIZE / 2.0 + stack as f32 * (SIZE + 2.0);
+    let center = Point::new(anchor.x, anchor.y + dir * offset);
+    if stack == 0 {
+        let base_y = center.y - dir * SIZE / 2.0;
+        let pointer = canvas::Path::new(|p| {
+            p.move_to(Point::new(anchor.x, anchor.y + dir * 2.0));
+            p.line_to(Point::new(anchor.x - 3.5, base_y));
+            p.line_to(Point::new(anchor.x + 3.5, base_y));
+            p.close();
+        });
+        frame.fill(&pointer, color);
+    }
     frame.fill(
         &canvas::Path::rounded_rectangle(
             Point::new(center.x - SIZE / 2.0, center.y - SIZE / 2.0),
@@ -1714,7 +1770,7 @@ fn paint_fill_badge(frame: &mut PaintInputs, anchor: Point, buy: bool, color: ic
         color,
     );
     frame.fill_text(canvas::Text {
-        content: if buy { "B" } else { "S" }.to_string(),
+        content: letter.to_string(),
         position: center,
         align_x: iced::alignment::Horizontal::Center.into(),
         align_y: iced::alignment::Vertical::Center,

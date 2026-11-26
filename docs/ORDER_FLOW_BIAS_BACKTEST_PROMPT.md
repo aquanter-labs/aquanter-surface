@@ -1,6 +1,6 @@
 # Order Flow Bias 独立历史回测 Prompt
 
-请实现一个独立、可重复运行的 Order Flow Bias 历史回测工具。不要依赖 Flowsurface UI，也不要修改交易策略来迎合结果。目标是验证该指标是否对“下一根 K 线方向”具有样本外预测能力。
+请实现一个独立、可重复运行的 Order Flow Bias 历史回测工具。不要依赖 Aquanter Surface UI，也不要修改交易策略来迎合结果。目标是验证该指标是否对“下一根 K 线方向”具有样本外预测能力。
 
 ## 输入数据
 

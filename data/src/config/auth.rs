@@ -2,11 +2,11 @@ use exchange::proxy::{Proxy, ProxyAuth};
 
 // ── Proxy auth (keychain) ───────────────────────────────────────────────
 
-const PROXY_KEYCHAIN_SERVICE: &str = "flowsurface.proxy";
+const PROXY_KEYCHAIN_SERVICE: &str = "proxy";
 
 fn proxy_entry_for(proxy: &Proxy) -> Result<keyring::Entry, keyring::Error> {
     let key = proxy.to_url_string_no_auth();
-    keyring::Entry::new(PROXY_KEYCHAIN_SERVICE, &key)
+    super::keychain::entry(PROXY_KEYCHAIN_SERVICE, &key)
 }
 
 /// Load proxy credentials from the system keychain.
@@ -121,10 +121,10 @@ pub fn delete_proxy_auth(proxy: &Proxy) {
 
 // ── Server auth (keychain) ──────────────────────────────────────────────
 
-const SERVER_KEYCHAIN_SERVICE: &str = "flowsurface.server";
+const SERVER_KEYCHAIN_SERVICE: &str = "server";
 
 fn server_entry_for(url: &str) -> Result<keyring::Entry, keyring::Error> {
-    keyring::Entry::new(SERVER_KEYCHAIN_SERVICE, url)
+    super::keychain::entry(SERVER_KEYCHAIN_SERVICE, url)
 }
 
 /// Load the server auth token from the system keychain.

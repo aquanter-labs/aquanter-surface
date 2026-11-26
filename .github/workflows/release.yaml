@@ -83,7 +83,7 @@ jobs:
                           echo "ARTIFACT_PATH=$(bash scripts/package-linux.sh archive_path aarch64)" >> "$GITHUB_ENV"
         runs-on: ${{ matrix.target.os }}
         env:
-            FLOWSURFACE_OFFICIAL_RELEASE: "true"
+            AQUANTER_SURFACE_OFFICIAL_RELEASE: "true"
         steps:
             - uses: actions/checkout@v7
               with:

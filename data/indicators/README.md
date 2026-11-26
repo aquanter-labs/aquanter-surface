@@ -13,5 +13,5 @@ indicators without rebuilding.
 Validate the bundled collection from the repository root:
 
 ```sh
-cargo run --locked -p flowsurface-indicator-engine --bin flowsurface-indicator -- test data/indicators/sources --namespace core
+cargo run --locked -p aquanter-surface-indicator-engine --bin aquanter-indicator -- test data/indicators/sources --namespace core,pro
 ```

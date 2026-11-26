@@ -3,6 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 pub mod ai;
 pub mod alerts;
 pub mod auth;
+pub mod keychain;
 pub mod language;
 pub mod network;
 pub mod sidebar;

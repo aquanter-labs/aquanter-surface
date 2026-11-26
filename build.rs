@@ -5,8 +5,8 @@ fn main() {
     #[cfg(windows)]
     {
         println!("cargo:rerun-if-changed=assets/app-icon/aquanter-surface.ico");
-        println!("cargo:rerun-if-changed=scripts/packaging/windows/flowsurface.manifest");
-        println!("cargo:rerun-if-changed=scripts/packaging/windows/flowsurface.rc");
+        println!("cargo:rerun-if-changed=scripts/packaging/windows/aquanter-surface.manifest");
+        println!("cargo:rerun-if-changed=scripts/packaging/windows/aquanter-surface.rc");
         let macros = [
             format!(
                 "APP_VERSION={},{},{},0",
@@ -23,7 +23,7 @@ fn main() {
             ),
         ];
         embed_resource::compile(
-            "scripts/packaging/windows/flowsurface.rc",
+            "scripts/packaging/windows/aquanter-surface.rc",
             embed_resource::ParamsMacrosAndIncludeDirs(macros, ["scripts/packaging/windows"]),
         )
         .manifest_required()
@@ -38,24 +38,24 @@ fn main() {
         return;
     };
 
-    println!("cargo:rustc-env=FLOWSURFACE_GIT_SHA={git_sha}");
+    println!("cargo:rustc-env=AQUANTER_SURFACE_GIT_SHA={git_sha}");
 
     let pkg_version = env::var("CARGO_PKG_VERSION").unwrap_or_default();
     let is_release_tag = git_head_has_release_tag(&pkg_version);
     println!(
-        "cargo:rustc-env=FLOWSURFACE_IS_RELEASE_TAG={}",
+        "cargo:rustc-env=AQUANTER_SURFACE_IS_RELEASE_TAG={}",
         if is_release_tag { "true" } else { "false" }
     );
 
     let is_official_release = is_official_release_build();
     println!(
-        "cargo:rustc-env=FLOWSURFACE_IS_OFFICIAL_RELEASE={}",
+        "cargo:rustc-env=AQUANTER_SURFACE_IS_OFFICIAL_RELEASE={}",
         if is_official_release { "true" } else { "false" }
     );
 }
 
 fn is_official_release_build() -> bool {
-    if !env_var_is_truthy("FLOWSURFACE_OFFICIAL_RELEASE") {
+    if !env_var_is_truthy("AQUANTER_SURFACE_OFFICIAL_RELEASE") {
         return false;
     }
 

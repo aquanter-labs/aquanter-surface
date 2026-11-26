@@ -1,6 +1,6 @@
 [package]
-name = "flowsurface-data"
-description = "Data aggregation, indexing, and configuration utilities for Flowsurface"
+name = "aquanter-surface-data"
+description = "Data aggregation, indexing, and configuration utilities for Aquanter Surface"
 version.workspace = true
 license = "GPL-3.0-or-later"
 edition.workspace = true

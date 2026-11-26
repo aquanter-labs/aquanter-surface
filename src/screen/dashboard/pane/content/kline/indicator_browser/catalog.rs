@@ -100,11 +100,14 @@ impl ViewState {
         let list = scrollable::Scrollable::with_direction(
             entries,
             scrollable::Direction::Vertical(
-                scrollable::Scrollbar::new().width(4).scroller_width(4),
+                scrollable::Scrollbar::new()
+                    .width(4)
+                    .scroller_width(4)
+                    .spacing(4),
             ),
         )
         .height(Length::Fill)
-        .style(style::scroll_bar);
+        .style(style::thin_scroll_bar);
 
         container(content.push(list))
             .width(Length::Fill)

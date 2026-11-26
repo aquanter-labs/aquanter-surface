@@ -55,7 +55,7 @@ Everything below is added in this fork. All upstream features remain available.
 - Fixes for unpublished Binance archives, starved perp depth, and an hourly trade cache.
 
 ### Compatibility notes
-- Data lives in its own `aquanter-surface/` data directory. On first launch, settings, layouts, indicators, and AI/alert/trading history are copied once from an existing upstream `flowsurface/` directory (the market data cache is not copied). The upstream install is left untouched.
+- Data lives in its own `aquanter-surface/` data directory. On first launch, settings, layouts, indicators, and AI/alert/trading history are copied once from an existing upstream `flowsurface/` directory (the market data cache is not copied). Saved API keys and proxy/server passwords are copied the same way from the upstream `flowsurface.*` keychain entries to `aquanter-surface.*`. The upstream install is left untouched.
 - Indicators from the upstream catalog still work. The catalog is fetched from upstream's `api.flowsurface.com`.
 
 ## Key Features
@@ -102,9 +102,9 @@ pinned commit; installing downloads the selected `.ind` source from the catalog 
 against the manifest checksum, and compiles it locally before installation.
 
 **Manual install**: Open **Settings → Open data folder** and copy `.ind` files into `indicators/`, then
-restart the app. The data directory is `$FLOWSURFACE_DATA_PATH` when set, otherwise your platform's data
+restart the app. The data directory is `$AQUANTER_SURFACE_DATA_PATH` when set, otherwise your platform's data
 directory under `aquanter-surface/`. The installed-indicator directory can also be overridden with
-`FLOWSURFACE_INDICATORS_PATH`.
+`AQUANTER_SURFACE_INDICATORS_PATH`.
 
 To write your own indicators, see the [language reference and examples](indicator-engine/LANGUAGE.md) and the
 [CLI workflow](indicator-engine/README.md#cli).
@@ -178,6 +178,6 @@ Some components use separate licenses:
 | Application, data crate, and [bundled indicators](data/indicators/README.md)            | [GPL-3.0-or-later](LICENSE)                                                  |
 | Indicator engine and CLI                                                                | [Apache-2.0](indicator-engine/LICENSE)                                       |
 | [Indicator catalog](https://github.com/flowsurface-rs/indicators) and its documentation | [Apache-2.0](https://github.com/flowsurface-rs/indicators/blob/main/LICENSE) |
-| Exchange adapters (`flowsurface-exchange`)                                              | [MIT](exchange/LICENSE)                                                      |
+| Exchange adapters (`aquanter-surface-exchange`)                                            | [MIT](exchange/LICENSE)                                                      |
 
 Contributions follow the license of the component being changed; submit catalog indicators to the [indicators repository](https://github.com/flowsurface-rs/indicators/blob/main/CONTRIBUTING.md).

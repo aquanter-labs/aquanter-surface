@@ -10,7 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [workspace.package]
-version = "0.9.3"
+version = "0.9.4"
 edition = "2024"
 repository = "https://github.com/aquanter-labs/aquanter-surface"
 homepage = "https://aquanter.com"
@@ -34,9 +34,9 @@ enum-map = { version = "2.7.3", features = ["serde"] }
 url = "2.5.8"
 rand = "0.10.1"
 uuid = { version = "1.23.1", features = ["serde", "v4"] }
-data = { version = "0.9.1", path = "data", package = "flowsurface-data" }
-exchange = { version = "0.9.1", path = "exchange", package = "flowsurface-exchange" }
-indicator_engine = { version = "0.9.1", path = "indicator-engine", package = "flowsurface-indicator-engine" }
+data = { version = "0.9.1", path = "data", package = "aquanter-surface-data" }
+exchange = { version = "0.9.1", path = "exchange", package = "aquanter-surface-exchange" }
+indicator_engine = { version = "0.9.1", path = "indicator-engine", package = "aquanter-surface-indicator-engine" }
 arrow-ipc = { version = "59.1", default-features = false }
 arrow-array = { version = "59.1", default-features = false }
 arrow-schema = { version = "59.1", default-features = false }

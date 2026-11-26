@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-const KEYCHAIN_SERVICE: &str = "flowsurface.trading";
+const KEYCHAIN_SERVICE: &str = "trading";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub enum TradingExchange {
@@ -18,7 +18,7 @@ impl std::fmt::Display for TradingExchange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::BinanceTestnet => "Binance Testnet",
-            Self::BinanceLive => "Binance Live",
+            Self::BinanceLive => "Binance Live (Beta)",
             Self::Simulation => "Local Simulation",
         })
     }
@@ -48,6 +48,8 @@ pub struct TradingConfig {
     pub event_tab: bool,
     /// Draw trades / event contracts on every active chart, not just the selected one.
     pub overlay_all_charts: bool,
+    /// Futures and event contract history list every symbol, not just the chart's.
+    pub history_all_symbols: bool,
     /// The chart position line shows the break-even price (fees included)
     /// instead of the plain entry price.
     pub chart_price_with_fees: bool,
@@ -59,6 +61,9 @@ pub struct TradingConfig {
     pub chart_fill_badges: bool,
     /// Only mark fills that open or add to a position (no realized PnL).
     pub chart_opening_fills_only: bool,
+    /// Settled event contracts as a W/L badge on their expiry candle instead
+    /// of the open-price line with the result beside it.
+    pub event_chart_badges: bool,
     /// TP / SL and limit-order lines can be dragged on the chart.
     pub chart_drag_orders: bool,
     /// A chart drag waits for confirmation before it is sent.
@@ -86,11 +91,13 @@ impl Default for TradingConfig {
             event_show_history: true,
             event_tab: false,
             overlay_all_charts: false,
+            history_all_symbols: false,
             chart_price_with_fees: false,
             chart_show_position: true,
             chart_show_fills: true,
             chart_fill_badges: true,
             chart_opening_fills_only: false,
+            event_chart_badges: true,
             chart_drag_orders: true,
             chart_drag_confirm: true,
             ticket: serde_json::Value::Null,
@@ -133,7 +140,7 @@ pub struct TradingCredentials {
 }
 
 fn entry_for(account_id: &str, testnet: bool) -> Result<keyring::Entry, keyring::Error> {
-    keyring::Entry::new(
+    super::keychain::entry(
         KEYCHAIN_SERVICE,
         &format!(
             "{}-{}",
@@ -158,7 +165,7 @@ pub fn migrate_legacy_credentials(account_id: &str, testnet: bool) -> Result<(),
     if target.get_password().is_ok() {
         return Ok(());
     }
-    let legacy = keyring::Entry::new(
+    let legacy = super::keychain::entry(
         KEYCHAIN_SERVICE,
         if testnet {
             "binance-usdm-testnet"
