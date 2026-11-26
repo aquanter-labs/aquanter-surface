@@ -6,6 +6,7 @@ use crate::{
         inspector::{InspectorContent, InspectorSection},
     },
 };
+use data::i18n::tr;
 use data::layout::pane::VisualConfig;
 use data::panel::timesales::{self, StackedBar, StackedBarRatio, TickerDisplay, TimeFormat};
 use data::util::format_with_commas;
@@ -28,14 +29,14 @@ pub fn timesales_cfg_view<'a>(cfg: timesales::Config) -> InspectorContent<'a, Me
     };
     let ticker_display = row![
         radio(
-            "Icon",
+            tr("Icon"),
             TickerDisplay::Icon,
             Some(cfg.ticker_display),
             change_ticker_display
         )
         .spacing(4),
         radio(
-            "Icon + ticker",
+            tr("Icon + ticker"),
             TickerDisplay::IconAndTicker,
             Some(cfg.ticker_display),
             change_ticker_display
@@ -53,7 +54,7 @@ pub fn timesales_cfg_view<'a>(cfg: timesales::Config) -> InspectorContent<'a, Me
 
     let filter = cfg.trade_size_filter;
     let trade_size_slider = classic_slider_row(
-        Some(text("Trade")),
+        Some(text(tr("Trade"))),
         0.0..=50000.0,
         filter,
         move |value| Message::VisualConfigChanged {
@@ -69,7 +70,7 @@ pub fn timesales_cfg_view<'a>(cfg: timesales::Config) -> InspectorContent<'a, Me
 
     let retention_minutes = (cfg.trade_retention.as_secs_f32() / 60.0).max(1.0);
     let retention_slider = classic_slider_row(
-        Some(text("Keep trades for")),
+        Some(text(tr("Keep trades for"))),
         1.0..=60.0,
         retention_minutes,
         move |new_minutes| {
@@ -90,7 +91,9 @@ pub fn timesales_cfg_view<'a>(cfg: timesales::Config) -> InspectorContent<'a, Me
         crate::widget::text::section("History"),
         tooltip(
             button("i").style(style::button::info),
-            Some("Affects the stacked bar, colors and how much you can scroll down"),
+            Some(tr(
+                "Affects the stacked bar, colors and how much you can scroll down"
+            )),
             TooltipPosition::Left,
         )
     ]
@@ -100,7 +103,7 @@ pub fn timesales_cfg_view<'a>(cfg: timesales::Config) -> InspectorContent<'a, Me
     let stacked_bar: Element<_> = {
         let is_shown = cfg.stacked_bar.is_some();
 
-        let enable_checkbox = checkbox(is_shown).label("Show stacked bar").on_toggle({
+        let enable_checkbox = checkbox(is_shown).label(tr("Show stacked bar")).on_toggle({
             move |value| {
                 let current_ratio = cfg.stacked_bar.map(|h| h.ratio()).unwrap_or_default();
                 Message::VisualConfigChanged {
@@ -121,7 +124,7 @@ pub fn timesales_cfg_view<'a>(cfg: timesales::Config) -> InspectorContent<'a, Me
             let ratio = hist.ratio();
             let is_compact = matches!(hist, StackedBar::Compact(_));
 
-            let compact = radio("Compact", true, Some(is_compact), {
+            let compact = radio(tr("Compact"), true, Some(is_compact), {
                 move |_v| Message::VisualConfigChanged {
                     config: VisualConfig::TimeAndSales(timesales::Config {
                         stacked_bar: Some(StackedBar::Compact(ratio)),
@@ -132,7 +135,7 @@ pub fn timesales_cfg_view<'a>(cfg: timesales::Config) -> InspectorContent<'a, Me
             })
             .spacing(4);
 
-            let full = radio("Full", false, Some(is_compact), {
+            let full = radio(tr("Full"), false, Some(is_compact), {
                 move |_v| Message::VisualConfigChanged {
                     config: VisualConfig::TimeAndSales(timesales::Config {
                         stacked_bar: Some(StackedBar::Full(ratio)),
@@ -158,9 +161,9 @@ pub fn timesales_cfg_view<'a>(cfg: timesales::Config) -> InspectorContent<'a, Me
             });
 
             column![
-                crate::widget::text::body("Mode"),
+                crate::widget::text::body(tr("Mode")),
                 row![compact, full].spacing(12),
-                crate::widget::text::body("Metric"),
+                crate::widget::text::body(tr("Metric")),
                 metric_picklist,
             ]
             .spacing(8)
@@ -177,10 +180,10 @@ pub fn timesales_cfg_view<'a>(cfg: timesales::Config) -> InspectorContent<'a, Me
     };
 
     let mut content = InspectorContent::new(vec![
-        InspectorSection::titled("Stacked bar", stacked_bar).with_modal_container(),
-        InspectorSection::titled("Ticker display", ticker_display).with_modal_container(),
-        InspectorSection::titled("Time format", time_format).with_modal_container(),
-        InspectorSection::titled("Size filter", trade_size_slider).with_modal_container(),
+        InspectorSection::titled(tr("Stacked bar"), stacked_bar).with_modal_container(),
+        InspectorSection::titled(tr("Ticker display"), ticker_display).with_modal_container(),
+        InspectorSection::titled(tr("Time format"), time_format).with_modal_container(),
+        InspectorSection::titled(tr("Size filter"), trade_size_slider).with_modal_container(),
         InspectorSection::new(history_title, retention_slider).with_modal_container(),
     ]);
     content.set_footer(row![

@@ -1,3 +1,4 @@
+use data::i18n::tr;
 use data::layout::pane::VisualConfig;
 
 mod heatmap;
@@ -33,11 +34,11 @@ pub enum Message {
 
 pub fn sync_all_button<'a>(config: VisualConfig) -> Element<'a, Message> {
     crate::tooltip(
-        button("Sync all").on_press(Message::VisualConfigChanged {
+        button(tr("Sync all")).on_press(Message::VisualConfigChanged {
             config,
             sync_all: true,
         }),
-        Some("Apply configuration to similar panes"),
+        Some(tr("Apply configuration to similar panes")),
         iced::widget::tooltip::Position::Left,
     )
 }

@@ -1,6 +1,7 @@
 use crate::style;
 use data::config::theme::{darken, lighten};
 use data::config::timezone::TimeLabelKind;
+use data::i18n::tr;
 pub use data::panel::timesales::Config;
 use data::panel::timesales::{
     HistAgg, HistAggValues, StackedBar, TapeTrade, TickerDisplay, TimeFormat, prune_trades,
@@ -79,7 +80,8 @@ impl TimeAndSales {
 
     pub fn view<'a>(&'a self, timezone: data::UserTimezone) -> Element<'a, Message> {
         if self.is_empty() {
-            return center(text("Waiting for data...").size(crate::style::text_size::TITLE)).into();
+            return center(text(tr("Waiting for data...")).size(crate::style::text_size::TITLE))
+                .into();
         }
 
         container(
@@ -672,7 +674,7 @@ impl canvas::Program<Message> for TimeAndSalesView<'_> {
                 );
 
                 frame.fill_text(Text {
-                    content: "Paused".to_string(),
+                    content: tr("Paused").to_string(),
                     position: Point {
                         x: frame.width() * 0.5,
                         y: pause_overlay_y + (pause_overlay_height / 2.0),

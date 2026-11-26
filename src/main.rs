@@ -6,6 +6,8 @@ mod alerts;
 mod audio;
 mod connector;
 mod deferred;
+use data::i18n;
+use data::i18n::tr;
 mod layout;
 mod logger;
 mod modal;
@@ -176,8 +178,10 @@ impl Flowsurface {
 
         let (audio_stream, audio_init_err) = AudioStream::new(saved_state.audio_cfg);
 
+        i18n::set_language(saved_state.language);
         let settings = modal::settings::Settings::new(
             saved_state.timezone,
+            saved_state.language,
             saved_state.scale_factor,
             saved_state.volume_size_unit,
             boot,
@@ -366,7 +370,7 @@ impl Flowsurface {
                             None
                         }
                         .unwrap_or_else(|| {
-                            notify::Alert::ai("Analysis failed", self.ai_agent.status())
+                            notify::Alert::ai(tr("Analysis failed"), self.ai_agent.status())
                         });
                         if pending.actions.system_notification {
                             self.notifications.publish_system(alert);
@@ -510,7 +514,7 @@ impl Flowsurface {
                         && (self.pending_ai_alert.is_some() || self.ai_agent.is_loading())
                     {
                         self.notifications.push(Toast::error(
-                            "AI analysis skipped because another alert analysis is running."
+                            tr("AI analysis skipped because another alert analysis is running.")
                                 .to_string(),
                         ));
                     }
@@ -1236,7 +1240,7 @@ impl Flowsurface {
                     let is_main_window = window_id == main_window;
 
                     let reset_pane_button = {
-                        let btn = button(text("Reset").align_x(Alignment::Center))
+                        let btn = button(text(tr("Reset")).align_x(Alignment::Center))
                             .width(iced::Length::Fill);
                         if is_main_window {
                             let dashboard_msg = Message::Dashboard {
@@ -1253,7 +1257,7 @@ impl Flowsurface {
                         }
                     };
                     let split_pane_button = {
-                        let btn = button(text("Split").align_x(Alignment::Center))
+                        let btn = button(text(tr("Split")).align_x(Alignment::Center))
                             .width(iced::Length::Fill);
                         if is_main_window {
                             let dashboard_msg = Message::Dashboard {
@@ -1278,7 +1282,7 @@ impl Flowsurface {
                             tooltip(
                                 reset_pane_button,
                                 if is_main_window {
-                                    Some("Reset selected pane")
+                                    Some(tr("Reset selected pane"))
                                 } else {
                                     None
                                 },
@@ -1287,7 +1291,7 @@ impl Flowsurface {
                             tooltip(
                                 split_pane_button,
                                 if is_main_window {
-                                    Some("Split selected pane horizontally")
+                                    Some(tr("Split selected pane horizontally"))
                                 } else {
                                     None
                                 },
@@ -1298,13 +1302,13 @@ impl Flowsurface {
                     ]
                     .spacing(8)
                 } else {
-                    let reset_pane_button =
-                        button(text("Reset").align_x(Alignment::Center)).width(iced::Length::Fill);
-                    let split_pane_button =
-                        button(text("Split").align_x(Alignment::Center)).width(iced::Length::Fill);
+                    let reset_pane_button = button(text(tr("Reset")).align_x(Alignment::Center))
+                        .width(iced::Length::Fill);
+                    let split_pane_button = button(text(tr("Split")).align_x(Alignment::Center))
+                        .width(iced::Length::Fill);
 
                     column![
-                        text("No pane selected"),
+                        text(tr("No pane selected")),
                         row![
                             tooltip(reset_pane_button, None, TooltipPosition::Top),
                             tooltip(split_pane_button, None, TooltipPosition::Top),
@@ -1450,22 +1454,25 @@ impl Flowsurface {
 
         let audio_cfg = data::AudioStream::from(&self.audio_stream);
 
-        let state = data::State::from_parts(
-            layouts,
-            self.theme.data_theme(),
-            self.theme_editor.custom_theme.clone().map(data::Theme),
-            main_window_spec,
-            self.settings.timezone,
-            self.sidebar.state.clone(),
-            self.settings.scale_factor,
-            audio_cfg,
-            self.network.wanted().for_persistence(),
-            *self.settings.volume_size_unit.wanted(),
-            self.sidebar.cache_enabled(),
-            *self.settings.boot.wanted(),
-            self.ai_agent.config().clone(),
-            self.alerts.config().clone(),
-        );
+        let state = data::State {
+            language: self.settings.language,
+            ..data::State::from_parts(
+                layouts,
+                self.theme.data_theme(),
+                self.theme_editor.custom_theme.clone().map(data::Theme),
+                main_window_spec,
+                self.settings.timezone,
+                self.sidebar.state.clone(),
+                self.settings.scale_factor,
+                audio_cfg,
+                self.network.wanted().for_persistence(),
+                *self.settings.volume_size_unit.wanted(),
+                self.sidebar.cache_enabled(),
+                *self.settings.boot.wanted(),
+                self.ai_agent.config().clone(),
+                self.alerts.config().clone(),
+            )
+        };
 
         match serde_json::to_string(&state) {
             Ok(layout_str) => {

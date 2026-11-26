@@ -3,6 +3,7 @@ use crate::{
     style::{self, Icon, icon_text},
     widget::tooltip_with_delay,
 };
+use data::i18n::tr;
 use data::{
     InternalError, MarketMetadata, MetadataSource,
     layout::pane::ContentKind,
@@ -689,7 +690,7 @@ impl TickersTable {
         );
 
         let row_content: Element<'a, Message> = if unavailable {
-            let retry_btn = button(text("Retry"))
+            let retry_btn = button(text(tr("Retry")))
                 .style(move |theme, status| style::button::bordered_toggle(theme, status, false));
 
             let retry_btn = if metadata_loading {
@@ -737,9 +738,9 @@ impl TickersTable {
     ) -> Element<'a, Message> {
         let col = if fav_n == 0 {
             let hint = if has_any_favorites {
-                "No favorited tickers match filters"
+                tr("No favorited tickers match filters")
             } else {
-                "Favorited tickers will appear here"
+                tr("Favorited tickers will appear here")
             };
             column![
                 text(hint).size(crate::style::text_size::SMALL),
@@ -763,7 +764,7 @@ impl TickersTable {
     }
 
     fn sort_and_filter_col(&self, fav_n: usize, rest_n: usize) -> Element<'_, Message> {
-        let volume_sort_button = self.sort_btn("Volume", SortOptions::VolumeAsc);
+        let volume_sort_button = self.sort_btn(tr("Volume"), SortOptions::VolumeAsc);
         let volume_sort = volume_sort_button.style(move |theme, status| {
             style::button::transparent(
                 theme,
@@ -775,7 +776,7 @@ impl TickersTable {
             )
         });
 
-        let change_sort_button = self.sort_btn("Change", SortOptions::ChangeAsc);
+        let change_sort_button = self.sort_btn(tr("Change"), SortOptions::ChangeAsc);
         let daily_change = change_sort_button.style(move |theme, status| {
             style::button::transparent(
                 theme,
@@ -787,9 +788,9 @@ impl TickersTable {
             )
         });
 
-        let spot_market_button = self.market_filter_btn("Spot", MarketKind::Spot);
-        let linear_markets_btn = self.market_filter_btn("Linear", MarketKind::LinearPerps);
-        let inverse_markets_btn = self.market_filter_btn("Inverse", MarketKind::InversePerps);
+        let spot_market_button = self.market_filter_btn(tr("Spot"), MarketKind::Spot);
+        let linear_markets_btn = self.market_filter_btn(tr("Linear"), MarketKind::LinearPerps);
+        let inverse_markets_btn = self.market_filter_btn(tr("Inverse"), MarketKind::InversePerps);
 
         let exchange_filters = {
             let mut col = column![];
@@ -828,7 +829,7 @@ impl TickersTable {
             exchange_filters,
             rule::horizontal(1.0).style(style::split_ruler),
             text(if total == 0 {
-                "No tickers match filters".to_string()
+                tr("No tickers match filters").to_string()
             } else {
                 let ticker_str = if total == 1 { "ticker" } else { "tickers" };
                 let exchanges = self.selected_exchanges.len();
@@ -890,7 +891,7 @@ impl TickersTable {
 
     fn top_bar(&self) -> Element<'_, Message> {
         row![
-            text_input("Search for a ticker...", &self.search_query)
+            text_input(tr("Search for a ticker..."), &self.search_query)
                 .style(|theme, status| style::validated_text_input(theme, status, true))
                 .on_input(Message::UpdateSearchQuery)
                 .id("full_ticker_search_box")
@@ -1137,17 +1138,17 @@ impl TickersTable {
             container(
                 column![
                     row![
-                        text("Last Updated Price: ").size(crate::style::text_size::SMALL),
+                        text(tr("Last Updated Price: ")).size(crate::style::text_size::SMALL),
                         Space::new().width(Length::Fill).height(Length::Shrink),
                         text(display_data.mark_price_display.as_deref().unwrap_or("-"))
                     ],
                     row![
-                        text("Daily Change: ").size(crate::style::text_size::SMALL),
+                        text(tr("Daily Change: ")).size(crate::style::text_size::SMALL),
                         Space::new().width(Length::Fill).height(Length::Shrink),
                         text(&display_data.daily_change_pct),
                     ],
                     row![
-                        text("Daily Volume: ").size(crate::style::text_size::SMALL),
+                        text(tr("Daily Volume: ")).size(crate::style::text_size::SMALL),
                         Space::new().width(Length::Fill).height(Length::Shrink),
                         text(&display_data.volume_display),
                     ],
@@ -1342,7 +1343,7 @@ impl TickersTable {
         FSearch: 'static + Copy + Fn(String) -> M,
     {
         row![
-            text_input("Search for a ticker...", search_query)
+            text_input(tr("Search for a ticker..."), search_query)
                 .style(|theme, status| crate::style::validated_text_input(theme, status, true))
                 .on_input(on_search)
                 .id(search_box_id.clone())
@@ -1392,7 +1393,7 @@ impl TickersTable {
                     info.ticker.exchange,
                     label,
                     Some(RowSelection::Switch(info)),
-                    Some(("Remove", Some(RowSelection::Remove(info)))),
+                    Some((tr("Remove"), Some(RowSelection::Remove(info)))),
                     None,
                     on_select,
                 ));

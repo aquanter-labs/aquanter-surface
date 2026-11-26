@@ -4,6 +4,7 @@ use crate::{
 };
 use data::chart::kline::{LineStrokeStyle, MAX_LINE_WIDTH, MIN_LINE_WIDTH, SeriesColor};
 use data::config::theme::{ThemeAccent, ThemeColorShade};
+use data::i18n::tr;
 use exchange::TickerInfo;
 use iced::widget::{column, pick_list, row, text};
 use iced::{Element, Length};
@@ -54,7 +55,7 @@ impl SeriesStyleEntry {
         let color_controls = column![color_choices].width(Length::Fill).spacing(4);
 
         let line_width_slider = classic_slider_row(
-            Some(text("Width")),
+            Some(text(tr("Width"))),
             MIN_LINE_WIDTH..=MAX_LINE_WIDTH,
             self.line_width,
             Message::LineWidthChanged,

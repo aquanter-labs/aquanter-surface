@@ -2,6 +2,7 @@ use crate::{
     style::{self, icon_text},
     widget::tooltip,
 };
+use data::i18n::tr;
 use exchange::proxy::{Proxy, ProxyAuth, ProxyScheme};
 
 use iced::{
@@ -212,14 +213,14 @@ impl NetworkManager {
                     .effective_proxy_cfg
                     .as_ref()
                     .map(|c| c.to_ui_string())
-                    .unwrap_or_else(|| "None (direct connection)".to_string());
+                    .unwrap_or_else(|| tr("None (direct connection)").to_string());
 
                 let pending_url = if is_pending {
                     Some(
                         saved_cfg
                             .as_ref()
                             .map(|c| c.to_ui_string())
-                            .unwrap_or_else(|| "None (direct connection)".to_string()),
+                            .unwrap_or_else(|| tr("None (direct connection)").to_string()),
                     )
                 } else {
                     None
@@ -227,7 +228,7 @@ impl NetworkManager {
 
                 let mut lines = column![
                     row![
-                        text("Effective:").size(crate::style::text_size::SMALL),
+                        text(tr("Effective:")).size(crate::style::text_size::SMALL),
                         text(effective).size(crate::style::text_size::BODY),
                     ]
                     .spacing(4)
@@ -239,7 +240,7 @@ impl NetworkManager {
                 if let Some(pending) = pending_url {
                     lines = lines.push(
                         row![
-                            text("Pending:").size(crate::style::text_size::SMALL),
+                            text(tr("Pending:")).size(crate::style::text_size::SMALL),
                             text(pending).size(crate::style::text_size::BODY),
                         ]
                         .spacing(4)
@@ -253,7 +254,7 @@ impl NetworkManager {
             let scheme = {
                 row![
                     iced::widget::space::horizontal(),
-                    text("Scheme:"),
+                    text(tr("Scheme:")),
                     pick_list(ProxyScheme::ALL, Some(self.scheme), Message::SchemeChanged)
                 ]
                 .spacing(8)
@@ -262,7 +263,7 @@ impl NetworkManager {
 
             let host = row![
                 iced::widget::space::horizontal(),
-                text("Host:"),
+                text(tr("Host:")),
                 text_input("e.g. 127.0.0.1", &self.host)
                     .on_input(Message::HostChanged)
                     .width(200)
@@ -272,7 +273,7 @@ impl NetworkManager {
 
             let port = row![
                 iced::widget::space::horizontal(),
-                text("Port:"),
+                text(tr("Port:")),
                 text_input("e.g. 8080", &self.port)
                     .on_input(Message::PortChanged)
                     .width(200)
@@ -282,7 +283,7 @@ impl NetworkManager {
 
             let username = row![
                 iced::widget::space::horizontal(),
-                text("Username:"),
+                text(tr("Username:")),
                 text_input("(optional)", &self.username)
                     .on_input(Message::UsernameChanged)
                     .width(200)
@@ -292,14 +293,14 @@ impl NetworkManager {
 
             let password = row![
                 iced::widget::space::horizontal(),
-                text("Password:"),
+                text(tr("Password:")),
                 text_input("(optional)", &self.password)
                     .on_input(Message::PasswordChanged)
                     .width(180)
                     .secure(self.hide_password),
                 tooltip(
                     checkbox(self.hide_password).on_toggle(Message::ToggleShowPassword),
-                    Some("Hide password"),
+                    Some(tr("Hide password")),
                     iced::widget::tooltip::Position::Top,
                 ),
             ]
@@ -328,7 +329,7 @@ impl NetworkManager {
                     iced::widget::space::horizontal(),
                     container(
                         row![
-                            text("Unset proxy and clear inputs?"),
+                            text(tr("Unset proxy and clear inputs?")),
                             confirm_btn(Message::Clear),
                             cancel_btn()
                         ]
@@ -343,7 +344,7 @@ impl NetworkManager {
                     iced::widget::space::horizontal(),
                     container(
                         row![
-                            text("Changes will take effect after a restart"),
+                            text(tr("Changes will take effect after a restart")),
                             confirm_btn(Message::Apply),
                             cancel_btn()
                         ]
@@ -357,7 +358,7 @@ impl NetworkManager {
                 let pending_info = if is_pending {
                     Some(tooltip(
                         button("i").style(style::button::info),
-                        Some("Pending changes require a full restart"),
+                        Some(tr("Pending changes require a full restart")),
                         iced::widget::tooltip::Position::Top,
                     ))
                 } else {
@@ -367,7 +368,7 @@ impl NetworkManager {
                 let mut row_buttons = row![
                     iced::widget::space::horizontal(),
                     pending_info,
-                    button("Apply").on_press(Message::RequestApply),
+                    button(tr("Apply")).on_press(Message::RequestApply),
                 ]
                 .spacing(8);
 
@@ -376,7 +377,7 @@ impl NetworkManager {
                         button(style::icon_text(style::Icon::TrashBin, 11))
                             .on_press(Message::RequestClear)
                             .style(|theme, status| style::button::modifier(theme, status, true)),
-                        Some("Unset proxy settings"),
+                        Some(tr("Unset proxy settings")),
                         iced::widget::tooltip::Position::Top,
                     ));
                 }
@@ -386,7 +387,7 @@ impl NetworkManager {
             let mut body = column![
                 row![
                     iced::widget::rule::horizontal(1),
-                    text("Proxy").size(crate::style::text_size::SECTION),
+                    text(tr("Proxy")).size(crate::style::text_size::SECTION),
                     iced::widget::rule::horizontal(1),
                 ]
                 .spacing(4)
@@ -452,20 +453,20 @@ impl NetworkManager {
         }
 
         if host.is_empty() {
-            return Err("Proxy host is required".to_string());
+            return Err(tr("Proxy host is required").to_string());
         }
 
         let port: u16 = port_s
             .parse()
-            .map_err(|_| "Proxy port must be a number (1-65535)".to_string())?;
+            .map_err(|_| tr("Proxy port must be a number (1-65535)").to_string())?;
         if port == 0 {
-            return Err("Proxy port must be a number (1-65535)".to_string());
+            return Err(tr("Proxy port must be a number (1-65535)").to_string());
         }
 
         let has_user = !u.is_empty();
         let has_pass = !p.is_empty();
         if has_user ^ has_pass {
-            return Err("Provide both username and password (or neither)".to_string());
+            return Err(tr("Provide both username and password (or neither)").to_string());
         }
 
         let auth = if has_user && has_pass {

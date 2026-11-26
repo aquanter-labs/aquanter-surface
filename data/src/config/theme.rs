@@ -294,7 +294,8 @@ struct SerTheme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self(iced_core::Theme::Custom(default_theme().into()))
+        let [dark, _] = aquanter_themes();
+        Self(iced_core::Theme::Custom(dark.into()))
     }
 }
 
@@ -304,7 +305,9 @@ impl From<Theme> for iced_core::Theme {
     }
 }
 
-pub fn default_theme() -> Custom {
+/// The former default palette. No longer selectable; kept only so legacy
+/// study colors keep mapping to the same theme roles.
+pub fn legacy_theme() -> Custom {
     Custom::new(
         "Flowsurface".to_string(),
         Palette {
@@ -347,20 +350,26 @@ pub fn aquanter_themes() -> [Custom; 2] {
     ]
 }
 
-fn builtin_custom_theme(key: &str) -> Option<iced_core::Theme> {
+/// Maps a saved theme key to an Aquanter theme. Keys of themes that were removed
+/// fall back to the Aquanter theme of the same brightness, so an old saved state
+/// still loads.
+fn builtin_custom_theme(key: &str) -> iced_core::Theme {
     let [dark, light] = aquanter_themes();
-    let custom = match key {
-        "flowsurface" => default_theme(),
-        "aquanter_dark" => dark,
-        "aquanter_light" => light,
-        _ => return None,
-    };
-    Some(iced_core::Theme::Custom(custom.into()))
+    let is_light = matches!(
+        key,
+        "aquanter_light"
+            | "light"
+            | "solarized_light"
+            | "gruvbox_light"
+            | "catppuccino_latte"
+            | "tokyo_night_light"
+            | "kanagawa_lotus"
+    );
+    iced_core::Theme::Custom(if is_light { light } else { dark }.into())
 }
 
 fn builtin_custom_key(name: &str) -> Option<&'static str> {
     match name {
-        "Flowsurface" => Some("flowsurface"),
         "Aquanter Dark" => Some("aquanter_dark"),
         "Aquanter Light" => Some("aquanter_light"),
         _ => None,
@@ -384,32 +393,8 @@ impl Serialize for Theme {
             };
             ser_theme.serialize(serializer)
         } else {
-            let theme_str = match self.0 {
-                iced_core::Theme::Ferra => "ferra",
-                iced_core::Theme::Dark => "dark",
-                iced_core::Theme::Light => "light",
-                iced_core::Theme::Dracula => "dracula",
-                iced_core::Theme::Nord => "nord",
-                iced_core::Theme::SolarizedLight => "solarized_light",
-                iced_core::Theme::SolarizedDark => "solarized_dark",
-                iced_core::Theme::GruvboxLight => "gruvbox_light",
-                iced_core::Theme::GruvboxDark => "gruvbox_dark",
-                iced_core::Theme::CatppuccinLatte => "catppuccino_latte",
-                iced_core::Theme::CatppuccinFrappe => "catppuccino_frappe",
-                iced_core::Theme::CatppuccinMacchiato => "catppuccino_macchiato",
-                iced_core::Theme::CatppuccinMocha => "catppuccino_mocha",
-                iced_core::Theme::TokyoNight => "tokyo_night",
-                iced_core::Theme::TokyoNightStorm => "tokyo_night_storm",
-                iced_core::Theme::TokyoNightLight => "tokyo_night_light",
-                iced_core::Theme::KanagawaWave => "kanagawa_wave",
-                iced_core::Theme::KanagawaDragon => "kanagawa_dragon",
-                iced_core::Theme::KanagawaLotus => "kanagawa_lotus",
-                iced_core::Theme::Moonfly => "moonfly",
-                iced_core::Theme::Nightfly => "nightfly",
-                iced_core::Theme::Oxocarbon => "oxocarbon",
-                _ => unreachable!(),
-            };
-            theme_str.serialize(serializer)
+            // Only Aquanter and custom themes are offered.
+            "aquanter_dark".serialize(serializer)
         }
     }
 }
@@ -423,37 +408,7 @@ impl<'de> Deserialize<'de> for Theme {
             serde_json::Value::deserialize(deserializer).map_err(serde::de::Error::custom)?;
 
         if let Some(s) = value.as_str() {
-            let theme = match s {
-                "ferra" => iced_core::Theme::Ferra,
-                "dark" => iced_core::Theme::Dark,
-                "light" => iced_core::Theme::Light,
-                "dracula" => iced_core::Theme::Dracula,
-                "nord" => iced_core::Theme::Nord,
-                "solarized_light" => iced_core::Theme::SolarizedLight,
-                "solarized_dark" => iced_core::Theme::SolarizedDark,
-                "gruvbox_light" => iced_core::Theme::GruvboxLight,
-                "gruvbox_dark" => iced_core::Theme::GruvboxDark,
-                "catppuccino_latte" => iced_core::Theme::CatppuccinLatte,
-                "catppuccino_frappe" => iced_core::Theme::CatppuccinFrappe,
-                "catppuccino_macchiato" => iced_core::Theme::CatppuccinMacchiato,
-                "catppuccino_mocha" => iced_core::Theme::CatppuccinMocha,
-                "tokyo_night" => iced_core::Theme::TokyoNight,
-                "tokyo_night_storm" => iced_core::Theme::TokyoNightStorm,
-                "tokyo_night_light" => iced_core::Theme::TokyoNightLight,
-                "kanagawa_wave" => iced_core::Theme::KanagawaWave,
-                "kanagawa_dragon" => iced_core::Theme::KanagawaDragon,
-                "kanagawa_lotus" => iced_core::Theme::KanagawaLotus,
-                "moonfly" => iced_core::Theme::Moonfly,
-                "nightfly" => iced_core::Theme::Nightfly,
-                "oxocarbon" => iced_core::Theme::Oxocarbon,
-                _ => match builtin_custom_theme(s) {
-                    Some(theme) => theme,
-                    None => {
-                        return Err(serde::de::Error::custom(format!("Invalid theme: {}", s)));
-                    }
-                },
-            };
-            return Ok(Theme(theme));
+            return Ok(Theme(builtin_custom_theme(s)));
         }
 
         let serialized = SerTheme::deserialize(value).map_err(serde::de::Error::custom)?;
@@ -468,8 +423,7 @@ impl<'de> Deserialize<'de> for Theme {
                     ));
                 }
             }
-            name => builtin_custom_theme(name)
-                .ok_or_else(|| serde::de::Error::custom("Invalid theme"))?,
+            name => builtin_custom_theme(name),
         };
 
         Ok(Theme(theme))
@@ -863,12 +817,21 @@ mod tests {
 
     #[test]
     fn builtin_themes_round_trip() {
-        for custom in std::iter::once(default_theme()).chain(aquanter_themes()) {
+        for custom in aquanter_themes() {
             let name = custom.to_string();
             let theme = Theme(iced_core::Theme::Custom(custom.into()));
             let json = serde_json::to_string(&theme).unwrap();
             let back: Theme = serde_json::from_str(&json).unwrap();
             assert_eq!(back.0.to_string(), name, "{json}");
         }
+    }
+
+    #[test]
+    fn removed_themes_load_as_aquanter() {
+        let theme = |json: &str| serde_json::from_str::<Theme>(json).unwrap().0.to_string();
+        assert_eq!(theme(r#""flowsurface""#), "Aquanter Dark");
+        assert_eq!(theme(r#"{"name":"flowsurface"}"#), "Aquanter Dark");
+        assert_eq!(theme(r#""nord""#), "Aquanter Dark");
+        assert_eq!(theme(r#""solarized_light""#), "Aquanter Light");
     }
 }

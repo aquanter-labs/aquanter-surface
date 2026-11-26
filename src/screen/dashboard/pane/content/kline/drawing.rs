@@ -12,6 +12,7 @@ use crate::widget::{color_swatch_button, tooltip};
 use data::chart::kline::DrawingSettings;
 use data::chart::kline::composition::{ChartComposition, PanelId};
 use data::config::theme::{ThemeAccent, ThemeColor, ThemeColorRole, ThemeColorShade};
+use data::i18n::tr;
 
 use iced::widget::{checkbox, pick_list, row, text, tooltip::Position as TooltipPosition};
 use iced::{Element, Length};
@@ -80,7 +81,7 @@ where
     .width(Length::Fill);
 
     if selected.is_mixed() {
-        picker = picker.placeholder("Mixed");
+        picker = picker.placeholder(tr("Mixed"));
     }
 
     picker.into()
@@ -97,7 +98,7 @@ where
     let is_mixed = current.is_mixed();
 
     let tooltip = if is_mixed {
-        "Width: Mixed".to_string()
+        tr("Width: Mixed").to_string()
     } else {
         format!("Width: {current_value}")
     };
@@ -1148,7 +1149,7 @@ impl DrawingTools {
                     .push(drawing_toolbar_divider())
                     .push(drawing_extend_checkbox(
                         selection.box_extend_right,
-                        "Extend right",
+                        tr("Extend right"),
                         DrawingMessage::SetBoxExtendRight,
                         on_sidebar_message,
                     ));
@@ -1171,11 +1172,11 @@ impl DrawingTools {
                 .padding(4)
                 .width(64);
                 if selection.profile_rows.is_mixed() {
-                    rows = rows.placeholder("Mixed");
+                    rows = rows.placeholder(tr("Mixed"));
                 }
                 controls = controls
                     .push(drawing_toolbar_divider())
-                    .push(text("Rows"))
+                    .push(text(tr("Rows")))
                     .push(rows);
             }
 
@@ -1184,7 +1185,7 @@ impl DrawingTools {
                     .push(drawing_toolbar_divider())
                     .push(drawing_extend_checkbox(
                         selection.horizontal_line_ray,
-                        "Ray",
+                        tr("Ray"),
                         DrawingMessage::SetHorizontalLineRay,
                         on_sidebar_message,
                     ));
@@ -1282,15 +1283,15 @@ impl DrawingTools {
 
         if self.tick_mode {
             content = content.push(
-                iced::widget::text(
+                iced::widget::text(tr(
                     "Tick drawings last until you leave tick mode or reset its data.",
-                )
+                ))
                 .size(style::text_size::SMALL),
             );
         }
         if self.drawings.is_empty() {
             content =
-                content.push(iced::widget::text("No drawings").size(style::text_size::SECTION));
+                content.push(iced::widget::text(tr("No drawings")).size(style::text_size::SECTION));
         } else {
             let mut grouped: Vec<(Option<PanelId>, Vec<&DrawingEntity>)> = Vec::new();
 
@@ -1323,10 +1324,11 @@ impl DrawingTools {
             }
         }
 
-        let remove_all_button =
-            iced::widget::button(iced::widget::text("Remove All").align_x(iced::Alignment::Center))
-                .style(|theme, status| style::button::cancel(theme, status, false))
-                .width(iced::Length::Fill);
+        let remove_all_button = iced::widget::button(
+            iced::widget::text(tr("Remove All")).align_x(iced::Alignment::Center),
+        )
+        .style(|theme, status| style::button::cancel(theme, status, false))
+        .width(iced::Length::Fill);
 
         if !self.drawings.is_empty() {
             content = content.push(row![
@@ -1392,7 +1394,7 @@ impl DrawingTools {
         .on_press(on_sidebar_message(DrawingMessage::ToggleMagnet));
         tools = tools.push(tooltip(
             magnet_button,
-            Some("Magnet"),
+            Some(tr("Magnet")),
             TooltipPosition::Right,
         ));
 
@@ -1405,7 +1407,7 @@ impl DrawingTools {
         .on_press(on_sidebar_message(DrawingMessage::ToggleCrosshairSync));
         tools = tools.push(tooltip(
             sync_button,
-            Some("Sync crosshair across charts"),
+            Some(tr("Sync crosshair across charts")),
             TooltipPosition::Right,
         ));
 
@@ -1417,7 +1419,7 @@ impl DrawingTools {
         .on_press(on_sidebar_message(DrawingMessage::ShowObjectListPage));
         tools = tools.push(tooltip(
             objects_button,
-            Some("Drawings"),
+            Some(tr("Drawings")),
             TooltipPosition::Right,
         ));
 
@@ -2002,17 +2004,17 @@ impl DrawingTools {
 
     fn panel_group_title(composition: &ChartComposition, panel_id: Option<PanelId>) -> String {
         let Some(panel_id) = panel_id else {
-            return "All Panels".to_string();
+            return tr("All Panels").to_string();
         };
         if panel_id.is_main() {
-            return "Main".to_string();
+            return tr("Main").to_string();
         }
 
         composition
             .panel(panel_id)
             .and_then(|panel| panel.title.as_deref())
             .filter(|title| !title.is_empty())
-            .unwrap_or("Unavailable panel")
+            .unwrap_or(tr("Unavailable panel"))
             .to_string()
     }
 

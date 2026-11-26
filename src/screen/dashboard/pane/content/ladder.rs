@@ -1,4 +1,5 @@
 use crate::style;
+use data::i18n::tr;
 use data::panel::ladder::{ChaseTracker, Config, GroupedDepth, Side, TradeStore};
 use exchange::Trade;
 use exchange::unit::qty::Qty;
@@ -66,7 +67,8 @@ impl Ladder {
 
     pub fn view<'a>(&'a self, _timezone: data::UserTimezone) -> Element<'a, Message> {
         if self.is_empty() {
-            return center(text("Waiting for data...").size(crate::style::text_size::TITLE)).into();
+            return center(text(tr("Waiting for data...")).size(crate::style::text_size::TITLE))
+                .into();
         }
 
         container(

@@ -356,7 +356,7 @@ impl std::fmt::Display for ContentKind {
             ContentKind::TimeAndSales => "Time&Sales",
             ContentKind::Ladder => "DOM/Ladder",
         };
-        write!(f, "{s}")
+        f.write_str(crate::i18n::tr(s))
     }
 }
 

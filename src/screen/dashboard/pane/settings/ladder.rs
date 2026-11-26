@@ -6,6 +6,7 @@ use crate::{
         inspector::{InspectorContent, InspectorSection},
     },
 };
+use data::i18n::tr;
 use data::layout::pane::VisualConfig;
 use data::panel::ladder;
 use iced::{
@@ -17,7 +18,7 @@ use std::time::Duration;
 pub fn ladder_cfg_view<'a>(cfg: ladder::Config) -> InspectorContent<'a, Message> {
     let display_options = {
         let spread = checkbox(cfg.show_spread)
-            .label("Show Spread")
+            .label(tr("Show Spread"))
             .on_toggle(move |value| Message::VisualConfigChanged {
                 config: VisualConfig::Ladder(ladder::Config {
                     show_spread: value,
@@ -27,7 +28,7 @@ pub fn ladder_cfg_view<'a>(cfg: ladder::Config) -> InspectorContent<'a, Message>
             });
 
         let chase_tracker = checkbox(cfg.show_chase_tracker)
-            .label("Show Chase Tracker")
+            .label(tr("Show Chase Tracker"))
             .on_toggle(move |value| Message::VisualConfigChanged {
                 config: VisualConfig::Ladder(ladder::Config {
                     show_chase_tracker: value,
@@ -43,7 +44,7 @@ pub fn ladder_cfg_view<'a>(cfg: ladder::Config) -> InspectorContent<'a, Message>
                     chase_tracker,
                     tooltip(
                         button("i").style(style::button::info),
-                        Some("Highlights consecutive best-price moves and fades when momentum stalls.\nCalculated using raw ungrouped data."),
+                        Some(tr("Highlights consecutive best-price moves and fades when momentum stalls.\nCalculated using raw ungrouped data.")),
                         TooltipPosition::Left,
                     )
                 ]
@@ -57,7 +58,7 @@ pub fn ladder_cfg_view<'a>(cfg: ladder::Config) -> InspectorContent<'a, Message>
 
     let retention_minutes = (cfg.trade_retention.as_secs_f32() / 60.0).max(1.0);
     let retention_slider = classic_slider_row(
-        Some(text("Keep trades for")),
+        Some(text(tr("Keep trades for"))),
         1.0..=60.0,
         retention_minutes,
         move |new_minutes| {
@@ -75,7 +76,7 @@ pub fn ladder_cfg_view<'a>(cfg: ladder::Config) -> InspectorContent<'a, Message>
     );
 
     let mut content = InspectorContent::new(vec![
-        InspectorSection::titled("Display Options", display_options).with_modal_container(),
+        InspectorSection::titled(tr("Display Options"), display_options).with_modal_container(),
         InspectorSection::titled("History", retention_slider).with_modal_container(),
     ]);
     content.set_footer(row![

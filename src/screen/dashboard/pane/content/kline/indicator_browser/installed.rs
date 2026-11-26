@@ -9,6 +9,7 @@ use data::chart::kline::{
     IndicatorUnsupportedReason, KlineStudy, StudyDataSource,
     indicators::{IndicatorInputSource, all_indicators, declared_input_requirements},
 };
+use data::i18n::tr;
 use iced::{
     Alignment, Element, Length,
     widget::{button, column, container, row, scrollable, space, text_input, tooltip::Position},
@@ -102,18 +103,18 @@ impl IndicatorInputGroup {
         }
     }
 
-    const fn label(self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
-            Self::Candles => "Candles",
-            Self::CandlesOrTrades => "Candles or trades",
-            Self::CandlesAndTrades => "Candles + trades",
-            Self::Trades => "Trades",
+            Self::Candles => tr("Candles"),
+            Self::CandlesOrTrades => tr("Candles or trades"),
+            Self::CandlesAndTrades => tr("Candles + trades"),
+            Self::Trades => tr("Trades"),
             Self::OpenInterest => "OI",
-            Self::CandlesAndOi => "Candles + OI",
-            Self::CandlesOrTradesAndOi => "Candles or trades + OI",
-            Self::TradesAndOi => "Trades + OI",
-            Self::CandlesTradesAndOi => "Candles + trades + OI",
-            Self::NoExternalData => "No external data",
+            Self::CandlesAndOi => tr("Candles + OI"),
+            Self::CandlesOrTradesAndOi => tr("Candles or trades + OI"),
+            Self::TradesAndOi => tr("Trades + OI"),
+            Self::CandlesTradesAndOi => tr("Candles + trades + OI"),
+            Self::NoExternalData => tr("No external data"),
         }
     }
 }
@@ -193,7 +194,7 @@ impl ViewState {
         let pro_group = pro_group_view(chart, self);
         let available_column = available_column(available_indicators, available_studies, pro_group);
 
-        let search = text_input("Search indicators and studies...", self.search_query())
+        let search = text_input(tr("Search indicators and studies..."), self.search_query())
             .style(|theme, status| style::validated_text_input(theme, status, true))
             .on_input(BrowserMessage::SearchChanged)
             .id(self.search_box_id())
@@ -248,7 +249,7 @@ fn available_column(
     ));
     if !study_groups.is_empty() {
         sections.push(InspectorSection::new(
-            crate::widget::text::title("Studies"),
+            crate::widget::text::title(tr("Studies")),
             iced::widget::Column::with_children(study_groups)
                 .spacing(10)
                 .width(Length::Fill),
@@ -314,13 +315,13 @@ fn pro_row(
 
 fn indicators_title() -> Element<'static, BrowserMessage> {
     row![
-        crate::widget::text::title("Indicators"),
+        crate::widget::text::title(tr("Indicators")),
         space::horizontal(),
         iced::widget::tooltip(
             button(crate::widget::text::title("+"))
                 .style(|theme, status| style::button::transparent(theme, status, false))
                 .on_press(BrowserMessage::OpenCatalog),
-            container(iced::widget::text("Get more indicators"))
+            container(iced::widget::text(tr("Get more indicators")))
                 .style(style::tooltip)
                 .padding(8),
             Position::Bottom,
@@ -516,10 +517,10 @@ fn study_row(
     let tooltip = match availability {
         StudyAvailability::Available => None,
         StudyAvailability::UnsupportedBasis => {
-            Some("Not available for the selected chart basis".to_owned())
+            Some(tr("Not available for the selected chart basis").to_owned())
         }
         StudyAvailability::RequiresTradeData => {
-            Some("Enable trade data to use this study".to_owned())
+            Some(tr("Enable trade data to use this study").to_owned())
         }
         StudyAvailability::SourceConflict(source) => Some(format!(
             "Source conflict:\n Remove active {} studies before adding this.",
@@ -532,8 +533,8 @@ fn study_row(
 
 fn source_label(source: StudyDataSource) -> &'static str {
     match source {
-        StudyDataSource::Kline => "Candles",
-        StudyDataSource::Trades => "Trades",
+        StudyDataSource::Kline => tr("Candles"),
+        StudyDataSource::Trades => tr("Trades"),
     }
 }
 

@@ -129,6 +129,7 @@ pub struct SavedState {
     pub volume_size_unit: exchange::SizeUnit,
     pub network: data::Network,
     pub cache_market_metadata: bool,
+    pub language: data::Language,
     pub ai_cfg: data::config::ai::AiConfig,
     pub alert_cfg: data::config::alerts::AlertConfig,
 }
@@ -161,6 +162,7 @@ impl Default for SavedState {
             volume_size_unit: exchange::SizeUnit::default(),
             network: data::Network::default(),
             cache_market_metadata: false,
+            language: data::Language::default(),
             ai_cfg: Default::default(),
             alert_cfg: Default::default(),
         }
@@ -485,6 +487,7 @@ pub fn load_saved_state() -> SavedState {
                 volume_size_unit: state.size_in_quote_ccy,
                 network,
                 cache_market_metadata: state.cache_market_metadata,
+                language: state.language,
                 ai_cfg: state.ai_cfg,
                 alert_cfg: state.alert_cfg,
             }

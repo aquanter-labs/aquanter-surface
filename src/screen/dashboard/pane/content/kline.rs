@@ -26,6 +26,7 @@ use crate::widget::chart::kline::{
 use crate::widget::inspector::{InspectorBody, InspectorContent, InspectorFooter};
 use crate::widget::series_editor;
 use crate::window::PixelRatio;
+use data::i18n::tr;
 
 use drawing::{DrawingMessage, DrawingState, DrawingTools, DrawingUpdate};
 use fetch::FetchCoordinator;
@@ -143,7 +144,7 @@ impl PreparedSettings {
                     .collect(),
                 snapshot.splits.clone(),
             )
-            .ok_or("A chart must have exactly one price panel.")?
+            .ok_or(tr("A chart must have exactly one price panel."))?
         };
 
         Ok(Self {
@@ -625,7 +626,7 @@ impl KlineChart {
         let theme_accents = theme.accents();
         let chart: iced::Element<'_, Message> =
             if self.data.series().iter().all(KlineSeries::is_empty) {
-                iced::widget::center(iced::widget::text("Waiting for data...").size(16)).into()
+                iced::widget::center(iced::widget::text(tr("Waiting for data...")).size(16)).into()
             } else {
                 let indicator_presentation = self
                     .indicator_presentation_context()
@@ -2024,12 +2025,12 @@ impl KlineChart {
 
     fn trade_data_setting_lock_reason(&self) -> Option<&'static str> {
         if matches!(self.basis, Basis::Tick(_)) {
-            return Some("Trade data is required for tick-based charts");
+            return Some(tr("Trade data is required for tick-based charts"));
         }
 
         self.consumer_data_requirements()
             .trades
-            .then_some("Trade data is required by an active indicator or study")
+            .then_some(tr("Trade data is required by an active indicator or study"))
     }
 
     fn consumer_data_requirements(&self) -> DataRequirements {
@@ -2089,11 +2090,11 @@ impl KlineChart {
 
         let prepared =
             PreparedSettings::from_snapshot(&settings.clone().normalized_preset(), self.basis)
-                .map_err(|_| "This preset must have exactly one price panel.".to_string())?;
+                .map_err(|_| tr("This preset must have exactly one price panel.").to_string())?;
         let active = prepared.composition.selected_indicators();
         if prepared.instances.instances().len() != settings.indicator_instances.len() {
             return Err(
-                "This preset contains invalid or duplicate indicator configurations.".into(),
+                tr("This preset contains invalid or duplicate indicator configurations.").into(),
             );
         }
         for instance in prepared.instances.instances() {

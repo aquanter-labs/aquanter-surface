@@ -1,4 +1,5 @@
 use super::layout::IndicatorState;
+use data::i18n::tr;
 #[path = "pro_indicators.rs"]
 pub(super) mod pro_indicators;
 use super::studies::StudyState;
@@ -632,31 +633,31 @@ fn indicator_source_section<'a>(
     let author = author
         .map(|author| indicator_external_link(instance_id, author.name, author.url))
         .unwrap_or_else(|| {
-            text("Not provided")
+            text(tr("Not provided"))
                 .style(style::text_color::secondary)
                 .into()
         });
 
-    let description = text(description.unwrap_or_else(|| "Not provided".to_owned()))
+    let description = text(description.unwrap_or_else(|| tr("Not provided").to_owned()))
         .style(style::text_color::secondary);
 
     let source = source
         .map(|source| indicator_external_link(instance_id, source.clone(), source))
         .unwrap_or_else(|| {
-            text("Closed-source or not provided")
+            text(tr("Closed-source or not provided"))
                 .style(style::text_color::secondary)
                 .into()
         });
 
     Some(
         column![
-            inspector::setting_section("Author", author)
+            inspector::setting_section(tr("Author"), author)
                 .with_modal_container()
                 .into_element(),
-            inspector::setting_section("Description", description)
+            inspector::setting_section(tr("Description"), description)
                 .with_modal_container()
                 .into_element(),
-            inspector::setting_section("Source", source)
+            inspector::setting_section(tr("Source"), source)
                 .with_modal_container()
                 .into_element(),
         ]
@@ -697,7 +698,7 @@ fn indicator_settings_content<'a>(
     let mut inputs = Vec::new();
     for source_setting in &composition.source_settings {
         let section = if source_setting.choices.is_empty() {
-            inspector::setting_section(source_setting.label.clone(), text("Unavailable"))
+            inspector::setting_section(source_setting.label.clone(), text(tr("Unavailable")))
         } else {
             let instance_id = modal.instance_id();
             let input_id = source_setting.input_id.clone();
@@ -1104,7 +1105,7 @@ fn indicator_channel_style_section<'a>(
 
     if !fill_style_slots.is_empty() {
         let fill_title = checkbox(style_config.fill_visible)
-            .label("Background fill")
+            .label(tr("Background fill"))
             .spacing(8)
             .text_size(crate::style::text_size::SECTION)
             .on_toggle(move |visible| Message::Indicator {
@@ -1190,7 +1191,7 @@ fn indicator_style_controls<'a>(
         let width_slot = slot.clone();
         let stroke_slot = slot.clone();
         let width_slider = classic_slider_row(
-            Some(text("Width")),
+            Some(text(tr("Width"))),
             MIN_LINE_WIDTH..=MAX_LINE_WIDTH,
             style_config
                 .line_width(&width_slot)
@@ -1265,7 +1266,7 @@ fn indicator_mark_section<'a>(
         .map(|spec| radio(spec.label.clone(), spec.mark, selected, send_mark).into());
 
     Some(
-        InspectorSection::titled("Display mark", column(controls).spacing(4))
+        InspectorSection::titled(tr("Display mark"), column(controls).spacing(4))
             .with_modal_container(),
     )
 }
@@ -1291,14 +1292,14 @@ fn footprint_section(config: FootprintConfig) -> Element<'static, Message> {
         column![
             scaling_picklist,
             classic_slider_row(
-                Some(text("Visible-range weight")),
+                Some(text(tr("Visible-range weight"))),
                 0.0..=1.0,
                 weight,
                 move |weight| Message::ClusterScalingSelected(ClusterScaling::Hybrid { weight }),
                 |weight| format!("{:.0}%", weight * 100.0),
                 Some(0.05),
             ),
-            text("Blend visible-range and per-candle scaling"),
+            text(tr("Blend visible-range and per-candle scaling")),
         ]
         .spacing(8)
     } else {
@@ -1306,10 +1307,10 @@ fn footprint_section(config: FootprintConfig) -> Element<'static, Message> {
     };
 
     column![
-        InspectorSection::titled("Cluster type", cluster_picklist)
+        InspectorSection::titled(tr("Cluster type"), cluster_picklist)
             .with_modal_container()
             .into_element(),
-        InspectorSection::titled("Cluster scaling", scaling)
+        InspectorSection::titled(tr("Cluster scaling"), scaling)
             .with_modal_container()
             .into_element(),
     ]
@@ -1331,7 +1332,7 @@ fn footprint_poc_section(
                 Message::FootprintPocConfigChanged(config.with_show_poc(all).with_show_npoc(show))
             },
         ),
-        (!trade_data_enabled).then_some("Enable trade data in pane settings to use."),
+        (!trade_data_enabled).then_some(tr("Enable trade data in pane settings to use.")),
         TooltipPosition::Right,
     );
     let mut sections =
@@ -1385,7 +1386,7 @@ fn footprint_imbalance_section(
     theme_accents: ThemeAccents,
 ) -> Element<'static, Message> {
     let toggle = checkbox(config.show)
-        .label("Imbalance")
+        .label(tr("Imbalance"))
         .spacing(8)
         .text_size(crate::style::text_size::SECTION)
         .on_toggle_maybe(trade_data_enabled.then_some(move |show| {
@@ -1394,7 +1395,7 @@ fn footprint_imbalance_section(
         .width(Length::Fill);
     let toggle = tooltip(
         toggle,
-        (!trade_data_enabled).then_some("Enable trade data in pane settings to use."),
+        (!trade_data_enabled).then_some(tr("Enable trade data in pane settings to use.")),
         TooltipPosition::Right,
     );
 
@@ -1403,7 +1404,7 @@ fn footprint_imbalance_section(
     }
 
     let threshold = classic_slider_row(
-        Some(text("Ask:Bid threshold")),
+        Some(text(tr("Ask:Bid threshold"))),
         100.0..=800.0,
         config.threshold_percent as f32,
         move |threshold_percent| {
@@ -1416,7 +1417,7 @@ fn footprint_imbalance_section(
     );
     let imbalance = InspectorSection::new(toggle, threshold).into_element();
     let ignore_zeros = checkbox(config.ignore_zeros)
-        .label("Ignore zeros")
+        .label(tr("Ignore zeros"))
         .on_toggle(move |ignore_zeros| {
             Message::FootprintImbalanceConfigChanged(config.with_ignore_zeros(ignore_zeros))
         });
@@ -1440,7 +1441,7 @@ fn footprint_imbalance_section(
         .width(Length::Fill);
 
     let marker_color = InspectorSection::titled(
-        "Marker color",
+        tr("Marker color"),
         column![color_choices, shade_picklist].spacing(8),
     )
     .into_element();
@@ -1507,8 +1508,8 @@ fn candlestick_color_section<'a>(
 ) -> Element<'a, Message> {
     let colors = config.colors;
     let controls = [
-        (CandlestickColorSlot::Bullish, "Bullish"),
-        (CandlestickColorSlot::Bearish, "Bearish"),
+        (CandlestickColorSlot::Bullish, tr("Bullish")),
+        (CandlestickColorSlot::Bearish, tr("Bearish")),
     ]
     .into_iter()
     .map(|(slot, label)| {
@@ -1549,7 +1550,7 @@ fn candlestick_cfg_view<'a>(
         MAX_CANDLESTICK_OPACITY_PERCENT,
     );
     let opacity_section = classic_slider_row(
-        Some(text("Opacity")),
+        Some(text(tr("Opacity"))),
         f32::from(MIN_CANDLESTICK_OPACITY_PERCENT)..=f32::from(MAX_CANDLESTICK_OPACITY_PERCENT),
         f32::from(opacity),
         move |value| {
@@ -1562,14 +1563,17 @@ fn candlestick_cfg_view<'a>(
     );
 
     let selected_mark = mark;
-    let mark_controls = row([("Candles", MarkKind::Candle), ("Line", MarkKind::Line)]
-        .into_iter()
-        .map(|(label, mark)| {
-            radio(label, mark, Some(selected_mark), move |value| {
-                Message::CandlestickSettings(CandlestickSettingsMessage::Mark(value))
-            })
-            .into()
-        }))
+    let mark_controls = row([
+        (tr("Candles"), MarkKind::Candle),
+        (tr("Line"), MarkKind::Line),
+    ]
+    .into_iter()
+    .map(|(label, mark)| {
+        radio(label, mark, Some(selected_mark), move |value| {
+            Message::CandlestickSettings(CandlestickSettingsMessage::Mark(value))
+        })
+        .into()
+    }))
     .spacing(12);
 
     let ticker_label = crate::widget::text::body(ticker.ticker.symbol_and_exchange_string());
@@ -1578,7 +1582,7 @@ fn candlestick_cfg_view<'a>(
     } else {
         mark_controls.into()
     };
-    let display_section = InspectorSection::titled("Display mark", display_setting)
+    let display_section = InspectorSection::titled(tr("Display mark"), display_setting)
         .with_modal_container()
         .into_element();
 
@@ -1596,7 +1600,7 @@ fn candlestick_cfg_view<'a>(
         if let Some(series) = base_series {
             content = content.push(
                 InspectorSection::titled(
-                    "Line style",
+                    tr("Line style"),
                     series.view(theme_accents).map(Message::SeriesEditor),
                 )
                 .with_modal_container()
@@ -1622,7 +1626,7 @@ fn series_cfg_view<'a>(
     if let Some(series) = series {
         content = content.push(
             InspectorSection::titled(
-                "Line",
+                tr("Line"),
                 series.view(theme_accents).map(Message::SeriesEditor),
             )
             .with_modal_container()
@@ -1693,13 +1697,13 @@ impl SettingsTarget {
         Some(match self {
             SettingsTarget::Main => return None,
             SettingsTarget::Indicator(modal) => modal.indicator().to_string(),
-            SettingsTarget::Candlestick => "Base ticker".to_owned(),
-            SettingsTarget::Series(_) => "Comparison ticker".to_owned(),
-            SettingsTarget::Footprint => "Footprint".to_owned(),
+            SettingsTarget::Candlestick => tr("Base ticker").to_owned(),
+            SettingsTarget::Series(_) => tr("Comparison ticker").to_owned(),
+            SettingsTarget::Footprint => tr("Footprint").to_owned(),
             SettingsTarget::Study(modal) => context
                 .studies
                 .study(modal.study_id())
-                .map_or_else(|| "Study".to_owned(), |study| study.to_string()),
+                .map_or_else(|| tr("Study").to_owned(), |study| study.to_string()),
             SettingsTarget::Pro { name, .. } => pro_indicators::ITEMS
                 .iter()
                 .find(|(id, _)| id == name)
@@ -1810,9 +1814,9 @@ pub enum ResetScope {
 impl ResetScope {
     fn label(self) -> &'static str {
         match self {
-            Self::Inputs => "Reset inputs",
-            Self::Style => "Reset style",
-            Self::All => "Reset settings",
+            Self::Inputs => tr("Reset inputs"),
+            Self::Style => tr("Reset style"),
+            Self::All => tr("Reset settings"),
         }
     }
 }
@@ -1916,7 +1920,7 @@ impl InspectorState {
             .padding([0, 12])
             .into()
         } else {
-            button(text("Reset"))
+            button(text(tr("Reset")))
                 .on_press(ChartMessage::Settings(Message::ResetRequested(scope)))
                 .into()
         };
@@ -1944,7 +1948,7 @@ impl InspectorState {
                         message: IndicatorIdSettingsMessage::AddOnSource(choice),
                     })
                 })
-                .placeholder("Attach an indicator")
+                .placeholder(tr("Attach an indicator"))
                 .width(Length::Fill);
                 return Some((
                     inspector::InspectorFooter::HEIGHT,

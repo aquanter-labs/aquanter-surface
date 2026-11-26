@@ -5,6 +5,7 @@ use super::KlineChart;
 use data::chart::kline::IndicatorId;
 use data::chart::kline::KlineStudy;
 use data::chart::kline::indicators::manifest::{self, Message as CatalogMessage};
+use data::i18n::tr;
 use iced::Element;
 
 #[derive(Debug, Clone)]
@@ -71,8 +72,8 @@ impl State {
 
     pub(super) fn title(&self) -> &'static str {
         match self.page {
-            Page::Installed => "Add indicators or studies",
-            Page::Catalog => "Browse indicators",
+            Page::Installed => tr("Add indicators or studies"),
+            Page::Catalog => tr("Browse indicators"),
         }
     }
 
@@ -96,7 +97,7 @@ impl State {
 
         let notice = (self.page == Page::Catalog && catalog.restart_pending()).then(|| {
             crate::widget::banner(
-                "Restart required.\nChanges will take effect after restart.",
+                tr("Restart required.\nChanges will take effect after restart."),
                 crate::widget::BannerKind::Warning,
             )
         });

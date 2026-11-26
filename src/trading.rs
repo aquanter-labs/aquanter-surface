@@ -1,3 +1,4 @@
+use crate::i18n::tr;
 use data::config::trading::{TradingConfig, TradingCredentials, TradingExchange};
 use hmac::{Hmac, Mac};
 use iced::widget::{
@@ -32,8 +33,8 @@ fn labeled_input<'a>(
     on_input: fn(String) -> Message,
 ) -> Element<'a, Message> {
     column![
-        text(label).size(crate::style::text_size::SMALL),
-        text_input(placeholder, value).on_input(on_input),
+        text(tr(label)).size(crate::style::text_size::SMALL),
+        text_input(tr(placeholder), value).on_input(on_input),
     ]
     .spacing(2)
     .into()
@@ -53,7 +54,7 @@ fn icon_button<'a>(
         .padding(4)
         .style(|theme, status| crate::style::button::transparent(theme, status, false))
         .on_press(message),
-        Some(label),
+        Some(tr(label)),
         tooltip::Position::Bottom,
     )
     .into()
@@ -78,12 +79,12 @@ impl Side {
 fn trade_actions(position_side: PositionSide) -> [(Side, bool, &'static str); 2] {
     match position_side {
         PositionSide::Long | PositionSide::Both => [
-            (Side::Buy, false, "Buy / Open"),
-            (Side::Sell, true, "Sell / Close"),
+            (Side::Buy, false, tr("Buy / Open")),
+            (Side::Sell, true, tr("Sell / Close")),
         ],
         PositionSide::Short => [
-            (Side::Sell, false, "Sell / Open"),
-            (Side::Buy, true, "Buy / Close"),
+            (Side::Sell, false, tr("Sell / Open")),
+            (Side::Buy, true, tr("Buy / Close")),
         ],
     }
 }
@@ -91,8 +92,8 @@ fn trade_actions(position_side: PositionSide) -> [(Side, bool, &'static str); 2]
 impl std::fmt::Display for Side {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Buy => "Buy / Long",
-            Self::Sell => "Sell / Short",
+            Self::Buy => tr("Buy / Long"),
+            Self::Sell => tr("Sell / Short"),
         })
     }
 }
@@ -111,8 +112,8 @@ impl OrderType {
 impl std::fmt::Display for OrderType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Market => "Market",
-            Self::Limit => "Limit",
+            Self::Market => tr("Market"),
+            Self::Limit => tr("Limit"),
         })
     }
 }
@@ -138,8 +139,8 @@ impl MarginMode {
 impl std::fmt::Display for MarginMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Cross => "Cross",
-            Self::Isolated => "Isolated",
+            Self::Cross => tr("Cross"),
+            Self::Isolated => tr("Isolated"),
         })
     }
 }
@@ -167,9 +168,9 @@ impl PositionSide {
 impl std::fmt::Display for PositionSide {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Both => "Both",
-            Self::Long => "Long",
-            Self::Short => "Short",
+            Self::Both => tr("Both"),
+            Self::Long => tr("Long"),
+            Self::Short => tr("Short"),
         })
     }
 }
@@ -190,21 +191,21 @@ pub struct OrderRequest {
 impl OrderRequest {
     pub fn validate(&self) -> Result<(), String> {
         if self.symbol.trim().is_empty() {
-            return Err("Symbol is required.".to_string());
+            return Err(tr("Symbol is required.").to_string());
         }
         if !self.quantity.is_finite() || self.quantity <= 0.0 {
-            return Err("Quantity must be greater than zero.".to_string());
+            return Err(tr("Quantity must be greater than zero.").to_string());
         }
         if self.order_type == OrderType::Limit
             && !self
                 .price
                 .is_some_and(|price| price.is_finite() && price > 0.0)
         {
-            return Err("A valid price is required for a limit order.".to_string());
+            return Err(tr("A valid price is required for a limit order.").to_string());
         }
         for (name, value) in [
-            ("Stop loss", self.stop_loss),
-            ("Take profit", self.take_profit),
+            (tr("Stop loss"), self.stop_loss),
+            (tr("Take profit"), self.take_profit),
         ] {
             if value.is_some_and(|price| !price.is_finite() || price <= 0.0) {
                 return Err(format!("{name} must be a positive price."));
@@ -656,7 +657,7 @@ impl Trader {
             reward_ratio: ticket.reward_ratio,
             reduce_only: ticket.reduce_only,
             pending_action: None,
-            status: "Enter Binance USD-M API credentials and connect.".to_string(),
+            status: tr("Enter Binance USD-M API credentials and connect.").to_string(),
             busy: false,
             healthy: false,
             latency_ms: None,
@@ -673,7 +674,7 @@ impl Trader {
                 trader.config.simulated_balance,
             ));
             trader.healthy = true;
-            trader.status = "Local simulation ready.".to_string();
+            trader.status = tr("Local simulation ready.").to_string();
         }
         trader
     }
@@ -753,24 +754,24 @@ impl Trader {
 
     fn chart_row(&self) -> Element<'_, Message> {
         row![
-            text("Chart"),
+            text(tr("Chart")),
             pick_list(
                 self.chart_sources.clone(),
                 self.selected_source().cloned(),
                 Message::ChartSourceChanged
             )
-            .placeholder("No compatible chart")
+            .placeholder(tr("No compatible chart"))
             .width(Length::Fill),
             tooltip(
                 checkbox(self.config.overlay_all_charts)
-                    .label("All")
+                    .label(tr("All"))
                     .on_toggle(Message::OverlayAllChartsChanged),
-                Some("Show trades on every active chart"),
+                Some(tr("Show trades on every active chart")),
                 tooltip::Position::Bottom,
             ),
             icon_button(
                 crate::style::LucideIcon::RefreshCw,
-                "Refresh account and chart source",
+                tr("Refresh account and chart source"),
                 Message::Refresh,
             ),
         ]
@@ -946,7 +947,7 @@ impl Trader {
                         self.config.simulated_balance,
                     ));
                     self.healthy = true;
-                    self.status = "Local simulation ready.".to_string();
+                    self.status = tr("Local simulation ready.").to_string();
                 } else {
                     self.snapshot = None;
                     self.healthy = false;
@@ -976,7 +977,7 @@ impl Trader {
                     .ok()
                     .filter(|value| *value > 0)
                 else {
-                    self.status = "Simulation balance must be greater than zero.".to_string();
+                    self.status = tr("Simulation balance must be greater than zero.").to_string();
                     return Task::none();
                 };
                 self.config.simulated_balance = balance;
@@ -984,7 +985,7 @@ impl Trader {
                 self.healthy = true;
                 self.persist_simulation();
                 self.recalculate_quantity();
-                self.status = "Simulation account reset.".to_string();
+                self.status = tr("Simulation account reset.").to_string();
             }
             Message::ApiKeyChanged(value) => self.api_key = value,
             Message::SecretKeyChanged(value) => self.secret_key = value,
@@ -996,13 +997,13 @@ impl Trader {
                     &self.api_key,
                     &self.secret_key,
                 ) {
-                    Ok(()) => "Trading credentials saved to the system keychain.".to_string(),
+                    Ok(()) => tr("Trading credentials saved to the system keychain.").to_string(),
                     Err(error) => error,
                 };
             }
             Message::Connect => {
                 if self.is_simulation() {
-                    self.status = "Local simulation is already connected.".to_string();
+                    self.status = tr("Local simulation is already connected.").to_string();
                     return Task::none();
                 }
                 if self.busy {
@@ -1013,7 +1014,7 @@ impl Trader {
                     secret_key: self.secret_key.trim().to_string(),
                 };
                 if credentials.api_key.is_empty() || credentials.secret_key.is_empty() {
-                    self.status = "API key and secret key are required.".to_string();
+                    self.status = tr("API key and secret key are required.").to_string();
                     return Task::none();
                 }
                 if let Err(error) = data::config::trading::save_credentials(
@@ -1039,7 +1040,7 @@ impl Trader {
                 let symbol = self.config.symbol.clone();
                 self.busy = true;
                 self.request_started = Some(std::time::Instant::now());
-                self.status = "Connecting to Binance...".to_string();
+                self.status = tr("Connecting to Binance...").to_string();
                 return Task::perform(
                     async move { client.connect(&symbol).await },
                     Message::Connected,
@@ -1076,7 +1077,7 @@ impl Trader {
                 self.snapshot = None;
                 self.healthy = false;
                 self.pending_action = None;
-                self.status = "Disconnected from Binance.".to_string();
+                self.status = tr("Disconnected from Binance.").to_string();
             }
             refresh @ (Message::Refresh | Message::Poll) => {
                 let Some(client) = self.client.clone() else {
@@ -1124,7 +1125,7 @@ impl Trader {
                         self.healthy = true;
                         self.recalculate_quantity_if_empty();
                         self.last_poll = Some(std::time::Instant::now());
-                        self.status = "Account synchronized.".to_string();
+                        self.status = tr("Account synchronized.").to_string();
                     }
                     Err(error) => {
                         self.healthy = false;
@@ -1223,7 +1224,7 @@ impl Trader {
                     .ok()
                     .filter(|value| (1..=125).contains(value))
                 else {
-                    self.status = "Leverage must be between 1 and 125.".to_string();
+                    self.status = tr("Leverage must be between 1 and 125.").to_string();
                     return Task::none();
                 };
                 return self.queue_or_execute(PendingAction::Place {
@@ -1300,14 +1301,14 @@ impl Trader {
                     })
                     .cloned()
                 else {
-                    self.status = "The position is no longer open.".to_string();
+                    self.status = tr("The position is no longer open.").to_string();
                     self.protection_editor = None;
                     return Task::none();
                 };
                 let stop_loss = optional_price(&editor.stop_loss);
                 let take_profit = optional_price(&editor.take_profit);
                 if stop_loss.is_none() && take_profit.is_none() {
-                    self.status = "Enter a stop loss or take profit price first.".to_string();
+                    self.status = tr("Enter a stop loss or take profit price first.").to_string();
                     return Task::none();
                 }
                 self.protection_editor = None;
@@ -1471,7 +1472,7 @@ impl Trader {
 
     fn open_event_contract(&mut self, up: bool) {
         if !self.is_simulation() {
-            self.status = "Event contracts are simulation only.".to_string();
+            self.status = tr("Event contracts are simulation only.").to_string();
             return;
         }
         let price = self
@@ -1582,9 +1583,9 @@ impl Trader {
     }
 
     fn order_request(&self) -> Result<OrderRequest, String> {
-        let quantity = parse_input(&self.quantity, "Quantity")?;
+        let quantity = parse_input(&self.quantity, tr("Quantity"))?;
         let price = if self.order_type == OrderType::Limit {
-            Some(parse_input(&self.price, "Limit price")?)
+            Some(parse_input(&self.price, tr("Limit price"))?)
         } else {
             None
         };
@@ -1638,7 +1639,7 @@ impl Trader {
 
     fn queue_or_execute(&mut self, action: PendingAction) -> Task<Message> {
         if self.client.is_none() && !self.is_simulation() {
-            self.status = "Connect a Binance account first.".to_string();
+            self.status = tr("Connect a Binance account first.").to_string();
             return Task::none();
         }
         if self.config.confirm_orders || self.config.exchange == TradingExchange::BinanceLive {
@@ -1662,7 +1663,7 @@ impl Trader {
             return Task::none();
         };
         self.busy = true;
-        self.status = "Sending trading request...".to_string();
+        self.status = tr("Sending trading request...").to_string();
         Task::perform(
             async move {
                 match action {
@@ -1755,7 +1756,7 @@ impl Trader {
                                 .cancel_order(&order.symbol, order.order_id, order.is_algo)
                                 .await?;
                         }
-                        Ok("Position protection orders accepted.".to_string())
+                        Ok(tr("Position protection orders accepted.").to_string())
                     }
                     PendingAction::ModifyLimit { order, price } => {
                         client.modify_limit_order(&order, price).await?;
@@ -1778,15 +1779,16 @@ impl Trader {
         let snapshot = self
             .snapshot
             .as_mut()
-            .ok_or_else(|| "Reset the simulation account first.".to_string())?;
+            .ok_or_else(|| tr("Reset the simulation account first.").to_string())?;
         match action {
             PendingAction::Place {
                 request,
                 leverage,
                 margin_mode,
             } => {
-                let market = market
-                    .ok_or_else(|| "The linked chart has no current market price.".to_string())?;
+                let market = market.ok_or_else(|| {
+                    tr("The linked chart has no current market price.").to_string()
+                })?;
                 let limit_waits = request.price.is_some_and(|price| match request.side {
                     Side::Buy => price < market,
                     Side::Sell => price > market,
@@ -1890,7 +1892,7 @@ impl Trader {
                     stop_loss,
                     take_profit,
                 );
-                Ok("Simulation protection updated.".to_string())
+                Ok(tr("Simulation protection updated.").to_string())
             }
             PendingAction::ModifyLimit { order, price } => {
                 let target = snapshot
@@ -1907,10 +1909,10 @@ impl Trader {
     pub fn settings_view(&self) -> Element<'_, Message> {
         let connected = self.connected();
         let account_name: Element<'_, Message> = if self.is_simulation() {
-            text("Local simulation account").into()
+            text(tr("Local simulation account")).into()
         } else {
             labeled_input(
-                "Account name",
+                tr("Account name"),
                 "Primary",
                 &self.config.account_label,
                 Message::AccountLabelChanged,
@@ -1919,39 +1921,39 @@ impl Trader {
         let connection: Element<'_, Message> = if self.is_simulation() {
             column![
                 labeled_input(
-                    "Initial balance (USDT)",
+                    tr("Initial balance (USDT)"),
                     "10000",
                     &self.simulation_balance,
                     Message::SimulationBalanceChanged,
                 ),
-                button(text("Reset simulation")).on_press(Message::ResetSimulation),
+                button(text(tr("Reset simulation"))).on_press(Message::ResetSimulation),
             ]
             .spacing(6)
             .into()
         } else {
             column![
                 column![
-                    text("API key").size(crate::style::text_size::SMALL),
+                    text(tr("API key")).size(crate::style::text_size::SMALL),
                     text_input("Key", &self.api_key)
                         .secure(true)
                         .on_input(Message::ApiKeyChanged),
                 ]
                 .spacing(2),
                 column![
-                    text("Secret key").size(crate::style::text_size::SMALL),
+                    text(tr("Secret key")).size(crate::style::text_size::SMALL),
                     text_input("Secret", &self.secret_key)
                         .secure(true)
                         .on_input(Message::SecretKeyChanged),
                 ]
                 .spacing(2),
                 row![
-                    button(text("Save")).on_press(Message::SaveCredentials),
+                    button(text(tr("Save"))).on_press(Message::SaveCredentials),
                     if connected {
-                        button(text("Disconnect")).on_press(Message::Disconnect)
+                        button(text(tr("Disconnect"))).on_press(Message::Disconnect)
                     } else if self.busy {
-                        button(text("Connecting"))
+                        button(text(tr("Connecting")))
                     } else {
-                        button(text("Connect")).on_press(Message::Connect)
+                        button(text(tr("Connect"))).on_press(Message::Connect)
                     },
                 ]
                 .spacing(6),
@@ -1962,7 +1964,7 @@ impl Trader {
         container(scrollable(
             column![
                 row![
-                    text("Exchange").width(Length::Fill),
+                    text(tr("Exchange")).width(Length::Fill),
                     pick_list(
                         TradingExchange::ALL,
                         Some(self.config.exchange),
@@ -1973,7 +1975,7 @@ impl Trader {
                 account_name,
                 row![
                     checkbox(self.config.confirm_orders)
-                        .label("Confirm orders")
+                        .label(tr("Confirm orders"))
                         .on_toggle(Message::ConfirmOrdersChanged),
                     text(if self.config.exchange == TradingExchange::BinanceLive {
                         "LIVE FUNDS"
@@ -2006,7 +2008,7 @@ impl Trader {
             })
             .cloned();
         let account_header: Element<'_, Message> = self.snapshot.as_ref().map_or_else(
-            || row![text("No account data")].into(),
+            || row![text(tr("No account data"))].into(),
             |snapshot| {
                 let usdt = snapshot
                     .balances
@@ -2043,11 +2045,11 @@ impl Trader {
             .map(format_decimal)
             .unwrap_or_else(|| "--".to_string());
         let connection = if connected && self.healthy {
-            "Healthy"
+            tr("Healthy")
         } else if connected {
-            "Degraded"
+            tr("Degraded")
         } else {
-            "Disconnected"
+            tr("Disconnected")
         };
         let latency = if self.is_simulation() {
             selected_chart
@@ -2100,7 +2102,7 @@ impl Trader {
             .spacing(6),
             row![
                 container(labeled_input(
-                    "Quantity",
+                    tr("Quantity"),
                     "0.000",
                     &self.quantity,
                     Message::QuantityChanged,
@@ -2108,14 +2110,14 @@ impl Trader {
                 .width(Length::Fill),
                 container(
                     column![
-                        text("Limit price").size(crate::style::text_size::SMALL),
+                        text(tr("Limit price")).size(crate::style::text_size::SMALL),
                         row![
-                            text_input("Market", &self.price)
+                            text_input(tr("Market"), &self.price)
                                 .on_input(Message::PriceChanged)
                                 .width(Length::Fill),
                             icon_button(
                                 crate::style::LucideIcon::MousePointer2,
-                                "Use best bid/ask",
+                                tr("Use best bid/ask"),
                                 Message::FillBestPrice,
                             ),
                         ]
@@ -2129,14 +2131,14 @@ impl Trader {
             .spacing(6),
             row![
                 container(labeled_input(
-                    "Risk (%)",
+                    tr("Risk (%)"),
                     "1.0",
                     &self.risk_percent,
                     Message::RiskPercentChanged,
                 ))
                 .width(Length::Fill),
                 container(labeled_input(
-                    "Reward ratio",
+                    tr("Reward ratio"),
                     "2.0",
                     &self.reward_ratio,
                     Message::RewardRatioChanged,
@@ -2146,15 +2148,15 @@ impl Trader {
             .spacing(6),
             row![
                 container(labeled_input(
-                    "Stop loss",
-                    "Price",
+                    tr("Stop loss"),
+                    tr("Price"),
                     &self.stop_loss,
                     Message::StopLossChanged,
                 ))
                 .width(Length::Fill),
                 container(labeled_input(
-                    "Take profit",
-                    "Price",
+                    tr("Take profit"),
+                    tr("Price"),
                     &self.take_profit,
                     Message::TakeProfitChanged,
                 ))
@@ -2162,7 +2164,7 @@ impl Trader {
             ]
             .spacing(6),
             labeled_input(
-                "Leverage",
+                tr("Leverage"),
                 "1-125",
                 &self.leverage,
                 Message::LeverageChanged,
@@ -2187,9 +2189,13 @@ impl Trader {
                 .width(Length::Fill),
             row![
                 button(
-                    text(if self.busy { "Working" } else { open_action.2 })
-                        .align_x(Alignment::Center)
-                        .width(Length::Fill)
+                    text(if self.busy {
+                        tr("Working")
+                    } else {
+                        open_action.2
+                    })
+                    .align_x(Alignment::Center)
+                    .width(Length::Fill)
                 )
                 .on_press_maybe(
                     (!self.busy).then_some(Message::PlaceOrder(open_action.0, open_action.1))
@@ -2201,9 +2207,13 @@ impl Trader {
                 })
                 .width(Length::Fill),
                 button(
-                    text(if self.busy { "Working" } else { close_action.2 })
-                        .align_x(Alignment::Center)
-                        .width(Length::Fill)
+                    text(if self.busy {
+                        tr("Working")
+                    } else {
+                        close_action.2
+                    })
+                    .align_x(Alignment::Center)
+                    .width(Length::Fill)
                 )
                 .on_press_maybe(
                     (!self.busy).then_some(Message::PlaceOrder(close_action.0, close_action.1))
@@ -2234,8 +2244,8 @@ impl Trader {
                     .width(Length::Fill)
             };
             row![
-                tab("Futures", !event_tab, false),
-                tab("Event contracts", event_tab, true),
+                tab(tr("Futures"), !event_tab, false),
+                tab(tr("Event contracts"), event_tab, true),
             ]
             .spacing(6)
             .into()
@@ -2289,11 +2299,11 @@ impl Trader {
             container(
                 row![
                     text(summary).width(Length::Fill),
-                    button(text("Cancel")).on_press(Message::CancelAction),
+                    button(text(tr("Cancel"))).on_press(Message::CancelAction),
                     button(text(if self.config.testnet {
-                        "Confirm"
+                        tr("Confirm")
                     } else {
-                        "Confirm live order"
+                        tr("Confirm live order")
                     }))
                     .on_press(Message::ConfirmAction),
                 ]
@@ -2369,26 +2379,26 @@ impl Trader {
                             .width(Length::Fill),
                         icon_button(
                             crate::style::LucideIcon::X,
-                            "Close TP/SL editor",
+                            tr("Close TP/SL editor"),
                             Message::CloseProtectionEditor,
                         ),
                     ]
                     .align_y(Alignment::Center),
                     labeled_input(
-                        "Stop loss",
-                        "Price",
+                        tr("Stop loss"),
+                        tr("Price"),
                         &editor.stop_loss,
                         Message::EditStopLossChanged,
                     ),
                     labeled_input(
-                        "Take profit",
-                        "Price",
+                        tr("Take profit"),
+                        tr("Price"),
                         &editor.take_profit,
                         Message::EditTakeProfitChanged,
                     ),
                     text(preview).size(crate::style::text_size::SMALL),
                     button(
-                        text("Update TP/SL")
+                        text(tr("Update TP/SL"))
                             .align_x(Alignment::Center)
                             .width(Length::Fill)
                     )
@@ -2422,59 +2432,61 @@ impl Trader {
             let modal = container(
                 column![
                     row![
-                        text("Account performance")
+                        text(tr("Account performance"))
                             .size(crate::style::text_size::TITLE)
                             .width(Length::Fill),
                         icon_button(
                             crate::style::LucideIcon::X,
-                            "Close account performance",
+                            tr("Close account performance"),
                             Message::ToggleAccountAnalytics,
                         ),
                     ]
                     .align_y(Alignment::Center),
                     rule::horizontal(1),
                     row![
-                        text("Net realized PnL").width(Length::Fill),
+                        text(tr("Net realized PnL")).width(Length::Fill),
                         text(format!("{:.2} USDT", analytics.net_pnl)),
                     ],
                     row![
-                        text("Win rate (closed fills)").width(Length::Fill),
+                        text(tr("Win rate (closed fills)")).width(Length::Fill),
                         text(format!("{:.1}%", analytics.win_rate())),
                     ],
                     row![
-                        text("Closed fills").width(Length::Fill),
+                        text(tr("Closed fills")).width(Length::Fill),
                         text(format!(
                             "{} ({}W / {}L)",
                             analytics.closed_fills, analytics.wins, analytics.losses
                         )),
                     ],
                     row![
-                        text("Profit factor").width(Length::Fill),
+                        text(tr("Profit factor")).width(Length::Fill),
                         text(profit_factor),
                     ],
                     row![
-                        text("Gross profit / loss").width(Length::Fill),
+                        text(tr("Gross profit / loss")).width(Length::Fill),
                         text(format!(
                             "{:.2} / -{:.2}",
                             analytics.gross_profit, analytics.gross_loss
                         )),
                     ],
                     row![
-                        text("Average win / loss").width(Length::Fill),
+                        text(tr("Average win / loss")).width(Length::Fill),
                         text(format!(
                             "{:.2} / {:.2}",
                             analytics.average_win, analytics.average_loss
                         )),
                     ],
                     row![
-                        text("Best / worst fill").width(Length::Fill),
+                        text(tr("Best / worst fill")).width(Length::Fill),
                         text(format!(
                             "{:.2} / {:.2}",
                             analytics.best_trade, analytics.worst_trade
                         )),
                     ],
-                    text("USDT fees are included; win rate is based on fills with realized PnL.")
-                        .size(crate::style::text_size::SMALL),
+                    text(tr(
+                        "USDT fees are included; win rate is based on fills with realized PnL."
+                    ))
+                    .size(crate::style::text_size::SMALL),
                 ]
                 .spacing(10),
             )
@@ -2497,33 +2509,33 @@ impl Trader {
         iced::widget::responsive(move |bounds| {
             let compact = bounds.width < 900.0;
             let narrow = bounds.width < 520.0;
-            let mut header = row![text("Symbol").width(Length::FillPortion(2))];
+            let mut header = row![text(tr("Symbol")).width(Length::FillPortion(2))];
             if !narrow {
-                header = header.push(text("Side").width(Length::FillPortion(1)));
+                header = header.push(text(tr("Side")).width(Length::FillPortion(1)));
             }
-            header = header.push(text("Qty").width(Length::FillPortion(2)));
+            header = header.push(text(tr("Qty")).width(Length::FillPortion(2)));
             if !compact {
                 header = header
-                    .push(text("Mark").width(Length::FillPortion(2)))
-                    .push(text("Entry / BE").width(Length::FillPortion(3)))
-                    .push(text("Liq").width(Length::FillPortion(2)));
+                    .push(text(tr("Mark")).width(Length::FillPortion(2)))
+                    .push(text(tr("Entry / BE")).width(Length::FillPortion(3)))
+                    .push(text(tr("Liq")).width(Length::FillPortion(2)));
             } else if !narrow {
-                header = header.push(text("Entry").width(Length::FillPortion(2)));
+                header = header.push(text(tr("Entry")).width(Length::FillPortion(2)));
             }
-            header = header.push(text("PnL USDT").width(Length::FillPortion(2)));
+            header = header.push(text(tr("PnL USDT")).width(Length::FillPortion(2)));
             if !compact {
-                header = header.push(text("Lev").width(Length::FillPortion(1)));
+                header = header.push(text(tr("Lev")).width(Length::FillPortion(1)));
             }
-            header = header.push(text("Actions").width(Length::Fixed(104.0)));
+            header = header.push(text(tr("Actions")).width(Length::Fixed(104.0)));
 
             let mut list = column![
                 row![
-                    text("Positions")
+                    text(tr("Positions"))
                         .size(crate::style::text_size::SECTION)
                         .width(Length::Fill),
                     icon_button(
                         crate::style::LucideIcon::ChartNoAxesColumnIncreasing,
-                        "Account performance",
+                        tr("Account performance"),
                         Message::ToggleAccountAnalytics,
                     ),
                 ]
@@ -2593,12 +2605,12 @@ impl Trader {
                         row![
                             icon_button(
                                 crate::style::LucideIcon::TrendingUp,
-                                "Edit TP/SL",
+                                tr("Edit TP/SL"),
                                 Message::EditProtection(index),
                             ),
                             icon_button(
                                 crate::style::LucideIcon::X,
-                                "Close position",
+                                tr("Close position"),
                                 Message::ClosePosition(index),
                             ),
                         ]
@@ -2613,7 +2625,7 @@ impl Trader {
                 .as_ref()
                 .is_none_or(|snapshot| snapshot.positions.is_empty())
             {
-                list = list.push(text("No open positions"));
+                list = list.push(text(tr("No open positions")));
             }
             list.into()
         })
@@ -2624,29 +2636,29 @@ impl Trader {
         iced::widget::responsive(move |bounds| {
             let compact = bounds.width < 700.0;
             let narrow = bounds.width < 430.0;
-            let mut header = row![text("Symbol").width(Length::FillPortion(2))];
+            let mut header = row![text(tr("Symbol")).width(Length::FillPortion(2))];
             if !narrow {
                 header = header
-                    .push(text("Side").width(Length::FillPortion(1)))
-                    .push(text("Type").width(Length::FillPortion(2)));
+                    .push(text(tr("Side")).width(Length::FillPortion(1)))
+                    .push(text(tr("Type")).width(Length::FillPortion(2)));
             }
             if !compact {
-                header = header.push(text("Qty").width(Length::FillPortion(2)));
+                header = header.push(text(tr("Qty")).width(Length::FillPortion(2)));
             }
-            header = header.push(text("Price / Trigger").width(Length::FillPortion(3)));
+            header = header.push(text(tr("Price / Trigger")).width(Length::FillPortion(3)));
             if !compact {
-                header = header.push(text("Flags").width(Length::FillPortion(2)));
+                header = header.push(text(tr("Flags")).width(Length::FillPortion(2)));
             }
-            header = header.push(text("Action").width(Length::Fixed(64.0)));
+            header = header.push(text(tr("Action")).width(Length::Fixed(64.0)));
 
             let mut list = column![
                 row![
-                    text("Open orders")
+                    text(tr("Open orders"))
                         .size(crate::style::text_size::SECTION)
                         .width(Length::Fill),
                     icon_button(
                         crate::style::LucideIcon::Trash2,
-                        "Cancel all orders",
+                        tr("Cancel all orders"),
                         Message::CancelAllOrders,
                     ),
                 ]
@@ -2686,14 +2698,18 @@ impl Trader {
                     );
                     if !compact {
                         fields = fields.push(
-                            text(if order.reduce_only { "Reduce" } else { "Open" })
-                                .width(Length::FillPortion(2)),
+                            text(if order.reduce_only {
+                                tr("Reduce")
+                            } else {
+                                tr("Open")
+                            })
+                            .width(Length::FillPortion(2)),
                         );
                     }
                     fields = fields.push(
                         container(icon_button(
                             crate::style::LucideIcon::X,
-                            "Cancel order",
+                            tr("Cancel order"),
                             Message::CancelOrder(
                                 order.symbol.clone(),
                                 order.order_id,
@@ -2710,7 +2726,7 @@ impl Trader {
                 .as_ref()
                 .is_none_or(|snapshot| snapshot.open_orders.is_empty())
             {
-                list = list.push(text("No open orders"));
+                list = list.push(text(tr("No open orders")));
             }
             list.into()
         })
@@ -2733,18 +2749,18 @@ impl Trader {
                 })
                 .unwrap_or_default();
             let is_empty = trades.is_empty();
-            let mut header = row![text("Time").width(Length::FillPortion(3))];
-            header = header.push(text("Side").width(Length::FillPortion(1)));
+            let mut header = row![text(tr("Time")).width(Length::FillPortion(3))];
+            header = header.push(text(tr("Side")).width(Length::FillPortion(1)));
             if !narrow {
-                header = header.push(text("Qty").width(Length::FillPortion(2)));
+                header = header.push(text(tr("Qty")).width(Length::FillPortion(2)));
             }
-            header = header.push(text("Price").width(Length::FillPortion(2)));
-            header = header.push(text("PnL USDT").width(Length::FillPortion(2)));
+            header = header.push(text(tr("Price")).width(Length::FillPortion(2)));
+            header = header.push(text(tr("PnL USDT")).width(Length::FillPortion(2)));
             if !compact {
-                header = header.push(text("Fee").width(Length::FillPortion(2)));
+                header = header.push(text(tr("Fee")).width(Length::FillPortion(2)));
             }
             let mut list = column![
-                text("Trade history").size(crate::style::text_size::SECTION),
+                text(tr("Trade history")).size(crate::style::text_size::SECTION),
                 header.spacing(6),
                 rule::horizontal(1),
             ]
@@ -2790,7 +2806,7 @@ impl Trader {
                 list = list.push(fields.spacing(6).align_y(Alignment::Center));
             }
             if is_empty {
-                list = list.push(text("No trade history for this symbol"));
+                list = list.push(text(tr("No trade history for this symbol")));
             }
             list.into()
         })
@@ -2843,11 +2859,11 @@ impl Trader {
                 .into()
             ),
             stat(
-                "Net PnL",
+                tr("Net PnL"),
                 signed(format!("{:+.2} USDT", stats.net), stats.net >= 0.0).into()
             ),
             stat(
-                "Win rate",
+                tr("Win rate"),
                 text(format!(
                     "{:.1}% ({}W / {}L)",
                     stats.win_rate(),
@@ -2857,7 +2873,7 @@ impl Trader {
                 .into()
             ),
             stat(
-                "Total profit / loss",
+                tr("Total profit / loss"),
                 row![
                     signed(format!("+{:.2}", stats.gross_profit), true),
                     text("/"),
@@ -2867,7 +2883,7 @@ impl Trader {
                 .into()
             ),
             stat(
-                "Open / at stake",
+                tr("Open / at stake"),
                 text(format!(
                     "{}/{} | {:.2} USDT",
                     stats.open,
@@ -2885,7 +2901,7 @@ impl Trader {
             text(&self.status).size(crate::style::text_size::SMALL),
             rule::horizontal(1),
             row![
-                text("Event contracts")
+                text(tr("Event contracts"))
                     .size(crate::style::text_size::SECTION)
                     .width(Length::Fill),
                 text(format!("{open_count}/{} open", event::MAX_OPEN))
@@ -2911,22 +2927,30 @@ impl Trader {
             .spacing(6)
             .align_y(Alignment::Center),
             row![
-                button(text("Up").align_x(Alignment::Center).width(Length::Fill))
-                    .on_press(Message::OpenEventContract(true))
-                    .style(crate::style::button::trade_buy)
-                    .width(Length::Fill),
-                button(text("Down").align_x(Alignment::Center).width(Length::Fill))
-                    .on_press(Message::OpenEventContract(false))
-                    .style(crate::style::button::trade_sell)
-                    .width(Length::Fill),
+                button(
+                    text(tr("Up"))
+                        .align_x(Alignment::Center)
+                        .width(Length::Fill)
+                )
+                .on_press(Message::OpenEventContract(true))
+                .style(crate::style::button::trade_buy)
+                .width(Length::Fill),
+                button(
+                    text(tr("Down"))
+                        .align_x(Alignment::Center)
+                        .width(Length::Fill)
+                )
+                .on_press(Message::OpenEventContract(false))
+                .style(crate::style::button::trade_sell)
+                .width(Length::Fill),
             ]
             .spacing(6),
             row![
                 checkbox(self.config.event_show_open)
-                    .label("Chart: open")
+                    .label(tr("Chart: open"))
                     .on_toggle(Message::EventShowOpenChanged),
                 checkbox(self.config.event_show_history)
-                    .label("Chart: history")
+                    .label(tr("Chart: history"))
                     .on_toggle(Message::EventShowHistoryChanged),
             ]
             .spacing(12),
@@ -2936,13 +2960,13 @@ impl Trader {
         if open_count > 0 {
             panel = panel.push(
                 row![
-                    text("Side").width(Length::FillPortion(2)),
-                    text("Stake").width(Length::FillPortion(3)),
-                    text("Open").width(Length::FillPortion(3)),
-                    text("Now").width(Length::FillPortion(3)),
-                    text("Diff").width(Length::FillPortion(3)),
-                    text("Left").width(Length::FillPortion(2)),
-                    text("Result").width(Length::FillPortion(2)),
+                    text(tr("Side")).width(Length::FillPortion(2)),
+                    text(tr("Stake")).width(Length::FillPortion(3)),
+                    text(tr("Open")).width(Length::FillPortion(3)),
+                    text(tr("Now")).width(Length::FillPortion(3)),
+                    text(tr("Diff")).width(Length::FillPortion(3)),
+                    text(tr("Left")).width(Length::FillPortion(2)),
+                    text(tr("Result")).width(Length::FillPortion(2)),
                 ]
                 .spacing(6),
             );
@@ -3004,7 +3028,7 @@ impl Trader {
             .collect::<Vec<_>>();
         if !settled.is_empty() {
             panel = panel.push(rule::horizontal(1));
-            panel = panel.push(text("History").size(crate::style::text_size::SECTION));
+            panel = panel.push(text(tr("History")).size(crate::style::text_size::SECTION));
             for contract in settled.into_iter().rev() {
                 let pnl = contract.pnl().unwrap_or_default();
                 panel = panel.push(
@@ -3216,7 +3240,7 @@ fn simulated_fill(
         .find(|balance| balance.asset == "USDT")
         .map_or(0.0, |balance| balance.available);
     if required > available && !reduce_only {
-        return Err("Insufficient simulated available balance.".to_string());
+        return Err(tr("Insufficient simulated available balance.").to_string());
     }
 
     let commission = quantity * price * snapshot.commission.taker;
@@ -4271,7 +4295,7 @@ async fn fetch_binance_liquidation_fee(
 
 fn network_error(error: reqwest::Error) -> String {
     if error.is_timeout() {
-        "Binance request timed out.".to_string()
+        tr("Binance request timed out.").to_string()
     } else {
         format!("Binance request failed: {error}")
     }

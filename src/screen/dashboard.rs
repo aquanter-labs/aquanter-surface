@@ -14,6 +14,7 @@ use crate::{
     widget::toast::Toast,
     window::{self, PixelRatio, Window},
 };
+use data::i18n::tr;
 use data::{
     UserTimezone,
     chart::kline::{ChartSettings, indicators::manifest},
@@ -380,10 +381,10 @@ impl Dashboard {
             })
         });
         if source_pane.is_some() && selected.is_none() {
-            return Some(Err(
-                "The selected source pane is no longer in the active layout. Refresh sources."
-                    .to_string(),
-            ));
+            return Some(Err(tr(
+                "The selected source pane is no longer in the active layout. Refresh sources.",
+            )
+            .to_string()));
         }
         let focused = self.focus.and_then(|(window, pane)| {
             self.get_pane(main_window, window, pane)

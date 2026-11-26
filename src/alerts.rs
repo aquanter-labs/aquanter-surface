@@ -1,4 +1,5 @@
 use data::config::alerts::{AlertActions, AlertConfig, AlertRule, AlertTrigger, AlertTriggerKind};
+use data::i18n::tr;
 use iced::{
     Alignment, Element, Length,
     widget::{button, checkbox, column, container, pick_list, row, text, text_input, tooltip},
@@ -248,20 +249,24 @@ impl Alerts {
     }
 
     pub fn view(&self, timezone: data::UserTimezone) -> Element<'_, Message> {
-        let add = icon_button(crate::style::LucideIcon::Plus, "Add alert", Message::Add);
+        let add = icon_button(
+            crate::style::LucideIcon::Plus,
+            tr("Add alert"),
+            Message::Add,
+        );
         let history = icon_button(
             crate::style::LucideIcon::History,
             if self.show_history {
-                "Show alerts"
+                tr("Show alerts")
             } else {
-                "Show history"
+                tr("Show history")
             },
             Message::ToggleHistory,
         );
         let mut rules = column![].spacing(4);
 
         if self.config.rules.is_empty() {
-            rules = rules.push(text("No alerts configured."));
+            rules = rules.push(text(tr("No alerts configured.")));
         }
 
         for configured in &self.config.rules {
@@ -285,8 +290,8 @@ impl Alerts {
             .width(Length::Fill);
             let (value, placeholder, suffix) = match &configured.trigger {
                 AlertTrigger::PriceTouches { price } => (price, "Price", ""),
-                AlertTrigger::VolumeChange { percent } => (percent, "Change", "%"),
-                AlertTrigger::BarClose { minutes } => (minutes, "Minutes", "min"),
+                AlertTrigger::VolumeChange { percent } => (percent, tr("Change"), "%"),
+                AlertTrigger::BarClose { minutes } => (minutes, tr("Minutes"), "min"),
             };
             let value = row![
                 text_input(placeholder, value)
@@ -298,7 +303,7 @@ impl Alerts {
             .align_y(Alignment::Center);
             let remove = icon_button(
                 crate::style::LucideIcon::Trash2,
-                "Delete alert",
+                tr("Delete alert"),
                 Message::Remove(id),
             );
             let expand = icon_button(
@@ -308,9 +313,9 @@ impl Alerts {
                     crate::style::LucideIcon::ChevronDown
                 },
                 if is_expanded {
-                    "Collapse alert"
+                    tr("Collapse alert")
                 } else {
-                    "Edit alert"
+                    tr("Edit alert")
                 },
                 Message::ToggleExpanded(id),
             );
@@ -330,25 +335,31 @@ impl Alerts {
             if is_expanded {
                 rule_content = rule_content.push(
                     column![
-                        text("Source").size(crate::style::text_size::SMALL),
+                        text(tr("Source")).size(crate::style::text_size::SMALL),
                         source,
                         row![
-                            column![text("Event").size(crate::style::text_size::SMALL), trigger,]
-                                .spacing(4)
-                                .width(Length::FillPortion(2)),
-                            column![text("Value").size(crate::style::text_size::SMALL), value]
-                                .spacing(4)
-                                .width(Length::FillPortion(1)),
+                            column![
+                                text(tr("Event")).size(crate::style::text_size::SMALL),
+                                trigger,
+                            ]
+                            .spacing(4)
+                            .width(Length::FillPortion(2)),
+                            column![
+                                text(tr("Value")).size(crate::style::text_size::SMALL),
+                                value
+                            ]
+                            .spacing(4)
+                            .width(Length::FillPortion(1)),
                         ]
                         .spacing(8)
                         .align_y(Alignment::Center),
                         text("Actions").size(crate::style::text_size::SMALL),
                         column![
                             checkbox(configured.actions.ai_analysis)
-                                .label("AI analysis")
+                                .label(tr("AI analysis"))
                                 .on_toggle(move |enabled| Message::AiActionChanged(id, enabled)),
                             checkbox(configured.actions.system_notification)
-                                .label("System notification")
+                                .label(tr("System notification"))
                                 .on_toggle(move |enabled| Message::SystemNotificationChanged(
                                     id, enabled
                                 )),
@@ -373,7 +384,7 @@ impl Alerts {
         };
         let content = column![
             row![
-                text("Alert")
+                text(tr("Alert"))
                     .size(crate::style::text_size::SECTION)
                     .width(Length::Fill),
                 history,
@@ -381,9 +392,9 @@ impl Alerts {
             ]
             .align_y(Alignment::Center),
             text(if self.show_history {
-                "Triggered alert history"
+                tr("Triggered alert history")
             } else {
-                "Saved with the application state."
+                tr("Saved with the application state.")
             }),
             body,
         ]
@@ -398,7 +409,7 @@ impl Alerts {
 
     fn history_view(&self, timezone: data::UserTimezone) -> Element<'_, Message> {
         if self.history.is_empty() {
-            return text("No alert history.").into();
+            return text(tr("No alert history.")).into();
         }
         self.history
             .iter()
@@ -410,12 +421,12 @@ impl Alerts {
                         record.triggered_at_ms,
                         data::config::timezone::TimeLabelKind::Custom("%Y-%m-%d %H:%M:%S"),
                     )
-                    .unwrap_or_else(|| "Unknown time".to_string());
+                    .unwrap_or_else(|| tr("Unknown time").to_string());
                 let actions = match (record.ai_analysis, record.system_notification) {
-                    (true, true) => "AI + system notification",
-                    (true, false) => "AI analysis",
-                    (false, true) => "System notification",
-                    (false, false) => "No action",
+                    (true, true) => tr("AI + system notification"),
+                    (true, false) => tr("AI analysis"),
+                    (false, true) => tr("System notification"),
+                    (false, false) => tr("No action"),
                 };
                 history.push(
                     container(

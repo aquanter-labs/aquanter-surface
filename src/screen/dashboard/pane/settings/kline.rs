@@ -2,6 +2,7 @@ use crate::screen::dashboard::pane::content::kline::{Message, SettingsMessage};
 use crate::tooltip;
 use crate::widget::inspector::{InspectorContent, InspectorSection};
 use data::chart::kline::LegendVisibility;
+use data::i18n::tr;
 use iced::{
     Length,
     widget::{
@@ -16,17 +17,16 @@ pub fn kline_cfg_view(
 ) -> InspectorContent<'static, Message> {
     let trade_data_enabled_checkbox = {
         let cb = checkbox(trade_data_enabled)
-            .label("Trade data")
+            .label(tr("Trade data"))
             .on_toggle_maybe(trade_data_lock_reason.is_none().then_some(|enabled| {
                 Message::Settings(SettingsMessage::TradeDataEnabledChanged(enabled))
             }));
 
         tooltip(
             cb,
-            Some(
-                trade_data_lock_reason
-                    .unwrap_or("Allow plots that need trade data to subscribe and fetch it"),
-            ),
+            Some(trade_data_lock_reason.unwrap_or(tr(
+                "Allow plots that need trade data to subscribe and fetch it",
+            ))),
             TooltipPosition::Left,
         )
     };
@@ -34,10 +34,10 @@ pub fn kline_cfg_view(
     if trade_data_enabled {
         trade_data_setting = trade_data_setting
             .push(
-                text("Live trade data is enabled.\n\nHistorical trade data depends on your network settings.")
+                text(tr("Live trade data is enabled.\n\nHistorical trade data depends on your network settings."))
                     .size(crate::style::text_size::SMALL),
             )
-            .push(button("Open Network settings").on_press(Message::OpenNetworkSettings));
+            .push(button(tr("Open Network settings")).on_press(Message::OpenNetworkSettings));
     }
 
     let legend_picklist = tooltip(
@@ -53,14 +53,14 @@ pub fn kline_cfg_view(
 
     InspectorContent::new(vec![
         InspectorSection::titled(
-            "Data",
+            tr("Data"),
             container(trade_data_setting)
                 .width(Length::Fill)
                 .padding(8)
                 .style(crate::style::inspector_control),
         )
         .with_modal_container(),
-        InspectorSection::titled("Legend visibility", legend_picklist).with_modal_container(),
+        InspectorSection::titled(tr("Legend visibility"), legend_picklist).with_modal_container(),
     ])
 }
 
@@ -70,6 +70,7 @@ pub mod presets {
         style::{self, Icon, icon_text},
         widget::{column_drag::DragEvent, manager_icon_button, manager_list, manager_row},
     };
+    use data::i18n::tr;
     use data::layout::MAX_NAME_LENGTH;
     use data::layout::presets::{Command, Library};
     use iced::{
@@ -256,7 +257,7 @@ pub mod presets {
             match &self.dialog {
                 Dialog::Naming { name, .. } => Some(row![
                     center(
-                        text_input("Preset name", name)
+                        text_input(tr("Preset name"), name)
                             .id(self.name_input.clone())
                             .on_input(Message::NameChanged)
                             .on_submit(Message::SubmitName),
@@ -266,7 +267,7 @@ pub mod presets {
                 ]),
                 Dialog::Delete(id) => Some(row![
                     center(
-                        text("Delete this preset?")
+                        text(tr("Delete this preset?"))
                             .size(style::text_size::BODY)
                             .wrapping(iced::widget::text::Wrapping::None),
                     )
@@ -298,18 +299,18 @@ pub mod presets {
                 crate::tooltip(
                     button(icon_text(Icon::Return, 12))
                         .on_press_maybe(idle.then_some(Message::ToggleEdit)),
-                    Some("Finish editing"),
+                    Some(tr("Finish editing")),
                     iced::widget::tooltip::Position::Top,
                 )
             } else {
-                button("Edit")
+                button(tr("Edit"))
                     .on_press_maybe(idle.then_some(Message::ToggleEdit))
                     .into()
             };
             let content = column![
                 row![
                     button("Save").on_press_maybe((idle && modified).then_some(Message::Save)),
-                    button("Save as").on_press_maybe(idle.then_some(Message::SaveAs)),
+                    button(tr("Save as")).on_press_maybe(idle.then_some(Message::SaveAs)),
                     space::horizontal(),
                     edit_button,
                 ]
@@ -343,7 +344,7 @@ pub mod presets {
                     entry = entry
                         .push(crate::tooltip(
                             manager_icon_button(Icon::Clone, Some(Message::Duplicate(preset.id))),
-                            Some("Duplicate preset"),
+                            Some(tr("Duplicate preset")),
                             iced::widget::tooltip::Position::Top,
                         ))
                         .push(manager_icon_button(

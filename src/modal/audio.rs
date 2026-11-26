@@ -3,6 +3,7 @@ use crate::audio::{AudioError, SoundCache, SoundType};
 use crate::style::{self, icon_text};
 use crate::widget::{classic_slider_row, tooltip};
 use data::audio::StreamCfg;
+use data::i18n::tr;
 use exchange::adapter::{Exchange, StreamKind};
 
 use exchange::Trade;
@@ -156,9 +157,9 @@ impl AudioStream {
         let audio_output_error = self.init_error.as_ref().map(|err| {
             container(
                 column![
-                    text("Audio output unavailable").size(crate::style::text_size::SECTION),
+                    text(tr("Audio output unavailable")).size(crate::style::text_size::SECTION),
                     text(err.to_string()).size(crate::style::text_size::BODY),
-                    button(text("Retry")).on_press(Message::RetryInit),
+                    button(text(tr("Retry"))).on_press(Message::RetryInit),
                 ]
                 .spacing(8),
             )
@@ -171,7 +172,7 @@ impl AudioStream {
                 let volume_pct = self.volume.unwrap_or(0.0);
 
                 classic_slider_row(
-                    Some(text("Volume")),
+                    Some(text(tr("Volume"))),
                     0.0..=100.0,
                     volume_pct,
                     Message::SoundLevelChanged,
@@ -181,7 +182,7 @@ impl AudioStream {
             };
 
             column![
-                text("Sound").size(crate::style::text_size::SECTION),
+                text(tr("Sound")).size(crate::style::text_size::SECTION),
                 volume_slider,
             ]
             .spacing(8)
@@ -191,7 +192,7 @@ impl AudioStream {
             let mut available_streams = column![].spacing(4);
 
             if active_streams.is_empty() {
-                available_streams = available_streams.push(text("No trade streams found"));
+                available_streams = available_streams.push(text(tr("No trade streams found")));
             } else {
                 // de-dup by (exchange, ticker)
                 let mut streams = active_streams;
@@ -238,7 +239,7 @@ impl AudioStream {
                                 .style(move |theme, status| {
                                     style::button::transparent(theme, status, is_expanded)
                                 }),
-                            Some("Toggle filters for triggering a sound"),
+                            Some(tr("Toggle filters for triggering a sound")),
                             TooltipPosition::Top,
                         ));
                     }
@@ -252,7 +253,7 @@ impl AudioStream {
                         match cfg.threshold {
                             data::audio::Threshold::Count(v) => {
                                 let threshold_slider = classic_slider_row(
-                                    Some(text("Trade count")),
+                                    Some(text(tr("Trade count"))),
                                     1.0..=100.0,
                                     v as f32,
                                     move |value| {
@@ -288,7 +289,7 @@ impl AudioStream {
             }
 
             column![
-                text("Audio streams").size(crate::style::text_size::SECTION),
+                text(tr("Audio streams")).size(crate::style::text_size::SECTION),
                 available_streams,
             ]
             .spacing(8)

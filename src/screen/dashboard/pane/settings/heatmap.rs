@@ -9,6 +9,7 @@ use data::chart::heatmap::indicators::{
     DepthDistance, HeatmapIndicator, HeatmapIndicatorConfig, SpreadUnit,
 };
 use data::chart::heatmap::{CLEANUP_THRESHOLD, ProfileKind};
+use data::i18n::tr;
 use data::layout::pane::VisualConfig;
 use data::util::{format_duration_ms, format_with_commas};
 use exchange::adapter::Venue;
@@ -30,7 +31,7 @@ pub fn heatmap_shader_cfg_view<'a>(
     let trade_size_slider = {
         let filter = cfg.trade_size_filter;
         classic_slider_row(
-            Some(text("Trade")),
+            Some(text(tr("Trade"))),
             0.0..=50000.0,
             filter,
             move |value| Message::VisualConfigChanged {
@@ -48,7 +49,7 @@ pub fn heatmap_shader_cfg_view<'a>(
     let order_size_slider = {
         let filter = cfg.order_size_filter;
         classic_slider_row(
-            Some(text("Order")),
+            Some(text(tr("Order"))),
             0.0..=500_000.0,
             filter,
             move |value| Message::VisualConfigChanged {
@@ -65,7 +66,7 @@ pub fn heatmap_shader_cfg_view<'a>(
 
     let circle_scaling_slider = cfg.trade_size_scale.map(|radius_scale| {
         classic_slider_row(
-            Some(crate::widget::text::body("Circle radius scaling")),
+            Some(crate::widget::text::body(tr("Circle radius scaling"))),
             10..=200,
             radius_scale,
             move |value| Message::VisualConfigChanged {
@@ -81,7 +82,7 @@ pub fn heatmap_shader_cfg_view<'a>(
     });
 
     let wall_slider = classic_slider_row(
-        Some(text("Wall")),
+        Some(text(tr("Wall"))),
         4.0..=40.0,
         cfg.wall_min_strength,
         move |value| Message::VisualConfigChanged {
@@ -96,7 +97,7 @@ pub fn heatmap_shader_cfg_view<'a>(
     );
 
     let wall_count_slider = classic_slider_row(
-        Some(text("Repeats")),
+        Some(text(tr("Repeats"))),
         1.0..=6.0,
         cfg.wall_min_count as f32,
         move |value| Message::VisualConfigChanged {
@@ -120,7 +121,7 @@ pub fn heatmap_shader_cfg_view<'a>(
 
     let trade_viz_column = {
         let dyn_checkbox = checkbox(cfg.trade_size_scale.is_some())
-            .label("Dynamic circle radius")
+            .label(tr("Dynamic circle radius"))
             .on_toggle(move |value| Message::VisualConfigChanged {
                 config: VisualConfig::Heatmap(heatmap::Config {
                     trade_size_scale: if value { Some(100) } else { None },
@@ -194,7 +195,7 @@ pub fn heatmap_shader_cfg_view<'a>(
                             }
                         ),
                         radio(
-                            "Ticks",
+                            tr("Ticks"),
                             SpreadUnit::Ticks,
                             Some(indicators.spread_unit),
                             |unit| {
@@ -209,7 +210,7 @@ pub fn heatmap_shader_cfg_view<'a>(
                 HeatmapIndicator::Depth => Some(
                     container(
                         row![
-                            text("Distance (%)"),
+                            text(tr("Distance (%)")),
                             space::horizontal(),
                             text_input("0.01-10", distance_input)
                                 .width(input_width)
@@ -256,9 +257,10 @@ pub fn heatmap_shader_cfg_view<'a>(
     }
 
     let mut content = InspectorContent::new(vec![
-        InspectorSection::titled("Size filter", size_filters).with_modal_container(),
-        InspectorSection::titled("Trade visualization", trade_viz_column).with_modal_container(),
-        InspectorSection::titled("Indicators", indicator_controls).with_modal_container(),
+        InspectorSection::titled(tr("Size filter"), size_filters).with_modal_container(),
+        InspectorSection::titled(tr("Trade visualization"), trade_viz_column)
+            .with_modal_container(),
+        InspectorSection::titled(tr("Indicators"), indicator_controls).with_modal_container(),
     ]);
     content.set_footer(row![
         space::horizontal(),
@@ -275,7 +277,10 @@ fn volume_profile_controls<'a>(
     let interval_ms = match basis {
         data::chart::Basis::Time(interval) => interval.to_milliseconds(),
         data::chart::Basis::Tick(_) => {
-            return text("Heatmap studies are not supported for tick-based charts").into();
+            return text(tr(
+                "Heatmap studies are not supported for tick-based charts",
+            ))
+            .into();
         }
     };
 
@@ -288,20 +293,20 @@ fn volume_profile_controls<'a>(
             "Fixed window ({})",
             format_duration_ms((count as u64).saturating_mul(interval_ms))
         ),
-        ProfileKind::VisibleRange => "Fixed window".to_owned(),
+        ProfileKind::VisibleRange => tr("Fixed window").to_owned(),
     };
 
     let on_change = |kind| Message::HeatmapIndicator(HeatmapIndicatorMessage::VolumeProfile(kind));
     let mut controls = column![
         radio(
-            "Visible range",
+            tr("Visible range"),
             ProfileKind::VisibleRange,
             Some(kind),
             on_change
         ),
         radio(fixed_window_label, fixed_window, Some(kind), on_change),
         checkbox(delta)
-            .label("Delta (buy - sell)")
+            .label(tr("Delta (buy - sell)"))
             .on_toggle(|delta| {
                 Message::HeatmapIndicator(HeatmapIndicatorMessage::VolumeProfileDelta(delta))
             }),
@@ -310,7 +315,7 @@ fn volume_profile_controls<'a>(
 
     if let ProfileKind::FixedWindow(count) = kind {
         controls = controls.push(classic_slider_row(
-            Some(text("Window")),
+            Some(text(tr("Window"))),
             (CLEANUP_THRESHOLD / 20) as f32..=CLEANUP_THRESHOLD as f32,
             count as f32,
             move |count| on_change(ProfileKind::FixedWindow(count as usize)),

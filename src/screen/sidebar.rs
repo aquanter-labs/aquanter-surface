@@ -4,6 +4,7 @@ use crate::{
     style::{Icon, icon_text},
     widget::button_with_tooltip,
 };
+use data::i18n::tr;
 use data::sidebar;
 
 use iced::{
@@ -190,7 +191,7 @@ impl Sidebar {
                     .width(24)
                     .align_x(Alignment::Center),
                 Message::ToggleSidebarMenu(Some(sidebar::Menu::Audio)),
-                Some("Alerts and audio"),
+                Some(tr("Alerts and audio")),
                 tooltip_position,
                 move |theme, status| crate::style::button::transparent(theme, status, is_active),
             )

@@ -1,4 +1,5 @@
 use data::config::ai::{AiConfig, AiProvider};
+use data::i18n::tr;
 use iced::{
     Alignment, Element, Length, Padding, Task,
     widget::{
@@ -618,13 +619,13 @@ enum SignalOutcome {
 
 fn signal_outcome_label(outcome: SignalOutcome, entered: bool) -> &'static str {
     match outcome {
-        SignalOutcome::Unscored => "Not scored",
-        SignalOutcome::Pending if entered => "Awaiting TP/SL",
-        SignalOutcome::Pending => "Awaiting entry",
-        SignalOutcome::Win => "TP hit",
-        SignalOutcome::Loss => "SL hit",
-        SignalOutcome::Ambiguous => "Ambiguous",
-        SignalOutcome::NoEntry => "No entry",
+        SignalOutcome::Unscored => tr("Not scored"),
+        SignalOutcome::Pending if entered => tr("Awaiting TP/SL"),
+        SignalOutcome::Pending => tr("Awaiting entry"),
+        SignalOutcome::Win => tr("TP hit"),
+        SignalOutcome::Loss => tr("SL hit"),
+        SignalOutcome::Ambiguous => tr("Ambiguous"),
+        SignalOutcome::NoEntry => tr("No entry"),
     }
 }
 
@@ -654,7 +655,7 @@ impl HistoryPeriod {
 impl fmt::Display for HistoryPeriod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::All => "All time",
+            Self::All => tr("All time"),
             Self::Day => "24 hours",
             Self::Week => "7 days",
             Self::Month => "30 days",
@@ -699,7 +700,7 @@ impl ConfidenceFilter {
 impl fmt::Display for ConfidenceFilter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::All => "All confidence",
+            Self::All => tr("All confidence"),
             Self::AtLeast50 => "50%+",
             Self::AtLeast60 => "60%+",
             Self::AtLeast70 => "70%+",
@@ -903,7 +904,7 @@ impl Agent {
             show_prompt_review: false,
             prompt_wrap: true,
             show_raw_json: false,
-            status: "Select a Kline or Footprint pane, then refresh the snapshot.".to_string(),
+            status: tr("Select a Kline or Footprint pane, then refresh the snapshot.").to_string(),
             is_loading: false,
             is_fetching_models: false,
             automatic_request: false,
@@ -1063,11 +1064,11 @@ impl Agent {
             Message::ModelChanged(value) => self.config.model = value,
             Message::FetchModels => {
                 if self.api_key.trim().is_empty() && self.config.provider != AiProvider::Custom {
-                    self.status = "API key is required to fetch models.".to_string();
+                    self.status = tr("API key is required to fetch models.").to_string();
                     return Task::none();
                 }
                 self.is_fetching_models = true;
-                self.status = "Fetching available models...".to_string();
+                self.status = tr("Fetching available models...").to_string();
                 return Task::perform(
                     fetch_models(
                         self.config.provider,
@@ -1101,7 +1102,7 @@ impl Agent {
             Message::ApiKeyChanged(value) => self.api_key = value,
             Message::SaveApiKey => {
                 self.status = match data::config::ai::save_api_key(&self.config, &self.api_key) {
-                    Ok(()) => "API key stored in the system keychain.".to_string(),
+                    Ok(()) => tr("API key stored in the system keychain.").to_string(),
                     Err(error) => error,
                 };
             }
@@ -1130,7 +1131,7 @@ impl Agent {
                 self.result.clear();
                 self.analysis = None;
                 self.analyzed_at = None;
-                self.status = "Mode changed. Refresh the market snapshot.".to_string();
+                self.status = tr("Mode changed. Refresh the market snapshot.").to_string();
             }
             Message::RefreshSnapshot => self.apply_snapshot(snapshot),
             message @ (Message::Analyze | Message::AutoAnalyze) => {
@@ -1144,11 +1145,11 @@ impl Agent {
                     return automatic_failure(automatic, &self.status);
                 }
                 if self.api_key.trim().is_empty() {
-                    self.status = "API key is required.".to_string();
+                    self.status = tr("API key is required.").to_string();
                     return automatic_failure(automatic, &self.status);
                 }
                 if self.config.base_url.trim().is_empty() || self.config.model.trim().is_empty() {
-                    self.status = "Base URL and model are required.".to_string();
+                    self.status = tr("Base URL and model are required.").to_string();
                     return automatic_failure(automatic, &self.status);
                 }
 
@@ -1159,7 +1160,7 @@ impl Agent {
                 self.analysis = None;
                 self.analyzed_at = None;
                 self.request_started_at = Some(std::time::Instant::now());
-                self.status = "Analyzing current snapshot...".to_string();
+                self.status = tr("Analyzing current snapshot...").to_string();
                 let request = ProviderRequest {
                     provider: self.config.provider,
                     mode: self.mode,
@@ -1193,8 +1194,8 @@ impl Agent {
                                     TradeAction::Long | TradeAction::Short
                                 )
                             {
-                                self.status =
-                                    "Next K analysis returned no UP/DOWN direction.".to_string();
+                                self.status = tr("Next K analysis returned no UP/DOWN direction.")
+                                    .to_string();
                                 return Task::none();
                             }
                             self.analysis = Some(analysis);
@@ -1203,7 +1204,8 @@ impl Agent {
                             self.status = self.record_analysis().map_or_else(
                                 |error| format!("Analysis completed, but history failed: {error}"),
                                 |()| {
-                                    "Analysis completed. Verify validity before acting.".to_string()
+                                    tr("Analysis completed. Verify validity before acting.")
+                                        .to_string()
                                 },
                             );
                         }
@@ -1239,14 +1241,20 @@ impl Agent {
                 Ok(()) => {
                     self.history.clear();
                     self.selected_history = None;
-                    self.status = "Analysis history cleared.".to_string();
+                    self.status = tr("Analysis history cleared.").to_string();
                 }
                 Err(error) => self.status = error,
             },
             Message::HistoryPeriodChanged(value) => self.history_period = value,
-            Message::HistorySymbolChanged(value) => self.history_symbol = value,
-            Message::HistoryBasisChanged(value) => self.history_basis = value,
-            Message::HistoryModelChanged(value) => self.history_model = value,
+            Message::HistorySymbolChanged(value) => {
+                self.history_symbol = filter_key(value, "All symbols");
+            }
+            Message::HistoryBasisChanged(value) => {
+                self.history_basis = filter_key(value, "All timeframes");
+            }
+            Message::HistoryModelChanged(value) => {
+                self.history_model = filter_key(value, "All models");
+            }
             Message::HistoryConfidenceChanged(value) => self.history_confidence = value,
         }
         Task::none()
@@ -1256,11 +1264,11 @@ impl Agent {
         let snapshot = self
             .snapshot
             .as_ref()
-            .ok_or_else(|| "Snapshot is unavailable.".to_string())?;
+            .ok_or_else(|| tr("Snapshot is unavailable.").to_string())?;
         let analysis = self
             .analysis
             .clone()
-            .ok_or_else(|| "Structured analysis is unavailable.".to_string())?;
+            .ok_or_else(|| tr("Structured analysis is unavailable.").to_string())?;
         let latency_ms = self
             .request_started_at
             .take()
@@ -1297,7 +1305,7 @@ impl Agent {
 
     fn apply_snapshot(&mut self, snapshot: Option<Result<AnalysisBundle, String>>) {
         let Some(snapshot) = snapshot else {
-            self.status = "No Kline or Footprint pane is available.".to_string();
+            self.status = tr("No Kline or Footprint pane is available.").to_string();
             return;
         };
         match snapshot {
@@ -1349,13 +1357,13 @@ impl Agent {
         let fetch_models = if self.is_fetching_models {
             icon_button(
                 crate::style::LucideIcon::RefreshCw,
-                "Fetching models...",
+                tr("Fetching models..."),
                 None,
             )
         } else {
             icon_button(
                 crate::style::LucideIcon::RefreshCw,
-                "Fetch models",
+                tr("Fetch models"),
                 Some(Message::FetchModels),
             )
         };
@@ -1363,7 +1371,7 @@ impl Agent {
             row![].into()
         } else {
             column![
-                text("Available models"),
+                text(tr("Available models")),
                 pick_list(
                     self.models.clone(),
                     Some(self.config.model.clone()),
@@ -1378,14 +1386,14 @@ impl Agent {
             column![
                 row![
                     column![
-                        text("Short bars"),
+                        text(tr("Short bars")),
                         text_input("10-200", &self.short_bars_input)
                             .on_input(Message::ShortBarsChanged),
                     ]
                     .spacing(4)
                     .width(Length::Fill),
                     column![
-                        text("Long bars"),
+                        text(tr("Long bars")),
                         text_input("20-500", &self.long_bars_input)
                             .on_input(Message::LongBarsChanged),
                     ]
@@ -1394,7 +1402,7 @@ impl Agent {
                 ]
                 .spacing(8),
                 row![
-                    text("Request timeout (seconds)").width(Length::Fill),
+                    text(tr("Request timeout (seconds)")).width(Length::Fill),
                     text_input("15-600", &self.timeout_input)
                         .on_input(Message::TimeoutChanged)
                         .width(90),
@@ -1402,17 +1410,17 @@ impl Agent {
                 .spacing(8)
                 .align_y(Alignment::Center),
                 rule::horizontal(1),
-                text("Provider"),
+                text(tr("Provider")),
                 pick_list(
                     AiProvider::ALL,
                     Some(self.config.provider),
                     Message::ProviderChanged
                 )
                 .width(Length::Fill),
-                text_input("Provider base URL", &self.config.base_url)
+                text_input(tr("Provider base URL"), &self.config.base_url)
                     .on_input(Message::BaseUrlChanged),
                 row![
-                    text_input("Model", &self.config.model)
+                    text_input(tr("Model"), &self.config.model)
                         .on_input(Message::ModelChanged)
                         .width(Length::Fill),
                     fetch_models,
@@ -1426,7 +1434,7 @@ impl Agent {
                         .width(Length::Fill),
                     icon_button(
                         crate::style::LucideIcon::KeyRound,
-                        "Save API key to keychain",
+                        tr("Save API key to keychain"),
                         Some(Message::SaveApiKey),
                     ),
                 ]
@@ -1442,11 +1450,11 @@ impl Agent {
 
     pub fn view(&self, timezone: data::UserTimezone) -> Element<'_, Message> {
         let analyze = if self.is_loading {
-            icon_button(crate::style::LucideIcon::Sparkles, "Analyzing...", None)
+            icon_button(crate::style::LucideIcon::Sparkles, tr("Analyzing..."), None)
         } else {
             icon_button(
                 crate::style::LucideIcon::Sparkles,
-                "Analyze",
+                tr("Analyze"),
                 Some(Message::Analyze),
             )
         };
@@ -1459,7 +1467,7 @@ impl Agent {
             selected_source,
             Message::SourceChanged,
         )
-        .placeholder("No Kline/Footprint panes")
+        .placeholder(tr("No Kline/Footprint panes"))
         .width(Length::Fill);
         let controls = column![
             row![
@@ -1467,7 +1475,7 @@ impl Agent {
                 source_selector,
                 icon_button(
                     crate::style::LucideIcon::RefreshCw,
-                    "Refresh chart source and snapshot",
+                    tr("Refresh chart source and snapshot"),
                     Some(Message::RefreshSnapshot),
                 ),
                 analyze,
@@ -1485,12 +1493,12 @@ impl Agent {
         let output_title = if self.show_history {
             "History"
         } else {
-            "Analysis"
+            tr("Analysis")
         };
         let clear_history: Element<'_, Message> = if self.show_history {
             icon_button(
                 crate::style::LucideIcon::Trash2,
-                "Clear history",
+                tr("Clear history"),
                 Some(Message::ClearHistory),
             )
         } else {
@@ -1508,20 +1516,20 @@ impl Agent {
                     icon_button(
                         crate::style::LucideIcon::History,
                         if self.show_history {
-                            "Show latest analysis"
+                            tr("Show latest analysis")
                         } else {
-                            "Show history"
+                            tr("Show history")
                         },
                         Some(Message::ToggleHistory),
                     ),
                     icon_button(
                         crate::style::LucideIcon::FileText,
-                        "Prompt review",
+                        tr("Prompt review"),
                         Some(Message::TogglePromptReview),
                     ),
                     icon_button(
                         crate::style::LucideIcon::Braces,
-                        "Raw JSON",
+                        tr("Raw JSON"),
                         Some(Message::ToggleRawJson),
                     ),
                 ]
@@ -1538,7 +1546,7 @@ impl Agent {
 
         if self.show_prompt_review {
             let prompt = if self.prompt.is_empty() {
-                "No prompt preview yet."
+                tr("No prompt preview yet.")
             } else {
                 &self.prompt
             };
@@ -1564,15 +1572,15 @@ impl Agent {
             let modal = container(
                 column![
                     row![
-                        text("Prompt review")
+                        text(tr("Prompt review"))
                             .size(crate::style::text_size::TITLE)
                             .width(Length::Fill),
                         checkbox(self.prompt_wrap)
-                            .label("Wrap")
+                            .label(tr("Wrap"))
                             .on_toggle(Message::PromptWrapChanged),
                         icon_button(
                             crate::style::LucideIcon::X,
-                            "Close",
+                            tr("Close"),
                             Some(Message::TogglePromptReview),
                         ),
                     ]
@@ -1598,19 +1606,19 @@ impl Agent {
             )
         } else if self.show_raw_json {
             let raw_json = if self.result.is_empty() {
-                "No raw response yet."
+                tr("No raw response yet.")
             } else {
                 &self.result
             };
             let modal = container(
                 column![
                     row![
-                        text("Raw JSON")
+                        text(tr("Raw JSON"))
                             .size(crate::style::text_size::TITLE)
                             .width(Length::Fill),
                         icon_button(
                             crate::style::LucideIcon::X,
-                            "Close",
+                            tr("Close"),
                             Some(Message::ToggleRawJson),
                         ),
                     ]
@@ -1639,7 +1647,7 @@ impl Agent {
 
     fn analysis_view(&self) -> Element<'_, Message> {
         let Some(analysis) = &self.analysis else {
-            return text("No analysis result yet.").into();
+            return text(tr("No analysis result yet.")).into();
         };
         let remaining = self.analyzed_at.map_or(0, |at| {
             analysis
@@ -1647,7 +1655,7 @@ impl Agent {
                 .saturating_sub(at.elapsed().as_secs())
         });
         let validity = if remaining == 0 {
-            "Expired".to_string()
+            tr("Expired").to_string()
         } else {
             format!("Valid for {remaining}s")
         };
@@ -1720,13 +1728,13 @@ impl Agent {
                     "Resistance: {}",
                     prices(&analysis.resistance_levels)
                 )),
-                text("Priority levels"),
+                text(tr("Priority levels")),
                 text(key_levels),
-                text("Evidence for UP"),
+                text(tr("Evidence for UP")),
                 text(lines(&analysis.bullish_evidence)),
-                text("Evidence for DOWN"),
+                text(tr("Evidence for DOWN")),
                 text(lines(&analysis.bearish_evidence)),
-                text("Risks and data quality"),
+                text(tr("Risks and data quality")),
                 text(format!(
                     "{}\n{}",
                     lines(&analysis.risks),
@@ -1775,27 +1783,27 @@ impl Agent {
                 "Resistance: {}",
                 prices(&analysis.resistance_levels)
             )),
-            text("Priority levels"),
+            text(tr("Priority levels")),
             text(key_levels),
             text(format!("Why wait: {}", analysis.no_trade_reason)),
-            text("Trigger conditions"),
+            text(tr("Trigger conditions")),
             text(lines(&analysis.trigger_conditions)),
-            text("Execution guide"),
+            text(tr("Execution guide")),
             text(lines(&analysis.execution_steps)),
             rule::horizontal(1),
-            text("Bullish evidence"),
+            text(tr("Bullish evidence")),
             text(lines(&analysis.bullish_evidence)),
-            text("Bearish evidence"),
+            text(tr("Bearish evidence")),
             text(lines(&analysis.bearish_evidence)),
-            text("Invalidation"),
+            text(tr("Invalidation")),
             text(lines(&analysis.invalidation)),
-            text("Risks and data quality"),
+            text(tr("Risks and data quality")),
             text(format!(
                 "{}\n{}",
                 lines(&analysis.risks),
                 lines(&analysis.data_quality_notes)
             )),
-            text("Recheck when"),
+            text(tr("Recheck when")),
             text(lines(&analysis.recheck_conditions)),
         ]
         .spacing(8)
@@ -1804,7 +1812,7 @@ impl Agent {
 
     fn history_view(&self, timezone: data::UserTimezone) -> Element<'_, Message> {
         if self.history.is_empty() {
-            return text("No saved analyses.").into();
+            return text(tr("No saved analyses.")).into();
         }
         if let Some(record) = self
             .selected_history
@@ -1815,15 +1823,15 @@ impl Agent {
                     record.analyzed_at_ms,
                     data::config::timezone::TimeLabelKind::Custom("%Y-%m-%d %H:%M:%S"),
                 )
-                .unwrap_or_else(|| "Unknown time".to_string());
+                .unwrap_or_else(|| tr("Unknown time").to_string());
             let snapshot_at = timezone
                 .format_with_kind(
                     record.snapshot_generated_at_ms,
                     data::config::timezone::TimeLabelKind::Custom("%Y-%m-%d %H:%M:%S"),
                 )
-                .unwrap_or_else(|| "Unknown time".to_string());
+                .unwrap_or_else(|| tr("Unknown time").to_string());
             let raw_output = if record.raw_output.is_empty() {
-                "Raw output was not stored for this older record."
+                tr("Raw output was not stored for this older record.")
             } else {
                 &record.raw_output
             };
@@ -1840,7 +1848,7 @@ impl Agent {
                         .width(Length::Fill),
                         icon_button(
                             crate::style::LucideIcon::X,
-                            "Back to history",
+                            tr("Back to history"),
                             Some(Message::CloseHistoryDetail),
                         ),
                     ]
@@ -1866,11 +1874,11 @@ impl Agent {
                     )),
                     Self::analysis_details(
                         &record.analysis,
-                        "Historical result".to_string(),
+                        tr("Historical result").to_string(),
                         record.mode,
                     ),
                     rule::horizontal(1),
-                    text("Raw output"),
+                    text(tr("Raw output")),
                     text(raw_output),
                 ]
                 .spacing(8),
@@ -1886,21 +1894,21 @@ impl Agent {
             values
         };
         let symbols = options(
-            "All symbols",
+            tr("All symbols"),
             self.history
                 .iter()
                 .map(|record| record.symbol.as_str())
                 .collect(),
         );
         let bases = options(
-            "All timeframes",
+            tr("All timeframes"),
             self.history
                 .iter()
                 .map(|record| record.basis.as_str())
                 .collect(),
         );
         let models = options(
-            "All models",
+            tr("All models"),
             self.history
                 .iter()
                 .map(|record| record.model.as_str())
@@ -1966,10 +1974,10 @@ impl Agent {
                 .spacing(2)
                 .width(Length::Fill),
                 column![
-                    text("Symbol").size(crate::style::text_size::SMALL),
+                    text(tr("Symbol")).size(crate::style::text_size::SMALL),
                     pick_list(
                         symbols,
-                        Some(self.history_symbol.clone()),
+                        Some(filter_label(&self.history_symbol, "All symbols")),
                         Message::HistorySymbolChanged,
                     )
                     .width(Length::Fill),
@@ -1980,10 +1988,10 @@ impl Agent {
             .spacing(6),
             row![
                 column![
-                    text("Timeframe").size(crate::style::text_size::SMALL),
+                    text(tr("Timeframe")).size(crate::style::text_size::SMALL),
                     pick_list(
                         bases,
-                        Some(self.history_basis.clone()),
+                        Some(filter_label(&self.history_basis, "All timeframes")),
                         Message::HistoryBasisChanged,
                     )
                     .width(Length::Fill),
@@ -1991,10 +1999,10 @@ impl Agent {
                 .spacing(2)
                 .width(Length::Fill),
                 column![
-                    text("Model").size(crate::style::text_size::SMALL),
+                    text(tr("Model")).size(crate::style::text_size::SMALL),
                     pick_list(
                         models,
-                        Some(self.history_model.clone()),
+                        Some(filter_label(&self.history_model, "All models")),
                         Message::HistoryModelChanged,
                     )
                     .width(Length::Fill),
@@ -2004,7 +2012,7 @@ impl Agent {
             ]
             .spacing(6),
             column![
-                text("Minimum confidence").size(crate::style::text_size::SMALL),
+                text(tr("Minimum confidence")).size(crate::style::text_size::SMALL),
                 pick_list(
                     ConfidenceFilter::ALL,
                     Some(self.history_confidence),
@@ -2038,7 +2046,7 @@ impl Agent {
                             record.analyzed_at_ms,
                             data::config::timezone::TimeLabelKind::Custom("%Y-%m-%d %H:%M:%S"),
                         )
-                        .unwrap_or_else(|| "Unknown time".to_string());
+                        .unwrap_or_else(|| tr("Unknown time").to_string());
                     let outcome = record.outcome;
                     let outcome_label =
                         signal_outcome_label(outcome, record.entry_triggered_at_ms.is_some());
@@ -2054,7 +2062,7 @@ impl Agent {
                                 .width(Length::Fill),
                                 icon_button(
                                     crate::style::LucideIcon::FileText,
-                                    "View analysis details",
+                                    tr("View analysis details"),
                                     Some(Message::SelectHistory(index)),
                                 ),
                             ]
@@ -2103,6 +2111,20 @@ fn automatic_failure(automatic: bool, reason: &str) -> Task<Message> {
     } else {
         Task::none()
     }
+}
+
+/// History filters keep the English "all" option as their state, so the filter
+/// survives a language switch; only the label shown is translated.
+fn filter_key(value: String, all: &'static str) -> String {
+    if value == tr(all) {
+        all.to_string()
+    } else {
+        value
+    }
+}
+
+fn filter_label(value: &str, all: &'static str) -> String {
+    if value == all { tr(all) } else { value }.to_string()
 }
 
 pub fn build_prompt(mode: AnalysisMode, snapshot: &AnalysisBundle) -> String {
@@ -2512,7 +2534,7 @@ fn normalize_analysis_for_mode(content: &str, mode: AnalysisMode) -> Result<Stri
         .and_then(Value::as_str)
         .unwrap_or_default();
     if !matches!(action, "LONG" | "SHORT" | "WAIT" | "AVOID") {
-        return Err("Model response has an invalid action.".to_string());
+        return Err(tr("Model response has an invalid action.").to_string());
     }
     let has_text = |field: &str| {
         value
@@ -2527,10 +2549,10 @@ fn normalize_analysis_for_mode(content: &str, mode: AnalysisMode) -> Result<Stri
             .is_some_and(|items| !items.is_empty())
     };
     if !has_text("decision_summary") {
-        return Err("Model response is missing a decision summary.".to_string());
+        return Err(tr("Model response is missing a decision summary.").to_string());
     }
     if mode == AnalysisMode::NextCandle && !matches!(action, "LONG" | "SHORT") {
-        return Err("Next K response has no UP/DOWN direction.".to_string());
+        return Err(tr("Next K response has no UP/DOWN direction.").to_string());
     }
     if mode != AnalysisMode::NextCandle {
         let bullish = value
@@ -2585,20 +2607,20 @@ fn normalize_analysis_for_mode(content: &str, mode: AnalysisMode) -> Result<Stri
                     || !has_items("targets")
                     || !has_items("execution_steps")) =>
         {
-            return Err(
-                "Directional analysis is missing entry, stop, target, or execution steps."
-                    .to_string(),
-            );
+            return Err(tr(
+                "Directional analysis is missing entry, stop, target, or execution steps.",
+            )
+            .to_string());
         }
         "WAIT"
             if !has_text("no_trade_reason")
                 || !has_items("trigger_conditions")
                 || !has_items("execution_steps") =>
         {
-            return Err(
-                "WAIT analysis is missing its reason, trigger conditions, or execution guide."
-                    .to_string(),
-            );
+            return Err(tr(
+                "WAIT analysis is missing its reason, trigger conditions, or execution guide.",
+            )
+            .to_string());
         }
         _ => {}
     }
@@ -2608,7 +2630,7 @@ fn normalize_analysis_for_mode(content: &str, mode: AnalysisMode) -> Result<Stri
 fn extract_json_object(content: &str) -> Result<&str, String> {
     let start = content
         .find('{')
-        .ok_or_else(|| "Model response contains no JSON object.".to_string())?;
+        .ok_or_else(|| tr("Model response contains no JSON object.").to_string())?;
     let mut depth = 0_u32;
     let mut in_string = false;
     let mut escaped = false;
@@ -2635,7 +2657,7 @@ fn extract_json_object(content: &str) -> Result<&str, String> {
             _ => {}
         }
     }
-    Err("Model response contains a truncated JSON object.".to_string())
+    Err(tr("Model response contains a truncated JSON object.").to_string())
 }
 
 #[cfg(test)]

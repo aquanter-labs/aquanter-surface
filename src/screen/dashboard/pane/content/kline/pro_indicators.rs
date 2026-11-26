@@ -3,6 +3,7 @@ use data::chart::kline::pro::{
     ProConfig, QuantityRounding, VolumeProfileDisplay, VolumeProfilePastEnd, VolumeProfileRange,
     VwapMode,
 };
+use data::i18n::tr;
 use iced::{
     Element, Length,
     widget::{checkbox, column, pick_list, row, slider, text, text_input},
@@ -47,21 +48,23 @@ pub(crate) fn footprint_view(config: &ProConfig) -> Element<'static, Message> {
     let basis = config.clone();
     column![
         checkbox(config.aggregate_venues)
-            .label("Aggregate venues (pick sources with Agg in the ticker selector)")
+            .label(tr(
+                "Aggregate venues (pick sources with Agg in the ticker selector)"
+            ))
             .on_toggle(move |value| {
                 let mut c = aggregate.clone();
                 c.aggregate_venues = value;
                 Message::ProConfigChanged(c)
             }),
         checkbox(config.aggregate_basis_adjust)
-            .label("Correct cross-venue price spread")
+            .label(tr("Correct cross-venue price spread"))
             .on_toggle(move |value| {
                 let mut c = basis.clone();
                 c.aggregate_basis_adjust = value;
                 Message::ProConfigChanged(c)
             }),
         checkbox(config.show_footprint_summary)
-            .label("Footprint summary")
+            .label(tr("Footprint summary"))
             .on_toggle(move |value| {
                 let mut c = summary.clone();
                 c.show_footprint_summary = value;
@@ -69,7 +72,7 @@ pub(crate) fn footprint_view(config: &ProConfig) -> Element<'static, Message> {
             }),
         number(
             config,
-            "Quantity decimals",
+            tr("Quantity decimals"),
             f32::from(config.quantity_format.decimals),
             0.0,
             6.0,
@@ -97,29 +100,33 @@ pub(crate) fn inputs(name: &str, config: &ProConfig) -> Element<'static, Message
     let profile_end = config.clone();
     let mode_config = config.clone();
     let anchor = config.clone();
-    let modes = ["Session", "Week", "Month", "Visible"];
+    let modes = [tr("Session"), tr("Week"), tr("Month"), tr("Visible")];
     let current_mode = match config.vwap_mode {
-        Some(VwapMode::Week) => "Week",
-        Some(VwapMode::Month) => "Month",
-        Some(VwapMode::Visible { .. }) => "Visible",
-        _ => "Session",
+        Some(VwapMode::Week) => tr("Week"),
+        Some(VwapMode::Month) => tr("Month"),
+        Some(VwapMode::Visible { .. }) => tr("Visible"),
+        _ => tr("Session"),
     };
     let mut controls = column![].spacing(8).width(Length::Fill);
     match name {
         "SessionVwap" => {
             controls = controls.push(pick_list(modes, Some(current_mode), move |value| {
                 let mut c = mode_config.clone();
-                c.vwap_mode = match value {
-                    "Week" => Some(VwapMode::Week),
-                    "Month" => Some(VwapMode::Month),
-                    "Visible" => Some(VwapMode::Visible { time_ms: 0 }),
-                    _ => None,
+                // The options are translated labels, so match against those.
+                c.vwap_mode = if value == tr("Week") {
+                    Some(VwapMode::Week)
+                } else if value == tr("Month") {
+                    Some(VwapMode::Month)
+                } else if value == tr("Visible") {
+                    Some(VwapMode::Visible { time_ms: 0 })
+                } else {
+                    None
                 };
                 Message::ProConfigChanged(c)
             }));
             controls = controls.push(number(
                 config,
-                "Session anchor (UTC hour)",
+                tr("Session anchor (UTC hour)"),
                 f32::from(config.session_vwap.anchor_hour_utc),
                 0.0,
                 23.0,
@@ -128,7 +135,7 @@ pub(crate) fn inputs(name: &str, config: &ProConfig) -> Element<'static, Message
             ));
             controls = controls.push(number(
                 config,
-                "VWAP bands",
+                tr("VWAP bands"),
                 f32::from(config.session_vwap.deviation_bands),
                 0.0,
                 6.0,
@@ -158,7 +165,7 @@ pub(crate) fn inputs(name: &str, config: &ProConfig) -> Element<'static, Message
             );
             controls = controls.push(number(
                 config,
-                "Bands",
+                tr("Bands"),
                 f32::from(config.anchored_vwap.deviation_bands),
                 0.0,
                 6.0,
@@ -179,7 +186,7 @@ pub(crate) fn inputs(name: &str, config: &ProConfig) -> Element<'static, Message
             ));
             controls = controls.push(number(
                 config,
-                "Rows",
+                tr("Rows"),
                 f32::from(config.fixed_volume_profile.rows),
                 16.0,
                 400.0,
@@ -188,7 +195,7 @@ pub(crate) fn inputs(name: &str, config: &ProConfig) -> Element<'static, Message
             ));
             controls = controls.push(number(
                 config,
-                "Window multiplier",
+                tr("Window multiplier"),
                 f32::from(config.fixed_volume_profile.timeframe_multiplier),
                 1.0,
                 100.0,
@@ -232,7 +239,7 @@ pub(crate) fn inputs(name: &str, config: &ProConfig) -> Element<'static, Message
             if config.volume_profile.range == VolumeProfileRange::PastDuration {
                 controls = controls.push(number(
                     config,
-                    "Past duration (bars)",
+                    tr("Past duration (bars)"),
                     f32::from(config.volume_profile.timeframe_multiplier),
                     1.0,
                     5000.0,
@@ -242,7 +249,7 @@ pub(crate) fn inputs(name: &str, config: &ProConfig) -> Element<'static, Message
             }
             controls = controls.push(number(
                 config,
-                "Rows (candles; footprint uses one row per tick)",
+                tr("Rows (candles; footprint uses one row per tick)"),
                 f32::from(config.volume_profile.rows),
                 16.0,
                 400.0,
@@ -261,7 +268,7 @@ pub(crate) fn style(name: &str, config: &ProConfig) -> Element<'static, Message>
         "SessionVwap" => {
             controls = controls.push(number(
                 config,
-                "VWAP width",
+                tr("VWAP width"),
                 config.session_vwap.line_width,
                 0.5,
                 5.0,
@@ -272,7 +279,7 @@ pub(crate) fn style(name: &str, config: &ProConfig) -> Element<'static, Message>
         "AnchoredVwap" => {
             controls = controls.push(number(
                 config,
-                "Width",
+                tr("Width"),
                 config.anchored_vwap.line_width,
                 0.5,
                 5.0,
@@ -283,7 +290,7 @@ pub(crate) fn style(name: &str, config: &ProConfig) -> Element<'static, Message>
         "LiquidationHeatmap" => {
             controls = controls.push(number(
                 config,
-                "Row height",
+                tr("Row height"),
                 config.liquidation_heatmap.row_height,
                 1.0,
                 30.0,
@@ -292,7 +299,7 @@ pub(crate) fn style(name: &str, config: &ProConfig) -> Element<'static, Message>
             ));
             controls = controls.push(number(
                 config,
-                "Opacity",
+                tr("Opacity"),
                 config.liquidation_heatmap.opacity,
                 0.05,
                 1.0,
@@ -303,7 +310,7 @@ pub(crate) fn style(name: &str, config: &ProConfig) -> Element<'static, Message>
         "VolumeProfile" => {
             controls = controls.push(number(
                 config,
-                "Width (%)",
+                tr("Width (%)"),
                 f32::from(config.volume_profile.max_width_percent),
                 5.0,
                 50.0,
@@ -314,7 +321,7 @@ pub(crate) fn style(name: &str, config: &ProConfig) -> Element<'static, Message>
         "FixedVolumeProfile" => {
             controls = controls.push(number(
                 config,
-                "Width (%)",
+                tr("Width (%)"),
                 f32::from(config.fixed_volume_profile.max_width_percent),
                 5.0,
                 100.0,

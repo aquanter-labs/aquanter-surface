@@ -2,6 +2,7 @@ pub mod aggr;
 pub mod audio;
 pub mod chart;
 pub mod config;
+pub mod i18n;
 pub mod layout;
 pub mod log;
 pub mod metadata;
@@ -19,6 +20,7 @@ pub use chart::kline::indicators::{
     IndicatorCatalogPaths, initialize_indicator_catalog, initialize_indicator_catalog_with_paths,
 };
 pub use config::ScaleFactor;
+pub use config::language::Language;
 pub use config::network::{Network, TradeFetchMode};
 pub use config::sidebar::{self, Sidebar};
 pub use config::state::{BootSettings, Layouts, State};
