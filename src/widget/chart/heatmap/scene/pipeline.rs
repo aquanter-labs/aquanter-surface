@@ -521,23 +521,13 @@ impl Pipeline {
         height: u32,
         heatmap_cols: &[HeatmapColumnCpu],
         generation: u64,
-    ) {
-        {
-            let gpu = self.ensure_scene(id, device);
-            if generation == gpu.heatmap_uploaded_gen {
-                return;
-            }
-            if width == 0 || height == 0 {
-                return;
-            }
+    ) -> bool {
+        let gpu = self.ensure_scene(id, device);
+        if gpu.heatmap_uploaded_gen == 0 || gpu.heatmap_tex_size != (width, height) {
+            return false;
         }
-
-        let needs_resize = {
-            let gpu = self.per_scene.get(&id).unwrap();
-            gpu.heatmap_tex_size != (width, height)
-        };
-        if needs_resize {
-            self.resize_heatmap_textures_u32(id, device, width, height);
+        if generation <= gpu.heatmap_uploaded_gen {
+            return true;
         }
 
         let heatmap_tex = self.per_scene.get(&id).unwrap().heatmap_tex.clone();
@@ -561,6 +551,7 @@ impl Pipeline {
 
         let gpu = self.per_scene.get_mut(&id).unwrap();
         gpu.heatmap_uploaded_gen = generation;
+        true
     }
 
     pub fn update_heatmap_textures_u32(
@@ -576,7 +567,7 @@ impl Pipeline {
     ) {
         {
             let gpu = self.ensure_scene(id, device);
-            if generation == gpu.heatmap_uploaded_gen {
+            if generation <= gpu.heatmap_uploaded_gen {
                 return;
             }
             if width == 0 || height == 0 {

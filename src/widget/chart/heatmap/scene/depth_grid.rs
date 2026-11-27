@@ -3,6 +3,7 @@ use exchange::UnixMs;
 use exchange::adapter::MarketKind;
 use exchange::depth::Depth;
 use exchange::unit::{Price, PriceStep, Qty};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 const Y_MAX_BLOCK_HEIGHT_BINS: u32 = 16;
@@ -14,6 +15,11 @@ const RECENTER_Y_MARGIN_FRAC: f32 = 0.25;
 const GRID_HORIZON_BUCKETS: u32 = 4800;
 
 const GRID_TEX_H: u32 = 2048; // steps around anchor
+
+/// `wgpu` requires `write_texture` rows to be 256-byte aligned. At 8 bytes per
+/// `Rg32Uint` texel, uploading 1 column transfers 32 texels' worth of bytes per
+/// row, so at `tex_w / 32` dirty columns a full upload copies no more data.
+const COL_UPLOAD_ROW_PADDING_TEXELS: usize = 32;
 
 #[derive(Debug, Clone)]
 pub struct GridRing {
@@ -29,7 +35,7 @@ pub struct GridRing {
     col_max_ask: Vec<u32>,
     steps_per_y_bin: i64,
     full_dirty: bool,
-    dirty_cols: Vec<u32>,
+    dirty_cols: BTreeSet<u32>,
     block_max_bid: Vec<u32>,
     block_max_ask: Vec<u32>,
 }
@@ -55,7 +61,7 @@ impl GridRing {
             col_max_ask: Vec::new(),
             steps_per_y_bin: 1,
             full_dirty: false,
-            dirty_cols: Vec::new(),
+            dirty_cols: BTreeSet::new(),
             block_max_bid: Vec::new(),
             block_max_ask: Vec::new(),
         }
@@ -103,6 +109,11 @@ impl GridRing {
     #[inline]
     pub fn force_full_upload(&mut self) {
         self.mark_full_dirty();
+    }
+
+    #[inline]
+    pub fn is_full_dirty(&self) -> bool {
+        self.full_dirty
     }
 
     /// Current y-binning in steps.
@@ -423,15 +434,11 @@ impl GridRing {
         -(half_h as f32) - (delta_bins as f32)
     }
 
-    pub fn upload_to_scene(&mut self, force_full: bool) -> Option<super::HeatmapUpload> {
+    pub fn upload_to_scene(&mut self) -> Option<super::HeatmapUpload> {
         let tex_w = self.tex_w();
         let tex_h = self.tex_h();
         if tex_w == 0 || tex_h == 0 {
             return None;
-        }
-
-        if force_full {
-            self.force_full_upload();
         }
 
         self.build_scene_upload()
@@ -541,10 +548,7 @@ impl GridRing {
             return Vec::new();
         }
 
-        let mut out = std::mem::take(&mut self.dirty_cols);
-        out.sort_unstable();
-        out.dedup();
-        out
+        std::mem::take(&mut self.dirty_cols).into_iter().collect()
     }
 
     fn mark_full_dirty(&mut self) {
@@ -554,7 +558,7 @@ impl GridRing {
 
     fn mark_dirty(&mut self, x: u32) {
         if !self.full_dirty {
-            self.dirty_cols.push(x);
+            self.dirty_cols.insert(x);
         }
     }
 
@@ -896,12 +900,14 @@ impl GridRing {
             return None;
         }
 
-        if self.take_full_dirty() {
+        let max_incremental_cols = (self.tex_w as usize / COL_UPLOAD_ROW_PADDING_TEXELS).max(1);
+        if self.take_full_dirty() || self.dirty_cols.len() >= max_incremental_cols {
+            self.dirty_cols.clear();
             return Some(super::HeatmapUpload::Full {
                 width: self.tex_w,
                 height: self.tex_h,
-                bid: Arc::from(self.bid.clone()),
-                ask: Arc::from(self.ask.clone()),
+                bid: Arc::from(self.bid.as_slice()),
+                ask: Arc::from(self.ask.as_slice()),
             });
         }
 
