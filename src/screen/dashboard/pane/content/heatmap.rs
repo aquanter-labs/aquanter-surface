@@ -30,16 +30,13 @@ use exchange::depth::Depth;
 use exchange::unit::{Price, PriceStep};
 use exchange::{TickerInfo, Trade, UnixMs};
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 // Volume strip
 const STRIP_HEIGHT_FRAC: f32 = 0.10;
 
 // Debounce heavy CPU rebuilds (notably `rebuild_from_historical`) during interaction
 const REBUILD_DEBOUNCE_MS: u64 = 250;
-
-// If rendering stalls longer than this, assume GPU heatmap texture may have been lost/desynced
-const HEATMAP_RESYNC_AFTER_STALL_MS: u64 = 750;
 
 // Volume profile width as % of viewport width
 const VOLUME_PROFILE_WIDTH_PCT: f32 = 0.10;
@@ -486,7 +483,6 @@ impl HeatmapShader {
             DepthSource::Live,
             self.step,
         );
-        self.mark_needs_full_upload_if_stalled();
         let prev_effective_base = self.anchor.effective_base_price(self.base_price);
 
         let paused = self.anchor.is_paused();
@@ -1148,14 +1144,6 @@ impl HeatmapShader {
         );
 
         self.scene.params.set_depth_denom(denom);
-    }
-
-    fn mark_needs_full_upload_if_stalled(&mut self) {
-        if let Some(last) = self.last_tick
-            && last.elapsed() >= Duration::from_millis(HEATMAP_RESYNC_AFTER_STALL_MS)
-        {
-            self.depth_grid.force_full_upload();
-        }
     }
 
     /// Resume paused mode immediately if x=0 becomes visible due user input (pan/zoom/reset).
